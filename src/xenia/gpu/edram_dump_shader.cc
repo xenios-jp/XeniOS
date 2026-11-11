@@ -1250,6 +1250,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
 
     spv::Id texture_width = spv::NoResult;
     spv::Id texture_height = spv::NoResult;
+    spv::Id texture_x = spv::NoResult;
     spv::Id texture_y = spv::NoResult;
     spv::Id loaded_resolve_texture = spv::NoResult;
     std::array<spv::Id, 3> loaded_resolve_texture_aliases;
@@ -1258,8 +1259,11 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
           load_push_constant(kEdramDumpShaderPushConstantResolveTextureWidth);
       texture_width = bitwise_and(texture_width_and_offset_y, 0xFFFF);
       texture_y = add(dest_y, shift_right(texture_width_and_offset_y, 16));
-      texture_height =
+      spv::Id texture_height_and_offset_x =
           load_push_constant(kEdramDumpShaderPushConstantResolveTextureHeight);
+      texture_height = bitwise_and(texture_height_and_offset_x, 0xFFFF);
+      texture_x = add(
+          dest_x, shift_left(shift_right(texture_height_and_offset_x, 24), 5));
       loaded_resolve_texture =
           builder.createLoad(resolve_texture, spv::NoPrecision);
       for (uint32_t i = 0; i < resolve_texture_alias_count; ++i) {
@@ -1352,11 +1356,11 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       // the texture, rather than one check per texel, lets the writes go out
       // together: per-texel conditions made them most of the kernel's time.
       auto write_texel = [&](uint32_t i) {
-        spv::Id texture_x =
-            i ? add(dest_x, builder.makeUintConstant(i)) : dest_x;
+        spv::Id texel_x =
+            i ? add(texture_x, builder.makeUintConstant(i)) : texture_x;
         id_vector_temp.clear();
         id_vector_temp.push_back(
-            builder.createUnaryOp(spv::OpBitcast, type_int, texture_x));
+            builder.createUnaryOp(spv::OpBitcast, type_int, texel_x));
         id_vector_temp.push_back(
             builder.createUnaryOp(spv::OpBitcast, type_int, texture_y));
         id_vector_temp.push_back(builder.makeIntConstant(0));
@@ -1379,7 +1383,7 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
           spv::OpLogicalAnd, type_bool, texture_y_inside,
           builder.createBinOp(
               spv::OpULessThan, type_bool,
-              add(dest_x, builder.makeUintConstant(pixels_per_thread - 1)),
+              add(texture_x, builder.makeUintConstant(pixels_per_thread - 1)),
               texture_width));
       SpirvBuilder::IfBuilder if_run_inside(
           run_inside, spv::SelectionControlMaskNone, builder);
@@ -1388,12 +1392,12 @@ std::vector<uint32_t> BuildEdramDumpShaderSpirv(
       }
       if_run_inside.makeBeginElse();
       for (uint32_t i = 0; i < pixels_per_thread; ++i) {
-        spv::Id texture_x =
-            i ? add(dest_x, builder.makeUintConstant(i)) : dest_x;
+        spv::Id texel_x =
+            i ? add(texture_x, builder.makeUintConstant(i)) : texture_x;
         SpirvBuilder::IfBuilder if_texture_write(
             builder.createBinOp(
                 spv::OpLogicalAnd, type_bool, texture_y_inside,
-                builder.createBinOp(spv::OpULessThan, type_bool, texture_x,
+                builder.createBinOp(spv::OpULessThan, type_bool, texel_x,
                                     texture_width)),
             spv::SelectionControlMaskNone, builder);
         write_texel(i);

@@ -4638,8 +4638,9 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
     MTL::CommandBuffer* command_buffer,
-    std::span<MTL::Texture* const> refresh_textures, uint32_t refresh_offset_y,
-    bool refresh_depth_float, uint32_t refresh_raw_count) {
+    std::span<MTL::Texture* const> refresh_textures, uint32_t refresh_offset_x,
+    uint32_t refresh_offset_y, bool refresh_depth_float,
+    uint32_t refresh_raw_count) {
   MTL::Texture* refresh_texture =
       refresh_textures.empty() ? nullptr : refresh_textures.front();
   const uint32_t refresh_alias_count =
@@ -4961,16 +4962,17 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     // it is passed in a buffer slice like the other internal compute
     // constants.
     // The origin, then, for the refresh, the texture's width with the row
-    // offset above it, and its logical height - or, for the 64bpp averages,
-    // which have no refresh, the host sample indices.
-    const uint32_t rgb10_constants[4] = {
-        rgb10_origin[0], rgb10_origin[1],
+    // offset above it, and its logical height with the alias count and, in
+    // the top byte, the column offset in 32-texel tiles - after the host
+    // sample indices for the 64bpp averages, which the 32bpp four-sample one
+    // doesn't read.
     const uint32_t refresh_constants[2] = {
         refresh_texture
             ? uint32_t(refresh_texture->width()) | (refresh_offset_y << 16)
             : 0,
         refresh_texture
-            ? uint32_t(refresh_texture->height()) | (refresh_alias_count << 16)
+            ? uint32_t(refresh_texture->height()) |
+                  (refresh_alias_count << 16) | (refresh_offset_x >> 5 << 24)
             : 0};
     uint32_t rgb10_constants[5] = {rgb10_origin[0], rgb10_origin[1]};
     if (rgb10f_rgba16_average) {
@@ -5040,7 +5042,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     push_constants[kEdramDumpShaderPushConstantResolveTextureWidth] =
         uint32_t(refresh_texture->width()) | (refresh_offset_y << 16);
     push_constants[kEdramDumpShaderPushConstantResolveTextureHeight] =
-        uint32_t(refresh_texture->height());
+        uint32_t(refresh_texture->height()) | (refresh_offset_x >> 5 << 24);
     encoder->setTexture(refresh_texture, 1);
     encoder->useResource(refresh_texture, MTL::ResourceUsageWrite);
     for (uint32_t i = 0; i < refresh_alias_count; ++i) {
@@ -5252,16 +5254,16 @@ struct TileResolveConstants {
   uint32_t exchange_dwords;
   // 2 for 32bpp, 3 for 64bpp.
   uint32_t bytes_per_block_log2;
-  // The refreshed texture-cache textures' size, and the row of resolve row 0.
+  // The refreshed texture-cache textures' size, and the texel of resolve
+  // pixel (0, 0).
   uint32_t refresh_size[2];
-  uint32_t refresh_offset_y;
+  uint32_t refresh_offset[2];
   // The 16_16_16_16 conversion: the destination's number format, and the
   // exponent bias factor's float bits, as XeResolveGetInfo decodes them.
   uint32_t num_format;
   uint32_t exp_bias_factor_bits;
-  // To the shader struct's size, a multiple of its uint2 alignment.
-  uint32_t padding;
 };
+// The shader struct's size, a multiple of its uint2 alignment.
 static_assert(sizeof(TileResolveConstants) == 88);
 
 // The dump shader's direct resolve per pixel (edram_dump_shader.cc), reading
@@ -5288,10 +5290,9 @@ struct XeTileResolveConstants {
   uint exchange_dwords;
   uint bytes_per_block_log2;
   uint2 refresh_size;
-  uint refresh_offset_y;
+  uint2 refresh_offset;
   uint num_format;
   uint exp_bias_factor_bits;
-  uint padding;
 };
 
 // XenosTextureTiledAddressCombine.
@@ -5698,7 +5699,7 @@ constant bool xe_tile_resolve_refresh_3 = xe_tile_resolve_refresh_count > 3u;
     auto value =                                                              \
         XeTileResolveSwapRedBlue(constants, read(kernel_name));               \
     if (xe_tile_resolve_refresh_0) {                                          \
-      uint2 texel = uint2(p.x, p.y + constants.refresh_offset_y);             \
+      uint2 texel = p + constants.refresh_offset;                             \
       if (texel.x < constants.refresh_size.x &&                               \
           texel.y < constants.refresh_size.y) {                               \
         uint4 refresh = XeTileResolveRefreshTexel(value);                     \
@@ -5860,7 +5861,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, std::span<MTL::Texture* const> refresh_textures,
-    uint32_t refresh_offset_y) {
+    uint32_t refresh_offset_x, uint32_t refresh_offset_y) {
   if (!device_->supportsFamily(MTL::GPUFamilyApple4)) {
     return "family";
   }
@@ -6211,7 +6212,7 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
       // Where the dispatch writes every texel of them, each gets an image of
       // its own instead, which it takes as its image when the pass ends.
       // Otherwise the scratch texture, bound last, is copied into all.
-      refresh_swap = texture_cache && !refresh_offset_y &&
+      refresh_swap = texture_cache && !refresh_offset_x && !refresh_offset_y &&
                      constants.size[0] >= refresh_textures[0]->width() &&
                      constants.size[1] >= refresh_textures[0]->height();
       for (uint32_t i = 0; refresh_swap && i < sampled_refresh_count; ++i) {
@@ -6226,7 +6227,8 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
     }
     constants.refresh_size[0] = uint32_t(refresh_textures[0]->width());
     constants.refresh_size[1] = uint32_t(refresh_textures[0]->height());
-    constants.refresh_offset_y = refresh_offset_y;
+    constants.refresh_offset[0] = refresh_offset_x;
+    constants.refresh_offset[1] = refresh_offset_y;
   }
   MTL::RenderPipelineState* pipeline = GetOrCreateTileResolvePipeline(
       pass_descriptor, color_index, kernel, sample_count, kernel_refresh_count);
@@ -6293,12 +6295,17 @@ const char* MetalRenderTargetCache::TileResolveInOpenPass(
                                                 MTL::ResourceUsageWrite);
   }
   if (refresh_scratch) {
-    // The texels the dispatch writes: resolve pixel p at (p.x,
-    // p.y + refresh_offset_y), inside the texture.
+    // The texels the dispatch writes: resolve pixel p at p + the refresh
+    // offset, inside the texture.
     PostPassRefreshCopy copy;
     copy.scratch = refresh_scratch;
+    copy.origin_x = refresh_offset_x;
     copy.origin_y = refresh_offset_y;
-    copy.width = std::min(constants.size[0], constants.refresh_size[0]);
+    copy.width =
+        refresh_offset_x < constants.refresh_size[0]
+            ? std::min(constants.size[0],
+                       constants.refresh_size[0] - refresh_offset_x)
+            : 0;
     copy.height =
         refresh_offset_y < constants.refresh_size[1]
             ? std::min(constants.size[1],
@@ -7219,6 +7226,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
                     resolve_info, copy_shader, copy_constants, dump_base,
                     dump_row_length_used, dump_rows, dump_pitch,
                     {refresh_views.data(), refresh_target.count},
+                    refresh_target.destinations[0].offset_x,
                     refresh_target.destinations[0].offset_y);
       if (tile_fallback) {
         end_tile_pass(tile_fallback);
@@ -7252,6 +7260,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
           dump_row_length_used, dump_rows, dump_pitch, group_count_x,
           group_count_y, command_buffer,
           {refresh_views.data(), refresh_target.count},
+          refresh_target.destinations[0].offset_x,
           refresh_target.destinations[0].offset_y,
           refresh_target.transform ==
               MetalTextureCache::ResolveTextureRefreshTarget::Transform::
@@ -8384,10 +8393,11 @@ void MetalRenderTargetCache::EncodePostPassRefreshCopies(
     if (blit && copy.width && copy.height) {
       for (const NS::SharedPtr<MTL::Texture>& destination :
            copy.destinations) {
-        blit->copyFromTexture(
-            copy.scratch, 0, 0, MTL::Origin::Make(0, copy.origin_y, 0),
-            MTL::Size::Make(copy.width, copy.height, 1), destination.get(), 0,
-            0, MTL::Origin::Make(0, copy.origin_y, 0));
+        const MTL::Origin origin =
+            MTL::Origin::Make(copy.origin_x, copy.origin_y, 0);
+        blit->copyFromTexture(copy.scratch, 0, 0, origin,
+                              MTL::Size::Make(copy.width, copy.height, 1),
+                              destination.get(), 0, 0, origin);
       }
     }
     ReleaseRefreshScratch(copy.scratch);

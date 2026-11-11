@@ -1033,6 +1033,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
     // Retained, back to refresh_scratch_pool_ after the copy is encoded.
     MTL::Texture* scratch = nullptr;
     std::vector<NS::SharedPtr<MTL::Texture>> destinations;
+    uint32_t origin_x = 0;
     uint32_t origin_y = 0;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -1198,8 +1199,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
       MTL::CommandBuffer* command_buffer,
       std::span<MTL::Texture* const> refresh_textures = {},
-      uint32_t refresh_offset_y = 0, bool refresh_depth_float = false,
-      uint32_t refresh_raw_count = 0);
+      uint32_t refresh_offset_x = 0, uint32_t refresh_offset_y = 0,
+      bool refresh_depth_float = false, uint32_t refresh_raw_count = 0);
 
   // What DirectResolveRenderTargets' dump shader does for
   // a bit copy of one 1x color render target, as a tile dispatch in the
@@ -1214,7 +1215,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
       uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
       uint32_t dump_pitch, std::span<MTL::Texture* const> refresh_textures,
-      uint32_t refresh_offset_y);
+      uint32_t refresh_offset_x, uint32_t refresh_offset_y);
   enum class TileResolveKernel : uint32_t {
     k8888,
     k16_16Float,

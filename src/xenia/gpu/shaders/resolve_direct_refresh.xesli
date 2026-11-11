@@ -47,6 +47,11 @@ void XeResolveDirectRefreshWrite(uint2_xe texel,
 
 #ifdef XE_RESOLVE_DIRECT_REFRESH_64BPP
 // Refresh the four pixels produced by a direct 64bpp resolve kernel, two in
+// each of the vectors as the kernel packs them, with the texture's size,
+// offsets and alias count in the two dwords at byte constants_offset of the
+// EDRAM binding slot, laid out as for XeResolveDirectRefreshWrite4: the width
+// below the row offset, and the height below the alias count and, in the top
+// byte, the column offset in 32-texel tiles.
 [ForceInline]
 void XeResolveDirectRefreshWrite4x64(uint2_xe pixel_index, uint4_xe packed_01,
                                      uint4_xe packed_23,
@@ -57,12 +62,25 @@ void XeResolveDirectRefreshWrite4x64(uint2_xe pixel_index, uint4_xe packed_01,
   uint texture_height_and_alias_count =
       byte_buffer_align4_load4_xe(xe_resolve_edram, constants_offset + 4u);
   uint texture_height = texture_height_and_alias_count & 0xFFFFu;
+  uint alias_count = (texture_height_and_alias_count >> 16u) & 0xFFu;
+  uint texture_x =
+      pixel_index.x + ((texture_height_and_alias_count >> 24u) << 5u);
+  uint texture_y = pixel_index.y + (texture_width_and_offset_y >> 16u);
+  if (texture_y < texture_height) {
+    if (texture_x < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x, texture_y),
                                   packed_01.xy, alias_count);
     }
+    if (texture_x + 1u < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x + 1u, texture_y),
                                   packed_01.zw, alias_count);
     }
+    if (texture_x + 2u < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x + 2u, texture_y),
                                   packed_23.xy, alias_count);
     }
+    if (texture_x + 3u < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x + 3u, texture_y),
                                   packed_23.zw, alias_count);
     }
   }
@@ -77,23 +95,25 @@ void XeResolveDirectRefreshWrite4(uint2_xe pixel_index, uint4_xe packed) {
   uint texture_height_and_alias_count =
       byte_buffer_align4_load4_xe(xe_resolve_edram, 12u);
   uint texture_height = texture_height_and_alias_count & 0xFFFFu;
-  uint alias_count = texture_height_and_alias_count >> 16u;
+  uint alias_count = (texture_height_and_alias_count >> 16u) & 0xFFu;
+  uint texture_x =
+      pixel_index.x + ((texture_height_and_alias_count >> 24u) << 5u);
   uint texture_y = pixel_index.y + (texture_width_and_offset_y >> 16u);
   if (texture_y < texture_height) {
-    if (pixel_index.x < texture_width) {
-      XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x, texture_y),
+    if (texture_x < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x, texture_y),
                                   packed.x, alias_count);
     }
-    if (pixel_index.x + 1u < texture_width) {
-      XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 1u, texture_y),
+    if (texture_x + 1u < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x + 1u, texture_y),
                                   packed.y, alias_count);
     }
-    if (pixel_index.x + 2u < texture_width) {
-      XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 2u, texture_y),
+    if (texture_x + 2u < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x + 2u, texture_y),
                                   packed.z, alias_count);
     }
-    if (pixel_index.x + 3u < texture_width) {
-      XeResolveDirectRefreshWrite(uint2_xe(pixel_index.x + 3u, texture_y),
+    if (texture_x + 3u < texture_width) {
+      XeResolveDirectRefreshWrite(uint2_xe(texture_x + 3u, texture_y),
                                   packed.w, alias_count);
     }
   }

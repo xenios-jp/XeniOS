@@ -579,6 +579,27 @@ bool MetalTextureCache::RefreshFiresWithin(
       range_last, cpu_first, cpu_last, gpu_first, gpu_last);
 }
 
+namespace {
+
+// Grows the first rectangle by the second if together they are a rectangle.
+bool ResolveRefreshCoverUnion(uint32_t ax0, uint32_t ay0, uint32_t ax1,
+                              uint32_t ay1, uint32_t& bx0, uint32_t& by0,
+                              uint32_t& bx1, uint32_t& by1) {
+  const bool same_rows = ay0 == by0 && ay1 == by1;
+  const bool same_columns = ax0 == bx0 && ax1 == bx1;
+  if (!(same_rows && ax0 <= bx1 && bx0 <= ax1) &&
+      !(same_columns && ay0 <= by1 && by0 <= ay1)) {
+    return false;
+  }
+  bx0 = std::min(ax0, bx0);
+  by0 = std::min(ay0, by0);
+  bx1 = std::max(ax1, bx1);
+  by1 = std::max(ay1, by1);
+  return true;
+}
+
+}  // namespace
+
 void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     xenos::ColorFormat dest_format, uint32_t address, uint32_t length,
     uint32_t base_address, uint32_t width, uint32_t height, uint32_t pitch,
@@ -640,34 +661,58 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
     if (texture_base != base_address || width != aligned_width ||
         xe::align(key.GetHeight(), uint32_t(8)) != height ||
         texture_length != length) {
-      // Tiled rows are contiguous only at 32-row tile-row boundaries. Keep
-      // all texels outside this rectangle, and require them current now.
+      // The tiled layout stores whole 32x32 tiles one after another, row by
+      // row of the pitch, and a resolve addresses its destination in them: a
+      // base that many tiles into the texture puts the rectangle at that tile
+      // of it. Keep all texels outside this rectangle, and require them
+      // current now, or the texture covered by such rectangles alone.
       const uint64_t row_bytes =
           uint64_t(pitch) * FormatInfo::Get(key.format)->bytes_per_block();
+      const uint64_t tile_bytes = uint64_t(32 * 32) * bytes_per_block;
       const uint64_t delta = base_address - texture_base;
-      if (!row_bytes || delta % (row_bytes * 32) ||
-          delta / row_bytes > UINT16_MAX ||
-          delta / row_bytes + height > key.GetHeight() ||
+      if (!row_bytes || (pitch & 31) || delta % tile_bytes) {
+        continue;
+      }
+      const uint64_t offset_x = delta / tile_bytes % (pitch >> 5) * 32;
+      const uint64_t offset_y = delta / (row_bytes * 32) * 32;
+      if (offset_y > UINT16_MAX || offset_x + width > aligned_width ||
+          offset_y + height > key.GetHeight() ||
           delta + length > texture_length) {
         continue;
       }
       current.partial = true;
-      current.offset_y = uint32_t(delta / row_bytes);
+      current.offset_x = uint32_t(offset_x);
+      current.offset_y = uint32_t(offset_y);
       auto global_lock = xe::global_critical_region::Acquire();
       if (texture->base_outdated(global_lock)) {
         const uint64_t outdated_sequence =
             texture->base_outdated_fire_sequence(global_lock);
-        if (width != aligned_width || (height & 31) ||
-            uint64_t(length) != uint64_t(height) * row_bytes ||
-            outdated_sequence == UINT64_MAX ||
-            !RefreshFiresWithin(global_lock, outdated_sequence, texture_base,
-                                texture_base + texture->GetGuestBaseSize() - 1,
-                                address, address + length - 1, address,
-                                address + length - 1)) {
-          continue;
+        if (!offset_x && width == aligned_width && !(height & 31) &&
+            uint64_t(length) == uint64_t(height) * row_bytes &&
+            outdated_sequence != UINT64_MAX &&
+            RefreshFiresWithin(global_lock, outdated_sequence, texture_base,
+                               texture_base + texture->GetGuestBaseSize() - 1,
+                               address, address + length - 1, address,
+                               address + length - 1)) {
+          current.outdated_within_band = true;
+          current.fire_sequence = shared_memory().fire_sequence(global_lock);
+        } else {
+          // Texels outside the rectangle are stale. Writing it is still worth
+          // it when it extends what earlier resolves rewrote, or is large
+          // enough for the rest to follow in one more: the two halves of a
+          // surface resolved side by side.
+          const auto& cover = texture->resolve_refresh_cover_;
+          uint32_t x0 = current.offset_x, y0 = current.offset_y;
+          uint32_t x1 = x0 + width, y1 = y0 + height;
+          if (!(cover.active && cover.watch &&
+                ResolveRefreshCoverUnion(cover.x0, cover.y0, cover.x1,
+                                         cover.y1, x0, y0, x1, y1)) &&
+              uint64_t(width) * height * 2 <
+                  uint64_t(key.GetWidth()) * key.GetHeight()) {
+            continue;
+          }
+          current.accumulate = true;
         }
-        current.outdated_within_band = true;
-        current.fire_sequence = shared_memory().fire_sequence(global_lock);
       } else {
         current.invalidation_count =
             texture->base_invalidation_count(global_lock);
@@ -693,12 +738,15 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
       target_out.destinations[target_out.count++] = std::move(current);
       target_out.length = length;
       target_out.address = address;
+      target_out.width = width;
+      target_out.height = height;
       target_out.transform = transform;
       continue;
     }
     // The shader broadcasts one texel at one coordinate to all destinations.
     // Other shapes or conversions retain their normal reload path.
     if (transform != target_out.transform ||
+        current.offset_x != primary.offset_x ||
         current.offset_y != primary.offset_y ||
         write_view->width() != primary.write_texture->width() ||
         write_view->height() != primary.write_texture->height() ||
@@ -725,7 +773,8 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
          ++i) {
       auto& candidate = raw_candidates[i];
       auto* write_view = candidate.write_texture.get();
-      if (candidate.offset_y != primary.offset_y ||
+      if (candidate.offset_x != primary.offset_x ||
+          candidate.offset_y != primary.offset_y ||
           write_view->width() != primary.write_texture->width() ||
           write_view->height() != primary.write_texture->height()) {
         continue;
@@ -792,6 +841,40 @@ void MetalTextureCache::PublishDirectResolveTextureRefresh(
     // memory and in the texture alike. Publishing installs the ordinary
     // watch under the same lock, so later writes take the normal path.
     auto global_lock = xe::global_critical_region::Acquire();
+    if (refreshed.accumulate) {
+      auto& cover = texture->resolve_refresh_cover_;
+      uint32_t x0 = refreshed.offset_x, y0 = refreshed.offset_y;
+      uint32_t x1 = x0 + target.width, y1 = y0 + target.height;
+      // The rectangle joins what was rewritten before it only if this
+      // resolve's own write, the latest, is the first to the texture's memory
+      // since. Guest memory under the earlier rectangle is watched since its
+      // resolve marked it valid, so a CPU write there fired too.
+      const bool cover_holds =
+          cover.active && !cover.watch &&
+          cover.fired_sequence == shared_memory().fire_sequence(global_lock);
+      const bool joined =
+          cover_holds && ResolveRefreshCoverUnion(cover.x0, cover.y0, cover.x1,
+                                                  cover.y1, x0, y0, x1, y1);
+      texture->DropResolveRefreshCover(global_lock);
+      if (!texture->base_outdated(global_lock)) {
+        continue;
+      }
+      if (joined && !x0 && !y0 && x1 >= texture->key().GetWidth() &&
+          y1 >= texture->key().GetHeight()) {
+        texture->MakeUpToDateAndWatch(global_lock);
+        continue;
+      }
+      cover.x0 = x0;
+      cover.y0 = y0;
+      cover.x1 = x1;
+      cover.y1 = y1;
+      cover.fired_sequence = 0;
+      cover.watch = shared_memory().WatchMemoryRange(
+          texture->key().base_page << 12, texture->GetGuestBaseSize(),
+          MetalTexture::ResolveRefreshCoverWatchCallback, texture, nullptr, 0);
+      cover.active = cover.watch != nullptr;
+      continue;
+    }
     if (refreshed.outdated_within_band) {
       // Recheck every intervening firing. The resolve marks complete watch
       // pages GPU-written; CPU writes must still stay within the actual
@@ -4434,7 +4517,27 @@ MetalTextureCache::MetalTexture::MetalTexture(MetalTextureCache& texture_cache,
   }
 }
 
+void MetalTextureCache::MetalTexture::ResolveRefreshCoverWatchCallback(
+    const global_unique_lock_type& global_lock, void* context, void* data,
+    uint64_t argument, bool invalidated_by_gpu) {
+  auto& texture = *static_cast<MetalTexture*>(context);
+  // The range is unlinked once this returns.
+  texture.resolve_refresh_cover_.watch = nullptr;
+  texture.resolve_refresh_cover_.fired_sequence =
+      texture.texture_cache_.shared_memory().fire_sequence(global_lock);
+}
+
+void MetalTextureCache::MetalTexture::DropResolveRefreshCover(
+    const global_unique_lock_type& global_lock) {
+  if (resolve_refresh_cover_.watch) {
+    texture_cache_.shared_memory().UnwatchMemoryRange(
+        resolve_refresh_cover_.watch);
+  }
+  resolve_refresh_cover_ = {};
+}
+
 MetalTextureCache::MetalTexture::~MetalTexture() {
+  DropResolveRefreshCover(xe::global_critical_region::Acquire());
   if (resolve_refresh_registered_) {
     if (resolve_refresh_previous_) {
       resolve_refresh_previous_->resolve_refresh_next_ = resolve_refresh_next_;
