@@ -1576,6 +1576,85 @@ class MetalCommandProcessor : public CommandProcessor,
   // The state of the watched owner of a page, from any thread: 0 none, 1 not
   // submitted, 2 submitted, 3 complete. note_read: a read, which asks for the
   // submission of an owner not submitted yet.
+  int ResolveOwnerStateAt(uint32_t physical_address, bool note_read);
+  // Read-ahead submits on demand: set by a read
+  // fault that found its resolve not submitted, taken by the command processor
+  // thread at its next draw or resolve.
+  std::atomic<bool> resolve_submit_wanted_{false};
+  void SubmitWantedResolve();
+  // Adaptive early submit, where the fence and lazy read submit rules leave a
+  // watched resolve in the open command buffer until the next guest sync
+  // point. A CPU access of the output waits for the whole command buffer the
+  // resolve is in, and for the GPU to have been given it, so for a
+  // destination whose accesses wait the resolve is submitted as soon as it is
+  // recorded, and while such a destination is in use, at shader-done fences
+  // where the GPU would otherwise run dry. Only when command buffers are
+  // committed changes, never what they hold or their order.
+  //
+  // A destination holds a credit of early submits. An access that waited for
+  // a lazy submission buys one per kAdaptiveSubmitCostNs it waited; one that
+  // arrived before the submission buys kAdaptiveUnsubmittedCredit. An early
+  // submit whose access would have waited for a lazy one (it waited anyway,
+  // or came before the guest sync point that would have submitted, or before
+  // that point plus the command buffer's GPU time) tops the credit up to
+  // kAdaptiveUsedCredit; any other costs one, and at zero the destination is
+  // lazy again. The test is the same in both states, so a destination cannot
+  // flip on its own early submits.
+  struct AdaptiveDestination {
+    // The submission ended early for its last resolve, until judged.
+    uint64_t early_submission = 0;
+    uint32_t credit = 0;
+  };
+  static constexpr uint64_t kAdaptiveMinWaitNs = 200 * 1000;
+  static constexpr uint64_t kAdaptiveSubmitCostNs = 500 * 1000;
+  static constexpr uint32_t kAdaptiveMaxCredit = 64;
+  static constexpr uint32_t kAdaptiveUsedCredit = 16;
+  static constexpr uint32_t kAdaptiveUnsubmittedCredit = 8;
+  static constexpr size_t kMaxAdaptiveDestinations = 1024;
+  // By resolve key, early destinations only. Under resolve_read_mutex_.
+  std::unordered_map<uint64_t, AdaptiveDestination> adaptive_destinations_;
+  // Under resolve_read_mutex_.
+  void AdaptivePromote(uint64_t resolve_key, uint32_t credit);
+  // Under resolve_read_mutex_, from the access that waits for (or finds
+  // complete) the submission of the owner's resolve. waited_ns: 0 when it
+  // found it complete.
+  void AdaptiveNoteAccess(uint64_t resolve_key, uint64_t owner_submission,
+                          bool waited, uint64_t waited_ns);
+  // Command processor thread, once a watched resolve is recorded: whether to
+  // submit it now.
+  bool AdaptiveResolveSubmitsEarly(uint64_t resolve_key);
+  // By submission & (kAdaptiveRingSize - 1), each valid while its id matches:
+  // when the first guest sync point after an early submit was parsed, and the
+  // GPU time of a completed command buffer. Written by the command processor
+  // thread and completion handlers, read by faulting threads.
+  static constexpr size_t kAdaptiveRingSize = 64;
+  std::atomic<uint64_t> adaptive_sync_submission_[kAdaptiveRingSize] = {};
+  std::atomic<uint64_t> adaptive_sync_ns_[kAdaptiveRingSize] = {};
+  std::atomic<uint64_t> adaptive_gpu_submission_[kAdaptiveRingSize] = {};
+  std::atomic<uint64_t> adaptive_gpu_ns_[kAdaptiveRingSize] = {};
+  // Early submissions no guest sync point has followed yet. Command processor
+  // thread, as is the rest.
+  std::vector<uint64_t> adaptive_awaiting_sync_;
+  void OnResolveGuestSync() override;
+  // The resolve frame an early destination was last resolved in.
+  uint32_t adaptive_early_frame_ = UINT32_MAX;
+  // Fence submits: a saturating counter of whether the GPU had finished
+  // everything submitted before the command buffer a fence was in by the time
+  // that command buffer would have been submitted anyway (so an early submit
+  // gave it work sooner). Counted the same whether or not the submit is made.
+  static constexpr uint32_t kAdaptiveFenceScoreMax = 15;
+  static constexpr uint32_t kAdaptiveFenceScoreSubmit = 8;
+  uint32_t adaptive_fence_score_ = kAdaptiveFenceScoreSubmit;
+  struct AdaptiveFenceTest {
+    // Judged when this submission ends.
+    uint64_t submission;
+    // The last submission before the command buffer the fence was in.
+    uint64_t prior_submission;
+    bool submitted;
+  };
+  std::vector<AdaptiveFenceTest> adaptive_fence_tests_;
+  void SubmitResolvesAtGpuFence() override;
+  void AdaptiveJudgeFenceTests();
   // Whether a resolve recorded now is guarded by a read watch.
   bool ResolveReadWatchActive() const;
   // The last submission handed to the GPU, for other threads.

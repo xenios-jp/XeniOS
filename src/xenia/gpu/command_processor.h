@@ -232,6 +232,12 @@ class CommandProcessor {
   // register write-back - by backends that must have submitted what the guest
   // may then touch (see command_processor_resolve_readwatch.inc).
   virtual void SubmitResolvesForGuestSync() {}
+  // Called at every guest sync point, before SubmitResolvesForGuestSync
+  // submits (or finds nothing to submit).
+  virtual void OnResolveGuestSync() {}
+  // Called at a shader-done fence, which doesn't submit watched resolves
+  // itself, before it is encoded: the backend may still submit them.
+  virtual void SubmitResolvesAtGpuFence() {}
   // Called before a conditional write reads guest memory, which may be GPU
   // output, by backends whose GPU output reaches guest RAM only once its
   // submission completes: the command processor can't be held back like the

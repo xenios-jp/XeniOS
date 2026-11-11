@@ -1305,7 +1305,15 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
   // Writeback initiator.
   COMMAND_PROCESSOR::WriteEventInitiator(event_type);
 
-  COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
+  // A fence the backend publishes on the GPU timeline (below) reaches the
+  // guest only when its command buffer has completed, and with it every
+  // resolve recorded before the fence, so only a fence stored from here needs
+  // them submitted first.
+  // The adaptive early submit may still submit them at a fence that goes
+  // onto the GPU timeline, before it: where an access of resolve output is
+  // waiting for the GPU and the GPU would run dry. A fence that ends up stored
+  // from here instead finds nothing left to submit below.
+  COMMAND_PROCESSOR::SubmitResolvesAtGpuFence();
 
   uint32_t data_value;
   if ((initiator >> 31) & 0x1) {
