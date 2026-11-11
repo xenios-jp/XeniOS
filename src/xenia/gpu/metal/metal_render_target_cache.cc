@@ -2074,7 +2074,7 @@ void MetalRenderTargetCache::ApplyClearQuadRule(
     if (quad_hold_slot_ != UINT32_MAX) {
       return;
     }
-    for (uint32_t i = 1; i <= xenos::kMaxColorRenderTargets; ++i) {
+    for (uint32_t i = 0; i <= xenos::kMaxColorRenderTargets; ++i) {
       std::vector<Transfer>& slot_transfers = transfer_lists[i];
       if (slot_transfers.empty() || !(written_slots & (uint32_t(1) << i))) {
         continue;
@@ -2319,6 +2319,7 @@ void MetalRenderTargetCache::ReplaceConstantSourceTransfers(
   // load action, and the transfers fill only what lies outside the
   // constant's rectangle.
   dest->DeferColorClear(color);
+  dest->NoteDeferredClearRows(GetRenderTargetOwnedHeight(dest_key));
   deferred_clear_targets_.push_back(dest_key);
   render_pass_descriptor_dirty_ = true;
   update_cutout_mask_ |= uint32_t(1) << slot;
@@ -8202,7 +8203,15 @@ void MetalRenderTargetCache::PerformDeferredClears(MTL::CommandBuffer* cmd) {
       ca->setStoreAction(MTL::StoreActionStore);
       ca->setClearColor(rt->clear_color());
     }
-    RestrictRenderArea(rp, &key, 1, 0);
+    // The clear covers the rows the target owned when the guest cleared it.
+    // Rows it has lost since are about to be transferred out of it, so the
+    // rows it owns now are not enough.
+    RestrictRenderArea(
+        rp, &key, 1,
+        uint32_t(std::min<uint64_t>(
+            uint64_t(rt->deferred_clear_rows()) *
+                std::max<uint32_t>(1u, draw_resolution_scale_y()),
+            UINT32_MAX)));
     auto* encoder = cmd->renderCommandEncoder(rp);
     if (!encoder) {
       XELOGE(
@@ -9499,6 +9508,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             float(resolve_clear_color.blue), float(resolve_clear_color.alpha)};
         dest_metal_rt->DeferColorClear(color);
       }
+      dest_metal_rt->NoteDeferredClearRows(
+          GetRenderTargetOwnedHeight(dest_key));
       deferred_clear_targets_.push_back(dest_key);
       render_pass_descriptor_dirty_ = true;
       continue;
