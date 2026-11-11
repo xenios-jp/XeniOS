@@ -64,11 +64,18 @@ class TraceWriter;
 //   twin only for what can't read the band (RenderTargetCache::EndStripMerge).
 // - EDRAM carried across strips: a strip starts with the previous strip's
 //   EDRAM contents (Halo 3: the base-0 stencil and the 608 GAMMA color are
-//   loaded before being overwritten). One pass sequence can't feed band k+1
-//   with band k's end state, so band k+1 starts with band k's end state of the
-//   previous merged session (the carry). This is exact when consecutive frames
-//   are equal, and otherwise one frame late in the pixels a strip leaves to the
-//   next.
+//   loaded before being overwritten, and the color is never cleared, so the
+//   pixels a strip doesn't cover are the strip before's). One pass sequence
+//   can't feed band k+1 with band k's end state, so band k+1 starts with band
+//   k's end state of the previous session (the carry).
+//   This is exact when consecutive frames are equal, and otherwise one frame
+//   late in the pixels a strip leaves to the next. A session merges only once
+//   there is a carry: the unmerged session before the first merged one (the
+//   last verifying one, and every relearning one) copies what each strip
+//   leaves into the carry's bands. Only the tiling session of the frame that
+//   left the carry merges while it's there: another one's later strips would
+//   start from the other session's bands (425307D5 alternates two sessions
+//   over the same tiles, in other formats), so it runs unmerged.
 // - A check failing in the merged first strip recovers: its band 0 becomes the
 //   EDRAM, and the later strips run normally. A failure in a later strip of a
 //   merged session (only possible if the game changed what it draws between
@@ -154,6 +161,13 @@ class StripMerge {
     // (Layout::last_band_rows).
     virtual void StripMergeEnd(uint32_t band, bool carry,
                                uint32_t band_tile_rows) = 0;
+    // Strip `band` (not the last) of an unmerged session with this layout
+    // ended: what it leaves in the EDRAM of the strip surface becomes band
+    // `band` of the carry, band 0 replacing the carry there was. False if
+    // there is no carry now.
+    virtual bool StripMergeSeedCarry(const Layout& layout, uint32_t band) = 0;
+    // The seeded carry isn't to be used.
+    virtual void StripMergeDropCarry() = 0;
     // Whether guest memory in a range is yet to be written by GPU work
     // already recorded, so it can't be read to verify a session.
     virtual bool StripMergeMemoryUnfinished(uint32_t address,
@@ -485,6 +499,11 @@ class StripMerge {
   // the last drew on the strip surface.
   std::vector<uint32_t> banded_bases_;
   bool window_br_extended_ = false;
+  // An unmerged session that leaves the carry the next (merged) one starts
+  // its later bands with, if it is verified: seeding_ while every strip so
+  // far has been copied.
+  bool seed_planned_ = false;
+  bool seeding_ = false;
 
   // The open session's learning state, loaded from its slot when it begins
   // and stored back when it ends.

@@ -294,6 +294,19 @@ class RenderTargetCache {
   // clipped by the frame leaves the rows past it as the strip before did
   // (StripMerge::Layout::last_band_rows).
   void EndStripMerge(uint32_t band, bool carry, uint32_t band_tile_rows = 0);
+  // Strip `band` (not the last) of an unmerged session ended: what the render
+  // targets at the strip surface hold of the EDRAM is copied into band `band`
+  // of their strip-merged counterparts, which become the carry the next
+  // session's later bands start with, as they would after a merged session.
+  // Band 0 replaces any carry there was. False (and no carry is left) if it
+  // can't be done, or if the strips don't leave the same ranges to the same
+  // render targets. The backend has ended its passes.
+  bool SeedStripMergeCarry(uint32_t band, uint32_t band_count,
+                           uint32_t band_tile_rows,
+                           uint32_t pitch_tiles_at_32bpp,
+                           xenos::MsaaSamples msaa_samples);
+  // The carry is not to be used (the session that seeded it wasn't verified).
+  void DropStripMergeCarries() { strip_merge_carries_.clear(); }
   // A draw only the first strip does, on another surface than the strips',
   // takes its tiles for the first strip alone: the later bands of the merged
   // render targets that take them back still start from the carry.

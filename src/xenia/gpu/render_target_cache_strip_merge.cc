@@ -256,6 +256,118 @@ const char* RenderTargetCache::BeginStripMerge(uint32_t band_count,
   are_accumulated_render_targets_valid_ = false;
   return nullptr;
 }
+
+bool RenderTargetCache::SeedStripMergeCarry(
+    uint32_t band, uint32_t band_count, uint32_t band_tile_rows,
+    uint32_t pitch_tiles_at_32bpp, xenos::MsaaSamples msaa_samples) {
+  if (!band) {
+    strip_merge_carries_.clear();
+  }
+  auto fail = [this]() {
+    strip_merge_carries_.clear();
+    return false;
+  };
+  // As BeginStripMerge refuses.
+  if (strip_merge_active_ || GetPath() != Path::kHostRenderTargets ||
+      IsDrawResolutionScaled() || band_count < 2 || !band_tile_rows ||
+      band_count > StripMerge::kMaxStrips || band + 1 >= band_count ||
+      (strip_merge_bands_.count &&
+       (strip_merge_bands_.count != band_count ||
+        strip_merge_bands_.tile_rows != band_tile_rows))) {
+    return fail();
+  }
+  strip_merge_bands_.count = band_count;
+  strip_merge_bands_.tile_rows = band_tile_rows;
+  PruneStripMergePending();
+  // The ranges the strip leaves to the strip surface's render targets.
+  std::vector<StripMergeCarry> seeds;
+  for (const auto& range_pair : ownership_ranges_) {
+    RenderTargetKey key = range_pair.second.render_target;
+    if (key.IsEmpty() || key.strip_merged ||
+        key.pitch_tiles_at_32bpp != pitch_tiles_at_32bpp ||
+        key.msaa_samples != msaa_samples || key.Is64bpp()) {
+      continue;
+    }
+    auto source_it = render_targets_.find(key);
+    if (source_it == render_targets_.end() || !source_it->second) {
+      continue;
+    }
+    if (!seeds.empty() && seeds.back().owner == key &&
+        seeds.back().end_tiles == range_pair.first) {
+      seeds.back().end_tiles = range_pair.second.end_tiles;
+    } else {
+      seeds.push_back({range_pair.first, range_pair.second.end_tiles, key,
+                       source_it->second});
+    }
+  }
+  if (!band) {
+    // The strip-merged render target of each key that isn't the EDRAM of an
+    // ended session takes the carry.
+    for (const StripMergeCarry& seed : seeds) {
+      RenderTargetKey carry_key = seed.owner;
+      carry_key.strip_merged = 1;
+      carry_key.strip_merge_alt = 0;
+      if (GetStripMergePendingBand(carry_key) >= 0) {
+        carry_key.strip_merge_alt = 1;
+        if (GetStripMergePendingBand(carry_key) >= 0) {
+          MaterializeStripMergeTwin(carry_key, "a carry");
+        }
+      }
+      RenderTarget* carry_rt = GetOrCreateRenderTarget(carry_key, false);
+      if (!carry_rt) {
+        return fail();
+      }
+      strip_merge_carries_.push_back(
+          {seed.start_tiles, seed.end_tiles, carry_key, carry_rt});
+    }
+  } else {
+    // Every strip leaves the same ranges to the same render targets, or the
+    // bands aren't one strip's each.
+    if (seeds.size() != strip_merge_carries_.size()) {
+      return fail();
+    }
+    for (size_t i = 0; i < seeds.size(); ++i) {
+      const StripMergeCarry& carry = strip_merge_carries_[i];
+      RenderTargetKey carry_key = seeds[i].owner;
+      carry_key.strip_merged = 1;
+      carry_key.strip_merge_alt = carry.owner.strip_merge_alt;
+      auto carry_it = render_targets_.find(carry.owner);
+      if (seeds[i].start_tiles != carry.start_tiles ||
+          seeds[i].end_tiles != carry.end_tiles || carry_key != carry.owner ||
+          carry_it == render_targets_.end() ||
+          carry_it->second != carry.render_target) {
+        return fail();
+      }
+    }
+  }
+  // One set of transfers per destination. Depth takes the host depth of the
+  // same render target, as a twin does (MaterializeStripMergeTwin).
+  std::vector<Transfer> transfers;
+  std::vector<bool> done(seeds.size(), false);
+  for (size_t i = 0; i < seeds.size(); ++i) {
+    if (done[i]) {
+      continue;
+    }
+    RenderTarget* dest = strip_merge_carries_[i].render_target;
+    transfers.clear();
+    for (size_t j = i; j < seeds.size(); ++j) {
+      if (done[j] || strip_merge_carries_[j].render_target != dest) {
+        continue;
+      }
+      done[j] = true;
+      RenderTarget* source = seeds[j].render_target;
+      Transfer& transfer = transfers.emplace_back(
+          seeds[j].start_tiles, seeds[j].end_tiles, source,
+          seeds[j].owner.is_depth ? source : nullptr);
+      transfer.band_first = uint8_t(band);
+      transfer.band_count = 1;
+    }
+    if (!PerformStripMergeTransfers(dest, transfers)) {
+      XELOGE("Strip merge: failed to seed the carry in {}",
+             dest->key().GetDebugName());
+      return fail();
+    }
+  }
   return true;
 }
 

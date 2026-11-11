@@ -374,6 +374,9 @@ class MetalCommandProcessor : public CommandProcessor,
 
   // StripMerge::Backend.
   const char* StripMergeBegin(const StripMerge::Layout& layout) override;
+  bool StripMergeSeedCarry(const StripMerge::Layout& layout,
+                           uint32_t band) override;
+  void StripMergeDropCarry() override;
   bool StripMergeMemoryUnfinished(uint32_t address, uint32_t length) override {
     return UnfinishedGpuWriteSubmission(address, length) != 0;
   }
