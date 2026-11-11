@@ -893,7 +893,7 @@ void StoreContextRecord(uint8_t* p, const PPCContext* ctx, uint32_t iar,
   xe::store_and_swap<uint32_t>(p + kContextCr,
                                static_cast<uint32_t>(ctx->cr()));
   xe::store_and_swap<uint32_t>(p + kContextXer, ctx->xer());
-  xe::store_and_swap<uint64_t>(p + kContextFpscr, ctx->fpscr.value);
+  xe::store_and_swap<uint64_t>(p + kContextFpscr, ctx->fpscr_value());
   for (size_t i = 0; i < 32; ++i) {
     xe::store_and_swap<double>(p + kContextFpr + i * 8, ctx->f[i]);
   }

@@ -142,6 +142,9 @@ Function* InvocationReplay::Run(const JitCorpus::Invocation& invocation,
   diverged_ = false;
   std::memcpy(thread_state_->context(), invocation.entry_registers.data(),
               JitCorpus::kRegistersSize);
+  // The corpus holds the whole FPSCR in its field.
+  thread_state_->context()->set_fpscr_value(
+      thread_state_->context()->fpscr.value);
   // Compiled first, as the compiler reads guest memory too.
   Function* function = processor_->ResolveFunction(invocation.function);
   if (!function) {
@@ -235,6 +238,8 @@ std::string InvocationReplay::Check(const JitCorpus::Invocation& invocation,
   if (diverged_ || next_export_ != invocation.exports.size()) {
     return "export calls or MMIO reads differ";
   }
+  thread_state_->context()->fpscr.value =
+      thread_state_->context()->fpscr_value();
   const auto* registers =
       reinterpret_cast<const uint8_t*>(thread_state_->context());
   for (size_t i = 0; i < JitCorpus::kRegistersSize; ++i) {
@@ -253,6 +258,9 @@ Function* InvocationReplay::Prepare(const JitCorpus::Invocation& invocation) {
   next_export_ = 0;
   std::memcpy(thread_state_->context(), invocation.entry_registers.data(),
               JitCorpus::kRegistersSize);
+  // The corpus holds the whole FPSCR in its field.
+  thread_state_->context()->set_fpscr_value(
+      thread_state_->context()->fpscr.value);
   return processor_->ResolveFunction(invocation.function);
 }
 

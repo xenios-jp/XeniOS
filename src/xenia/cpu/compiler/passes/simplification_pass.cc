@@ -232,10 +232,154 @@ bool SimplificationPass::PropagateGuestFPRDenormalProof(HIRBuilder* builder) {
   return tagged;
 }
 
+// A float instruction without Rc clears the FPSCR summary byte. Drop the clear
+// where every path to it already left the byte zero: a forward must-analysis
+// over one bit, started unknown at the entry and after anything that can write
+// the context out of sight.
+bool SimplificationPass::RemoveRepeatedFpscrSummaryClears(HIRBuilder* builder) {
+  if (!cvars::fpscr_summary_byte) {
+    return false;
+  }
+  constexpr uint32_t kSummary =
+      static_cast<uint32_t>(offsetof(ppc::PPCContext, fpscr_summary));
+  // Block::ordinal is 16 bits.
+  std::vector<Block*> blocks;
+  bool any_clear = false;
+  for (Block* b = builder->first_block(); b; b = b->next) {
+    if (blocks.size() > UINT16_MAX) {
+      return false;
+    }
+    b->ordinal = static_cast<uint16_t>(blocks.size());
+    blocks.push_back(b);
+  }
+  const size_t block_count = blocks.size();
+  for (const Block* b : blocks) {
+    for (const Instr* i = b->instr_head; i; i = i->next) {
+      // A branch out of the function's own blocks has no edge to track.
+      const Label* target = i->BranchLabel();
+      if (target && (!target->block || target->block->ordinal >= block_count ||
+                     blocks[target->block->ordinal] != target->block)) {
+        return false;
+      }
+      any_clear |= i->GetOpcodeNum() == OPCODE_STORE_CONTEXT &&
+                   static_cast<uint32_t>(i->src1.offset) == kSummary;
+    }
+  }
+  if (!any_clear) {
+    return false;
+  }
+
+  // Walks a block from whether the byte is zero at its entry, handing the
+  // state at each branch to on_branch. With `remove`, drops the clears the
+  // state makes redundant.
+  bool removed = false;
+  const auto transfer = [&removed](Block* block, bool zero, bool remove,
+                                   auto&& on_branch) {
+    for (Instr* i = block->instr_head; i;) {
+      Instr* next = i->next;
+      if (const Label* target = i->BranchLabel()) {
+        on_branch(target->block, zero);
+      } else if (ClobbersGuestContext(i)) {
+        zero = false;
+      } else if (i->GetOpcodeNum() == OPCODE_STORE_CONTEXT) {
+        const Value* stored = i->src2.value;
+        const uint32_t offset = static_cast<uint32_t>(i->src1.offset);
+        const uint32_t end =
+            offset + static_cast<uint32_t>(GetTypeSize(stored->type));
+        if (offset == kSummary && stored->type == INT8_TYPE) {
+          const bool clears = stored->IsConstantZero();
+          if (clears && zero && remove) {
+            i->UnlinkAndNOP();
+            removed = true;
+          }
+          zero = clears;
+        } else if (offset <= kSummary && end > kSummary) {
+          zero = false;
+        }
+      }
+      i = next;
+    }
+    return zero;
+  };
+
+  // The edges in walk order, each a branch or a fall-through, carrying the
+  // state at its own instruction.
+  const auto falls_through = [](const Block* block) {
+    const Instr* last = block->instr_tail;
+    return block->next && !(last && (last->GetOpcodeNum() == OPCODE_BRANCH ||
+                                     last->GetOpcodeNum() == OPCODE_RETURN));
+  };
+  std::vector<size_t> first_edge(block_count);
+  std::vector<std::vector<size_t>> incoming(block_count);
+  size_t edge_count = 0;
+  for (Block* block : blocks) {
+    first_edge[block->ordinal] = edge_count;
+    for (Instr* i = block->instr_head; i; i = i->next) {
+      if (const Label* target = i->BranchLabel()) {
+        incoming[target->block->ordinal].push_back(edge_count++);
+      }
+    }
+    if (falls_through(block)) {
+      incoming[block->next->ordinal].push_back(edge_count++);
+    }
+  }
+  std::vector<uint8_t> edge_zero(edge_count, 1);
+  // The entry block inherits the caller's FPSCR, and a block no edge reaches is
+  // entered from somewhere this cannot see.
+  const auto entry_of = [&](const Block* block) {
+    if (block->ordinal == 0 || incoming[block->ordinal].empty()) {
+      return false;
+    }
+    for (size_t e : incoming[block->ordinal]) {
+      if (!edge_zero[e]) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Descend to the greatest fixed point; the optimistic start is only sound
+  // there, so remove nothing if it is not reached.
+  bool converged = false;
+  for (size_t sweep = 0; sweep < 64 && !converged; ++sweep) {
+    bool changed = false;
+    for (Block* block : blocks) {
+      size_t e = first_edge[block->ordinal];
+      const auto set_edge = [&](const Block*, bool zero) {
+        if (edge_zero[e] != uint8_t(zero)) {
+          edge_zero[e] = zero;
+          changed = true;
+        }
+        ++e;
+      };
+      const bool exit = transfer(block, entry_of(block), false, set_edge);
+      if (falls_through(block)) {
+        set_edge(block->next, exit);
+      }
+    }
+    converged = !changed;
+  }
+  if (!converged) {
+    return false;
+  }
+  // Every entry state is taken before any clear goes, as the edges describe
+  // the function with all of them in place.
+  std::vector<uint8_t> entry_zero(block_count);
+  for (const Block* block : blocks) {
+    entry_zero[block->ordinal] = entry_of(block);
+  }
+  for (Block* block : blocks) {
+    transfer(block, entry_zero[block->ordinal] != 0, true,
+             [](const Block*, bool) {});
+  }
+  return removed;
+}
+
 bool SimplificationPass::Run(HIRBuilder* builder, bool& result) {
   result = false;
 
   result |= PropagateGuestFPRDenormalProof(builder);
+  result |= RemoveRepeatedFpscrSummaryClears(builder);
   result |= SimplifyBitArith(builder);
   result |= EliminateConversions(builder);
   result |= SimplifyAssignments(builder);

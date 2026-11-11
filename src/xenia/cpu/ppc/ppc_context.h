@@ -398,6 +398,11 @@ typedef struct alignas(64) PPCContext_s {
   // Only CA, OV and SO are modelled, the rest read as zero.
   uint32_t xer() const;
   void set_xer(uint32_t value);
+  // The whole FPSCR, wherever its summary bits are kept.
+  uint32_t fpscr_value() const {
+    return fpscr.value | (uint32_t(fpscr_summary) << 28);
+  }
+  void set_fpscr_value(uint32_t value);
   // todo: remove, saturation should be represented by a vector
   uint8_t vscr_sat;
 
@@ -412,6 +417,12 @@ typedef struct alignas(64) PPCContext_s {
 
   // Thread ID assigned to this context.
   uint32_t thread_id;
+
+  // FPSCR FX, FEX, VX and OX (bits 31 to 28, shifted down) while the
+  // fpscr_summary_byte cvar is set; fpscr.value then keeps those four bits
+  // zero. Zero while the cvar is clear. Use fpscr_value and set_fpscr_value
+  // outside of generated code.
+  uint8_t fpscr_summary;
 
   // Global interrupt lock, held while interrupts are disabled or interrupts are
   // executing. This is shared among all threads and comes from the processor.

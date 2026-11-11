@@ -480,12 +480,26 @@ void PPCHIRBuilder::UpdateCR6(Value* src_value) {
   // TOOD(benvanik): trace CR.
 }
 
+// With fpscr_summary_byte, FX, FEX, VX and OX live in a byte of their own and
+// the fpscr field keeps them zero, so that clearing them, which every float
+// instruction without Rc does, is one store of a constant.
 Value* PPCHIRBuilder::LoadFPSCR() {
-  return LoadContext(offsetof(PPCContext, fpscr), INT32_TYPE);
+  Value* value = LoadContext(offsetof(PPCContext, fpscr), INT32_TYPE);
+  if (cvars::fpscr_summary_byte) {
+    Value* summary =
+        LoadContext(offsetof(PPCContext, fpscr_summary), INT8_TYPE);
+    value = Or(value, Shl(ZeroExtend(summary, INT32_TYPE), 28));
+  }
+  return value;
 }
 
 void PPCHIRBuilder::StoreFPSCR(Value* value) {
   assert_true(value->type == INT32_TYPE);
+  if (cvars::fpscr_summary_byte) {
+    StoreContext(offsetof(PPCContext, fpscr_summary),
+                 Truncate(Shr(value, 28), INT8_TYPE));
+    value = And(value, LoadConstantUint32(0x0FFFFFFF));
+  }
   StoreContext(offsetof(PPCContext, fpscr), value);
 }
 
@@ -512,6 +526,13 @@ void PPCHIRBuilder::StoreFPSCRSummary(Value* raised, bool update_cr1) {
     StoreContext(offsetof(PPCContext, cr1.cr1_fex), LoadConstantInt8(0));
     StoreContext(offsetof(PPCContext, cr1.cr1_vx), vx);
     StoreContext(offsetof(PPCContext, cr1.cr1_ox), ox);
+  }
+
+  if (cvars::fpscr_summary_byte) {
+    // Each instruction keeps its own value (below), so the byte is replaced.
+    StoreContext(offsetof(PPCContext, fpscr_summary),
+                 Or(Shl(fx, 3), Or(Shl(vx, 1), ox)));
+    return;
   }
 
   Value* new_bits = Or(Shl(ZeroExtend(fx, INT32_TYPE), 31),

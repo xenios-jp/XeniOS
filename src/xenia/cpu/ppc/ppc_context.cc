@@ -13,6 +13,7 @@
 
 #include "xenia/base/assert.h"
 #include "xenia/base/string_util.h"
+#include "xenia/cpu/cpu_flags.h"
 
 namespace xe {
 namespace cpu {
@@ -55,6 +56,16 @@ void PPCContext::set_cr(uint64_t value) {
     crf.eq = (bits >> 1) & 0x1;
     crf.so = bits & 0x1;
     *(&cr0.value + i) = crf.value;
+  }
+}
+
+void PPCContext::set_fpscr_value(uint32_t value) {
+  if (cvars::fpscr_summary_byte) {
+    fpscr.value = value & 0x0FFFFFFF;
+    fpscr_summary = uint8_t(value >> 28);
+  } else {
+    fpscr.value = value;
+    fpscr_summary = 0;
   }
 }
 

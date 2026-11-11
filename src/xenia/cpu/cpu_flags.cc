@@ -24,6 +24,13 @@ DEFINE_bool(accurate_vmx_denormal_flush, false,
             "a title that clears VSCR.NJ through mtvscr.",
             "CPU");
 
+DEFINE_bool(fpscr_summary_byte, true,
+            "Keep FPSCR FX, FEX, VX and OX in a context byte of their own, so "
+            "that a float instruction without Rc clears them with one store "
+            "instead of rewriting the FPSCR, and skip the store where every "
+            "path already cleared them. Same results.",
+            "CPU");
+
 DEFINE_bool(disassemble_functions, false,
             "Disassemble functions during generation.", "CPU");
 

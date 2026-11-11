@@ -1472,7 +1472,7 @@ bool XThread::Save(ByteStream* stream) {
     state.context.cr[5] = context->cr5.value;
     state.context.cr[6] = context->cr6.value;
     state.context.cr[7] = context->cr7.value;
-    state.context.fpscr = context->fpscr.value;
+    state.context.fpscr = context->fpscr_value();
     state.context.xer_ca = context->xer_ca;
     state.context.xer_ov = context->xer_ov;
     state.context.xer_so = context->xer_so;
@@ -1541,7 +1541,7 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state,
     context->cr5.value = state.context.cr[5];
     context->cr6.value = state.context.cr[6];
     context->cr7.value = state.context.cr[7];
-    context->fpscr.value = state.context.fpscr;
+    context->set_fpscr_value(state.context.fpscr);
     context->xer_ca = state.context.xer_ca;
     context->xer_ov = state.context.xer_ov;
     context->xer_so = state.context.xer_so;
