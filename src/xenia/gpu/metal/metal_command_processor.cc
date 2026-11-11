@@ -5228,6 +5228,7 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   }
 
   // Configure render targets via MetalRenderTargetCache, similar to D3D12.
+  draw_stand_in_wait_reason_ = nullptr;
   if (render_target_cache_) {
     auto normalized_depth_control = draw_util::GetNormalizedDepthControl(regs);
     uint32_t ps_writes_color_targets =
@@ -5297,6 +5298,14 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           "failed");
       return false;
     }
+    // A stand-in (the placeholder, or skipping the draw) only suits a pass
+    // redrawn every frame. A one-off render to a texture or generated data in
+    // a small render target waits for its real pipeline, as on D3D12 and
+    // Vulkan. Metal has no storage warm-up to wait out.
+    draw_stand_in_wait_reason_ =
+        render_target_cache_->GetPipelineStandInWaitReason(
+            frame_current_, *vertex_shader, pixel_shader, memexport_used_vertex,
+            memexport_used_pixel, false);
   }
 
   // Pipeline formats can be derived from the cache without opening a render
@@ -7251,6 +7260,13 @@ bool MetalCommandProcessor::IssueDrawDxil(
   // Counted draws also require the guest's exact kills and alpha test.
   const bool exact_shaders_required = ExactShadersRequired(memexport_used);
 
+  // What a draw that may not use a stand-in spends on its own thread getting
+  // its shaders and pipeline, logged when it had to build something.
+  const uint64_t stand_in_wait_start_ticks =
+      draw_stand_in_wait_reason_ && cvars::async_shader_compilation
+          ? xe::Clock::QueryHostTickCount()
+          : 0;
+
   ShaderCompileStatus compile_status = ShaderCompileStatus::kReady;
   ShaderCompileStatus pixel_status = ShaderCompileStatus::kReady;
   DxilShader::DxilTranslation* pixel_translation = nullptr;
@@ -7417,6 +7433,31 @@ bool MetalCommandProcessor::IssueDrawDxil(
       }
       return false;
     }
+    vertex_buffer_mask = vertex_translation->used_buffer_mask();
+    // A pipeline without a pixel shader, and the placeholder, have no fragment
+    // function and read no heap. The argument buffer stays bound to the
+    // fragment stage all the same: without it Metal's validation reports draws
+    // whose fragment function declares it and finds none bound (12 in a BF4
+    // frame), so something has been relying on the binding these draws leave
+    // behind.
+    // TODO(xenios-jp): find those draws and have them bind it, then drop this.
+    pixel_buffer_mask = pixel_translation && !bound_placeholder
+                            ? pixel_translation->used_buffer_mask()
+                            : uint32_t(1) << kIRArgumentBufferBindPoint;
+  }
+  if (stand_in_wait_start_ticks) {
+    double wait_ms = double(xe::Clock::QueryHostTickCount() -
+                            stand_in_wait_start_ticks) *
+                     1000.0 / double(xe::Clock::QueryHostTickFrequency());
+    if (wait_ms >= 1.0) {
+      XELOGI(
+          "Awaited real pipeline for a draw into {} ({}): VS {:016X}, PS "
+          "{:016X}, {:.2f} ms",
+          render_target_cache_->GetLastUpdateDrawTargetName(),
+          draw_stand_in_wait_reason_, dxil_vertex_shader->ucode_data_hash(),
+          dxil_pixel_shader ? dxil_pixel_shader->ucode_data_hash() : 0,
+          wait_ms);
+    }
   }
   // The placeholder has no fragment function, so the pixel stage's resources
   // must not be bound to it.
@@ -7432,6 +7473,9 @@ bool MetalCommandProcessor::IssueDrawDxil(
         bind_pixel_shader->GetUsedTextureMaskAfterTranslation();
   }
   if (!PrepareDrawTextures(used_texture_mask, regs)) {
+    // TODO(xenios-jp): a draw given up here, or for a failed translation or
+    // pipeline above, leaves what Update decided for it: transfers cut around a
+    // clear
     return true;
   }
   if (texture_cache_) {
