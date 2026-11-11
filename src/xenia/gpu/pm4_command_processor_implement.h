@@ -1049,7 +1049,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
   bool submitted_memory_producers = false;
   uint32_t polls = 0;
 
+  bool poll_woken = false;
+
   do {
+    // Before the value is read, so a callback that writes it after the read
+    // ends the wait below at once.
+    uint64_t guest_callback_seq_seen = guest_callback_seq();
     uint32_t value = value_ref;
     if (is_memory) {
       trace_writer_.WriteMemoryRead(CpuToGpu(poll_reg_addr & ~uint32_t(0x3)),
@@ -1071,6 +1076,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
       }
     }
     matched = MatchValueAndRef(value & mask, ref, wait_info);
+    if (matched) {
+      if (is_memory && wait >= 0x100 && poll_iters) {
+        poll_wake_misses_ = poll_woken ? 0 : poll_wake_misses_ + 1;
+      }
+    } else {
+      ++poll_iters;
+    }
 
     if (!matched) {
       // The guest may be waiting for a held-back signal before it writes what
@@ -1081,6 +1093,10 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
         if (held_guest_signals_.size() != held_count) {
           continue;
         }
+        // Wake when the held signal's submission completes, not on the
+        // guest's 1 ms poll.
+        COMMAND_PROCESSOR::PerformHeldSignals(1);
+        continue;
       }
       // A short-delay memory poll must also submit queued GPU producers (long
       // waits do in PrepareForWait), but an already satisfied poll must not
@@ -1101,7 +1117,22 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
               static_cast<uint64_t>(wait_ms * 1000000 * 0.90);
           xe::threading::NanoSleep(sleep_ns);
 #else
-          xe::threading::Sleep(std::chrono::milliseconds(wait / 0x100));
+          if (is_memory) {
+            // The word is written by guest code. A graphics interrupt callback
+            // (the vblank's, on the frame limiter thread) ends the wait when
+            // it returns; the guest's wait stays the timeout, so nothing
+            // depends on the wake-up. When timeouts keep ending these waits
+            // the writer is a guest thread, which nothing signals: check as
+            // often as a short poll does.
+            auto timeout = std::chrono::microseconds(uint64_t(wait / 0x100) *
+                                                     1000);
+            if (poll_wake_misses_ >= 8) {
+              timeout = std::min(timeout, std::chrono::microseconds(200));
+            }
+            poll_woken = WaitForGuestCallback(guest_callback_seq_seen, timeout);
+          } else {
+            xe::threading::Sleep(std::chrono::milliseconds(wait / 0x100));
+          }
 #endif
         }
         // Unlimited vblank mode (guest_display_refresh_cap=false) - spin since

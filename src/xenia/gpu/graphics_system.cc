@@ -443,6 +443,10 @@ void GraphicsSystem::SetInterruptCallback(uint32_t callback,
 void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
   kernel_state()->EmulateCPInterruptDPC(interrupt_callback_,
                                         interrupt_callback_data_, source, cpu);
+  // A memory poll waiting for what the callback wrote checks again now.
+  if (command_processor_) {
+    command_processor_->NotifyGuestCallbackRan();
+  }
 }
 
 void GraphicsSystem::MarkVblank() {

@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_COMMAND_PROCESSOR_H_
 #define XENIA_GPU_COMMAND_PROCESSOR_H_
 
+#include <condition_variable>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -231,6 +232,9 @@ class CommandProcessor {
   // past earlier commands - a fence, memory write, interrupt or scratch
   // register write-back - by backends that must have submitted what the guest
   // may then touch (see command_processor_resolve_readwatch.inc).
+  // Guest code that may write what a WAIT_REG_MEM memory poll waits for has
+  // run (a graphics interrupt callback returned), from any thread.
+  void NotifyGuestCallbackRan();
   virtual void SubmitResolvesForGuestSync() {}
   // Called at every guest sync point, before SubmitResolvesForGuestSync
   // submits (or finds nothing to submit).
@@ -397,6 +401,19 @@ class CommandProcessor {
   // memory, for backends that hold GPU work that may produce the value in an
   // unsubmitted batch.
   virtual void SubmitBeforeShortMemoryPoll() {}
+  // For a WAIT_REG_MEM memory poll that has to wait: blocks until a guest
+  // callback has run since guest_callback_seq() returned seen, or for the
+  // timeout. Returns whether a callback ended the wait.
+  uint64_t guest_callback_seq() const {
+    return guest_callback_seq_.load(std::memory_order_acquire);
+  }
+  bool WaitForGuestCallback(uint64_t seen, std::chrono::microseconds timeout);
+  std::mutex guest_callback_mutex_;
+  std::condition_variable guest_callback_cond_;
+  std::atomic<uint64_t> guest_callback_seq_{0};
+  // Waited memory polls in a row that a timeout ended, not a callback: the
+  // writer is then a guest thread, and the poll checks more often.
+  uint32_t poll_wake_misses_ = 0;
 
   virtual void PollCompletedSubmission() {}
 

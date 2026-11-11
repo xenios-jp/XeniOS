@@ -827,6 +827,22 @@ void CommandProcessor::LogRegisterSets(uint32_t base_register_index,
 #endif
 }
 
+void CommandProcessor::NotifyGuestCallbackRan() {
+  {
+    std::lock_guard<std::mutex> lock(guest_callback_mutex_);
+    guest_callback_seq_.fetch_add(1, std::memory_order_release);
+  }
+  guest_callback_cond_.notify_all();
+}
+
+bool CommandProcessor::WaitForGuestCallback(uint64_t seen,
+                                            std::chrono::microseconds timeout) {
+  std::unique_lock<std::mutex> lock(guest_callback_mutex_);
+  return guest_callback_cond_.wait_for(lock, timeout, [this, seen]() {
+    return guest_callback_seq_.load(std::memory_order_acquire) != seen;
+  });
+}
+
 void CommandProcessor::WriteGuestFence(uint8_t* destination,
                                        uint32_t physical_address,
                                        uint32_t value) {
