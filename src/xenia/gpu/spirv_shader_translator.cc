@@ -5479,7 +5479,8 @@ void SpirvShaderTranslator::StoreResult(const InstructionResult& result,
   builder_->createStore(value_to_store, target_pointer);
 }
 
-spv::Id SpirvShaderTranslator::EndianSwap32Uint(spv::Id value, spv::Id endian) {
+spv::Id SpirvShaderTranslator::EndianSwap32Uint(spv::Id value, spv::Id endian,
+                                                bool single_step_8in32) {
   spv::Id type = builder_->getTypeId(value);
   spv::Id const_uint_8_scalar = builder_->makeUintConstant(8);
   spv::Id const_uint_00ff00ff_scalar = builder_->makeUintConstant(0x00FF00FF);
@@ -5518,6 +5519,44 @@ spv::Id SpirvShaderTranslator::EndianSwap32Uint(spv::Id value, spv::Id endian) {
           static_cast<unsigned int>(xenos::Endian::k8in32)));
   spv::Id is_8in16_or_8in32 =
       builder_->createBinOp(spv::OpLogicalOr, type_bool_, is_8in16, is_8in32);
+  if (single_step_8in32) {
+    auto make_typed_constant = [&](uint32_t scalar) {
+      spv::Id constant = builder_->makeUintConstant(scalar);
+      if (num_components <= 1) {
+        return constant;
+      }
+      id_vector_temp_.clear();
+      id_vector_temp_.insert(id_vector_temp_.cend(), num_components, constant);
+      return builder_->makeCompositeConstant(type, id_vector_temp_);
+    };
+    spv::Id const_uint_24_typed = make_typed_constant(24);
+    SpirvBuilder::IfBuilder if_8in32(is_8in32, spv::SelectionControlMaskNone,
+                                     *builder_);
+    spv::Id swapped_8in32 = builder_->createBinOp(
+        spv::OpBitwiseOr, type,
+        builder_->createBinOp(
+            spv::OpBitwiseOr, type,
+            builder_->createBinOp(spv::OpShiftRightLogical, type, value,
+                                  const_uint_24_typed),
+            builder_->createBinOp(
+                spv::OpBitwiseAnd, type,
+                builder_->createBinOp(spv::OpShiftRightLogical, type, value,
+                                      const_uint_8_typed),
+                make_typed_constant(0x0000FF00))),
+        builder_->createBinOp(
+            spv::OpBitwiseOr, type,
+            builder_->createBinOp(
+                spv::OpBitwiseAnd, type,
+                builder_->createBinOp(spv::OpShiftLeftLogical, type, value,
+                                      const_uint_8_typed),
+                make_typed_constant(0x00FF0000)),
+            builder_->createBinOp(spv::OpShiftLeftLogical, type, value,
+                                  const_uint_24_typed)));
+    if_8in32.makeEndIf();
+    value = if_8in32.createMergePhi(swapped_8in32, value);
+    // Done, the two steps below are for the other two only.
+    is_8in16_or_8in32 = is_8in16;
+  }
   SpirvBuilder::IfBuilder if_8in16(is_8in16_or_8in32,
                                    spv::SelectionControlMaskNone, *builder_);
   spv::Id swapped_8in16;
@@ -5545,6 +5584,9 @@ spv::Id SpirvShaderTranslator::EndianSwap32Uint(spv::Id value, spv::Id endian) {
           static_cast<unsigned int>(xenos::Endian::k16in32)));
   spv::Id is_8in32_or_16in32 =
       builder_->createBinOp(spv::OpLogicalOr, type_bool_, is_8in32, is_16in32);
+  if (single_step_8in32) {
+    is_8in32_or_16in32 = is_16in32;
+  }
   SpirvBuilder::IfBuilder if_16in32(is_8in32_or_16in32,
                                     spv::SelectionControlMaskNone, *builder_);
   spv::Id swapped_16in32;

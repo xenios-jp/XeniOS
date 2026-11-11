@@ -1227,7 +1227,12 @@ class SpirvShaderTranslator : public ShaderTranslator {
       uint8_t memexport_eM_potentially_written_before, bool& predicate_written);
 
   // Perform endian swap of a uint scalar or vector.
-  spv::Id EndianSwap32Uint(spv::Id value, spv::Id endian);
+  // With single_step_8in32, 8-in-32 is one byte reverse expression rather
+  // than the 8-in-16 and 16-in-32 swaps one after another, each behind its own
+  // condition: for an endianness known when the host shader is compiled, that
+  // is the form compilers recognize as a byte reverse.
+  spv::Id EndianSwap32Uint(spv::Id value, spv::Id endian,
+                           bool single_step_8in32 = false);
   // Perform endian swap of a uint4 vector.
   spv::Id EndianSwap128Uint4(spv::Id value, spv::Id endian);
 
