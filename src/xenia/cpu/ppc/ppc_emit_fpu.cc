@@ -424,6 +424,20 @@ int InstrEmit_fcmpx_(PPCHIRBuilder& f, const InstrData& i, bool ordered) {
   Value* ra = f.LoadFPR(i.X.RA);
   Value* rb = f.LoadFPR(i.X.RB);
 
+  if (f.HasOrderedFloatCompares()) {
+    // The backend's compares are already false for a NaN operand, so they are
+    // the CR bits as they stand, and it shares one host compare among them.
+    f.StoreContext(offsetof(PPCContext, cr0) + (4 * crf) + 0,
+                   f.CompareSLT(ra, rb));
+    f.StoreContext(offsetof(PPCContext, cr0) + (4 * crf) + 1,
+                   f.CompareSGT(ra, rb));
+    f.StoreContext(offsetof(PPCContext, cr0) + (4 * crf) + 2,
+                   f.CompareEQ(ra, rb));
+    f.StoreContext(offsetof(PPCContext, cr0) + (4 * crf) + 3,
+                   f.IsUnordered(ra, rb));
+    return 0;
+  }
+
   Value* nan = f.Or(f.IsNan(ra), f.IsNan(rb));
   f.StoreContext(offsetof(PPCContext, cr0) + (4 * crf) + 3, nan);
   Value* not_nan = f.Xor(nan, f.LoadConstantInt8(0x01));

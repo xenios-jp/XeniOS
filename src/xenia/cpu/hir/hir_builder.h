@@ -235,6 +235,7 @@ class HIRBuilder {
   Value* VectorAllSet(Value* value);
   Value* VectorNoneSet(Value* value);
   Value* IsNan(Value* value);
+  Value* IsUnordered(Value* value1, Value* value2);
   Value* CompareEQ(Value* value1, Value* value2);
   Value* CompareNE(Value* value1, Value* value2);
   Value* CompareSLT(Value* value1, Value* value2);

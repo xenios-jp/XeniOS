@@ -252,6 +252,9 @@ enum Opcode {
   OPCODE_VECTOR_MIN,
   OPCODE_SELECT,
   OPCODE_IS_NAN,  // remove? compare_eq with self instead
+  // Either operand is a NaN. Only on backends with
+  // MachineInfo::supports_ordered_float_compare.
+  OPCODE_IS_UNORDERED,
   OPCODE_COMPARE_EQ,
   OPCODE_COMPARE_NE,
   OPCODE_COMPARE_SLT,

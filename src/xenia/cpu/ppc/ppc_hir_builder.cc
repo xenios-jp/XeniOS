@@ -480,6 +480,13 @@ void PPCHIRBuilder::UpdateCR6(Value* src_value) {
   // TOOD(benvanik): trace CR.
 }
 
+bool PPCHIRBuilder::HasOrderedFloatCompares() const {
+  return cvars::fcmp_ordered_compares && frontend_->processor()
+                                             ->backend()
+                                             ->machine_info()
+                                             ->supports_ordered_float_compare;
+}
+
 // With fpscr_summary_byte, FX, FEX, VX and OX live in a byte of their own and
 // the fpscr field keeps them zero, so that clearing them, which every float
 // instruction without Rc does, is one store of a constant.

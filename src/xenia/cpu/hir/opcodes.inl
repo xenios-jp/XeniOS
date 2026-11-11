@@ -324,6 +324,12 @@ DEFINE_OPCODE(
     0)
 
 DEFINE_OPCODE(
+    OPCODE_IS_UNORDERED,
+    "is_unordered",
+    OPCODE_SIG_V_V_V,
+    0)
+
+DEFINE_OPCODE(
     OPCODE_COMPARE_EQ,
     "compare_eq",
     OPCODE_SIG_V_V_V,

@@ -1523,6 +1523,16 @@ Value* HIRBuilder::IsNan(Value* value) {
   return i->dest;
 }
 
+Value* HIRBuilder::IsUnordered(Value* value1, Value* value2) {
+  ASSERT_TYPES_EQUAL(value1, value2);
+  assert_true(value1->type == FLOAT32_TYPE || value1->type == FLOAT64_TYPE);
+  Instr* i = AppendInstr(OPCODE_IS_UNORDERED_info, 0, AllocValue(INT8_TYPE));
+  i->set_src1(value1);
+  i->set_src2(value2);
+  i->src3.value = NULL;
+  return i->dest;
+}
+
 Value* HIRBuilder::CompareXX(const OpcodeInfo& opcode, Value* value1,
                              Value* value2) {
   ASSERT_TYPES_EQUAL(value1, value2);

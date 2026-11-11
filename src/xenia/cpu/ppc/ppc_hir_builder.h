@@ -61,6 +61,10 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   void UpdateCR(uint32_t n, Value* lhs, bool is_signed = true);
   void UpdateCR(uint32_t n, Value* lhs, Value* rhs, bool is_signed = true);
   void UpdateCR6(Value* src_value);
+  // Whether fcmpu and fcmpo may take the backend's float compares as the CR
+  // bits (MachineInfo::supports_ordered_float_compare).
+  bool HasOrderedFloatCompares() const;
+
   Value* LoadFPSCR();
   void StoreFPSCR(Value* value);
   // For instructions that cannot raise an exception.

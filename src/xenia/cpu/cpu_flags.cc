@@ -37,6 +37,13 @@ DEFINE_bool(fpscr_summary_byte, true,
             "path already cleared them. Same results.",
             "CPU");
 
+DEFINE_bool(fcmp_ordered_compares, true,
+            "Where the backend's float compares are false for a NaN operand, "
+            "build the CR bits of fcmpu and fcmpo from them directly, with one "
+            "host compare shared by the bits, instead of masking each with a "
+            "NaN test of both operands. Same results.",
+            "CPU");
+
 DEFINE_bool(disassemble_functions, false,
             "Disassemble functions during generation.", "CPU");
 
