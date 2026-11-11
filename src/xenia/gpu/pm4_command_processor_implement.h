@@ -137,6 +137,7 @@ void COMMAND_PROCESSOR::ExecuteIndirectBuffer(uint32_t ptr,
     RingBuffer old_reader = reader_;
 
     // Execute commands!
+    COMMAND_PROCESSOR::AwaitGpuWritesTo(ptr, count * sizeof(uint32_t));
     new (&reader_)
         RingBuffer(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t));
     reader_.set_write_offset(count * sizeof(uint32_t));
@@ -1027,6 +1028,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
   uint32_t mask = reader_.ReadAndSwap<uint32_t>();
   uint32_t wait = reader_.ReadAndSwap<uint32_t>();
   // Polls that didn't match.
+  uint32_t poll_iters = 0;
 
   bool is_memory = (wait_info & 0x10) != 0;
 
@@ -1042,9 +1044,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
                 : register_file_->values[poll_reg_addr];
 
   bool matched = false;
-  // Don't read what a held-back fence is yet to write there.
+  // Don't read what a held-back fence is yet to write there, or GPU output
+  // recorded before this packet.
   if (is_memory) {
     COMMAND_PROCESSOR::AwaitHeldSignalsWriting(poll_reg_addr & ~uint32_t(0x3));
+    COMMAND_PROCESSOR::AwaitGpuWritesTo(poll_reg_addr & ~uint32_t(0x3),
+                                        sizeof(uint32_t));
   }
   bool submitted_memory_producers = false;
   uint32_t polls = 0;
@@ -1210,6 +1215,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_REG_TO_MEM(
   auto endianness = static_cast<xenos::Endian>(mem_addr & 0x3);
   mem_addr &= ~0x3;
   reg_val = GpuSwap(reg_val, endianness);
+  COMMAND_PROCESSOR::AwaitGpuWritesTo(mem_addr, sizeof(uint32_t));
   xe::store(memory_->TranslatePhysical(mem_addr), reg_val);
   trace_writer_.WriteMemoryWrite(CpuToGpu(mem_addr), 4);
 
@@ -1224,7 +1230,9 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
     COMMAND_PROCESSOR::InsertDebugMarker("PM4_MEM_WRITE: 0x%08X (%u dwords)",
                                          write_addr & ~0x3, count - 1);
   }
-  COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
+  {
+    COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
+  }
 
   for (uint32_t i = 0; i < count - 1; i++) {
     uint32_t write_data = reader_.ReadAndSwap<uint32_t>();
@@ -1232,6 +1240,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_MEM_WRITE(
     auto endianness = static_cast<xenos::Endian>(write_addr & 0x3);
     auto addr = write_addr & ~0x3;
     write_data = GpuSwap(write_data, endianness);
+    COMMAND_PROCESSOR::AwaitGpuWritesTo(addr, sizeof(uint32_t));
     xe::store(memory_->TranslatePhysical(addr), write_data);
     trace_writer_.WriteMemoryWrite(CpuToGpu(addr), 4);
     write_addr += 4;
@@ -1266,6 +1275,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
     poll_reg_addr &= ~0x3;
     COMMAND_PROCESSOR::AwaitHeldSignalsWriting(poll_reg_addr);
     COMMAND_PROCESSOR::AwaitGpuWritesBeforeGuestRead();
+    COMMAND_PROCESSOR::AwaitGpuWritesTo(poll_reg_addr, sizeof(uint32_t));
     trace_writer_.WriteMemoryRead(CpuToGpu(poll_reg_addr), 4);
     value = xe::load<uint32_t>(memory_->TranslatePhysical(poll_reg_addr));
     value = GpuSwap(value, endianness);
@@ -1280,10 +1290,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_COND_WRITE(
     // Write.
     if (wait_info & 0x100) {
       // Memory.
-      COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
+      {
+        COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
+      }
       auto endianness = static_cast<xenos::Endian>(write_reg_addr & 0x3);
       write_reg_addr &= ~0x3;
       write_data = GpuSwap(write_data, endianness);
+      COMMAND_PROCESSOR::AwaitGpuWritesTo(write_reg_addr, sizeof(uint32_t));
       xe::store(memory_->TranslatePhysical(write_reg_addr), write_data);
       trace_writer_.WriteMemoryWrite(CpuToGpu(write_reg_addr), 4);
     } else {
@@ -1381,6 +1394,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_SHD(
           CpuToGpu(write_physical_address), data_value)) {
     return true;
   }
+  COMMAND_PROCESSOR::SubmitResolvesForGuestSync();
   // The guest treats this fence as "the GPU is done", export output ahead of it
   // included.
   COMMAND_PROCESSOR::WriteGuestFence(write_destination, write_physical_address,
@@ -1422,6 +1436,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_EXT(
   };
   assert_true(endianness == xenos::Endian::k8in16);
 
+  COMMAND_PROCESSOR::AwaitGpuWritesTo(address, 6 * sizeof(uint16_t));
   uint16_t* destination = (uint16_t*)memory_->TranslatePhysical(address);
 
   for (unsigned i = 0; i < 6; ++i) {
@@ -1747,6 +1762,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_LOAD_ALU_CONSTANT(
         index, size_dwords, address);
   }
 
+  COMMAND_PROCESSOR::AwaitGpuWritesTo(address, size_dwords * sizeof(uint32_t));
   auto xlat_address = (uint32_t*)memory_->TranslatePhysical(address);
 
   switch (type) {
@@ -1976,6 +1992,7 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
   // Execute commands!
 
   RingBuffer old_reader = reader_;
+  COMMAND_PROCESSOR::AwaitGpuWritesTo(primary_buffer_ptr_, primary_buffer_size_);
   new (&reader_) RingBuffer(memory_->TranslatePhysical(primary_buffer_ptr_),
                             primary_buffer_size_);
 
@@ -2035,6 +2052,7 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
         // Publishing the read pointer hands that ring space back, so it has to
         // land after our reads of it.
         std::atomic_thread_fence(std::memory_order_release);
+        COMMAND_PROCESSOR::AwaitGpuWritesTo(writeback_ptr, sizeof(uint32_t));
         xe::store_and_swap<uint32_t>(
             memory_->TranslatePhysical(writeback_ptr),
             uint32_t(reader_.read_offset() / sizeof(uint32_t)));
@@ -2055,6 +2073,7 @@ void COMMAND_PROCESSOR::ExecutePacket(uint32_t ptr, uint32_t count) {
   // Execute commands!
   RingBuffer old_reader = reader_;
 
+  COMMAND_PROCESSOR::AwaitGpuWritesTo(ptr, count * sizeof(uint32_t));
   new (&reader_)
       RingBuffer{memory_->TranslatePhysical(ptr), count * sizeof(uint32_t)};
 

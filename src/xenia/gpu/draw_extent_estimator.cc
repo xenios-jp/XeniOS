@@ -108,6 +108,23 @@ uint32_t DrawExtentEstimator::EstimateVertexMaxY(const Shader& vertex_shader,
     return xenos::kTexture2DCubeMaxWidthHeight;
   }
 
+  if (unfinished_gpu_writes_query_) {
+    for (const Shader::VertexBinding& binding :
+         vertex_shader.vertex_bindings()) {
+      xenos::xe_gpu_vertex_fetch_t fetch =
+          regs.GetVertexFetch(binding.fetch_constant);
+      if (unfinished_gpu_writes_query_(fetch.address << 2, fetch.size << 2)) {
+        return xenos::kTexture2DCubeMaxWidthHeight;
+      }
+    }
+    if (vgt_draw_initiator.source_select == xenos::SourceSelect::kDMA &&
+        unfinished_gpu_writes_query_(
+            xenos::CpuToGpu(regs[XE_GPU_REG_VGT_DMA_BASE]),
+            regs.Get<reg::VGT_DMA_SIZE>().num_words * sizeof(uint32_t))) {
+      return xenos::kTexture2DCubeMaxWidthHeight;
+    }
+  }
+
   auto vgt_dma_size = regs.Get<reg::VGT_DMA_SIZE>();
   union {
     const void* index_buffer;

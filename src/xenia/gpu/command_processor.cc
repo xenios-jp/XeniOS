@@ -631,6 +631,7 @@ void CommandProcessor::WorkerThreadMain() {
     // Keep in mind that the gpu also updates the cpu-side copy if the write
     // pointer and read pointer would be equal
     if (read_ptr_writeback_ptr_) {
+      AwaitGpuWritesTo(read_ptr_writeback_ptr_, sizeof(uint32_t));
       xe::store_and_swap<uint32_t>(
           memory_->TranslatePhysical(read_ptr_writeback_ptr_), read_ptr_index_);
     }
@@ -967,6 +968,7 @@ void CommandProcessor::HandleSpecialRegisterWrite(uint32_t index,
       SubmitResolvesForGuestSync();
       uint32_t scratch_addr = regs.values[XE_GPU_REG_SCRATCH_ADDR];
       uint32_t mem_addr = scratch_addr + (scratch_reg * 4);
+      AwaitGpuWritesTo(mem_addr, sizeof(uint32_t));
       xe::store_and_swap<uint32_t>(memory_->TranslatePhysical(mem_addr), value);
     }
   } else {

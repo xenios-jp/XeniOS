@@ -2637,6 +2637,12 @@ bool MetalCommandProcessor::SetupContext() {
   }
   render_target_cache_->SetStripMerge(&strip_merge_);
   strip_merge_.SetBackend(this);
+  if (render_target_cache_) {
+    render_target_cache_->SetUnfinishedGpuWritesQuery(
+        [this](uint32_t address, uint32_t length) {
+          return UnfinishedGpuWriteSubmission(address, length) != 0;
+        });
+  }
 
   // Fallback for query segment normalization when no draw pinned a scale.
   zpd_draw_resolution_scale_x_ = texture_cache_->draw_resolution_scale_x();
@@ -3244,6 +3250,84 @@ void MetalCommandProcessor::AwaitGpuWritesBeforeGuestRead() {
     EndCommandBuffer(CommandBufferKind::kSubmissionWait);
   }
   AwaitSubmissionCompletion(resolve_last_submission_);
+  NoteGpuWait(GpuWaitReason::kResolveBeforeGuestRead, wait_start_ns);
+}
+
+void MetalCommandProcessor::NoteWatchedGpuWrite(uint32_t address,
+                                                uint32_t length) {
+  if (!length || address >= SharedMemory::kBufferSize) {
+    return;
+  }
+  length = std::min(length, SharedMemory::kBufferSize - address);
+  watched_gpu_writes_last_submission_ =
+      std::max(watched_gpu_writes_last_submission_, GetCurrentSubmission());
+  watched_gpu_writes_page_min_ =
+      std::min(watched_gpu_writes_page_min_, address >> 12);
+  watched_gpu_writes_page_max_ =
+      std::max(watched_gpu_writes_page_max_, (address + length - 1) >> 12);
+}
+
+uint64_t MetalCommandProcessor::UnfinishedGpuWriteSubmission(uint32_t address,
+                                                             uint32_t length) {
+  if (watched_gpu_writes_page_min_ > watched_gpu_writes_page_max_ || !length) {
+    return 0;
+  }
+  // As TranslatePhysical masks.
+  address &= 0x1FFFFFFF;
+  uint32_t first_page = address >> 12;
+  uint32_t last_page =
+      uint32_t(std::min(uint64_t(address) + length - 1,
+                        uint64_t(SharedMemory::kBufferSize - 1)) >>
+               12);
+  if (first_page > watched_gpu_writes_page_max_ ||
+      last_page < watched_gpu_writes_page_min_) {
+    return 0;
+  }
+  uint64_t completed = GetCompletedSubmission();
+  if (watched_gpu_writes_last_submission_ <= completed) {
+    watched_gpu_writes_page_min_ = UINT32_MAX;
+    watched_gpu_writes_page_max_ = 0;
+    return 0;
+  }
+  if (!resolve_page_owners_) {
+    return 0;
+  }
+  first_page = std::max(first_page, watched_gpu_writes_page_min_);
+  last_page = std::min(last_page, watched_gpu_writes_page_max_);
+  uint64_t submission = 0;
+  uint64_t last_owner_key = 0;
+  std::unique_lock<std::mutex> lock(resolve_read_mutex_, std::defer_lock);
+  for (uint32_t page = first_page; page <= last_page; ++page) {
+    uint64_t owner_key =
+        resolve_page_owners_[page].load(std::memory_order_relaxed);
+    if (!owner_key || owner_key == last_owner_key) {
+      continue;
+    }
+    last_owner_key = owner_key;
+    if (!lock.owns_lock()) {
+      lock.lock();
+    }
+    auto owner_it = resolve_owners_.find(owner_key);
+    // Not in_guest_ram: a fault's bounded wait sets it without completion.
+    if (owner_it != resolve_owners_.end() && owner_it->second.copyable &&
+        owner_it->second.submission > completed) {
+      submission = std::max(submission, owner_it->second.submission);
+    }
+  }
+  return submission;
+}
+
+void MetalCommandProcessor::AwaitGpuWritesTo(uint32_t physical_address,
+                                             uint32_t length) {
+  uint64_t submission = UnfinishedGpuWriteSubmission(physical_address, length);
+  if (!submission) {
+    return;
+  }
+  int64_t wait_start_ns = GetSteadyTimeNs();
+  if (submission >= submission_current_ && current_command_buffer_) {
+    EndCommandBuffer(CommandBufferKind::kSubmissionWait);
+  }
+  AwaitSubmissionCompletion(submission);
   NoteGpuWait(GpuWaitReason::kResolveBeforeGuestRead, wait_start_ns);
 }
 
@@ -4731,6 +4815,7 @@ Shader* MetalCommandProcessor::LoadShader(xenos::ShaderType shader_type,
 Shader* MetalCommandProcessor::LoadShaderAtAddress(
     xenos::ShaderType shader_type, uint32_t guest_address,
     uint32_t dword_count) {
+  AwaitGpuWritesTo(guest_address, dword_count * sizeof(uint32_t));
   const uint32_t* host_address =
       memory_->TranslatePhysical<const uint32_t*>(guest_address);
   const uint32_t stage = uint32_t(shader_type);
@@ -4863,6 +4948,13 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   // A CPU read arrived before the submission of the resolve it reads.
   if (resolve_submit_wanted_.load(std::memory_order_relaxed)) {
     SubmitWantedResolve();
+  }
+  // Guest indices (or adaptive tessellation factors in their place) are read
+  // on this thread: by the primitive processor, the draw extent estimator and
+  // the tessellation factor copy.
+  if (index_buffer_info) {
+    AwaitGpuWritesTo(index_buffer_info->guest_base,
+                     uint32_t(index_buffer_info->length));
   }
 
   // Check for copy mode
@@ -7492,6 +7584,12 @@ bool MetalCommandProcessor::IssueCopy() {
   if (!render_target_cache_) {
     EndRenderEncoder();
   }
+  {
+    // The resolve rectangle is read from vertex buffer 0 on this thread
+    // (draw_util::GetResolveInfo).
+    xenos::xe_gpu_vertex_fetch_t resolve_vertices =
+        register_file_->GetVertexFetch(0);
+    AwaitGpuWritesTo(resolve_vertices.address << 2, resolve_vertices.size << 2);
   }
   MTL::CommandBuffer* copy_command_buffer = EnsureCommandBuffer();
   if (!copy_command_buffer) {
@@ -7554,6 +7652,11 @@ bool MetalCommandProcessor::IssueCopy() {
     if (ResolveReadWatchActive() &&
         IsResolveDestinationResident(written_address, written_length)) {
       NoteResolveForReadback(written_address, written_length, false);
+      NoteWatchedGpuWrite(written_address, written_length);
+      // A destination read recently is submitted only once a read really
+      // arrives before its submission (SubmitWantedResolve).
+      resolve_submit_requested_ = false;
+      // Still submitted now for a destination whose accesses would wait for a
       // lazy submission.
       if (AdaptiveResolveSubmitsEarly(
               MakeReadbackResolveKey(written_address, written_length))) {

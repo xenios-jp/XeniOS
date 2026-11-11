@@ -139,6 +139,10 @@ class StripMerge {
     // the EDRAM; with carry, the bands are kept for the next session's later
     // strips (see the carry above).
     virtual void StripMergeEnd(uint32_t band, bool carry) = 0;
+    // Whether guest memory in a range is yet to be written by GPU work
+    // already recorded, so it can't be read to verify a session.
+    virtual bool StripMergeMemoryUnfinished(uint32_t address,
+                                            uint32_t length) = 0;
   };
 
   // What CheckDraw needs about the draw's shaders.

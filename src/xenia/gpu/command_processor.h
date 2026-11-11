@@ -247,6 +247,12 @@ class CommandProcessor {
   // submission completes: the command processor can't be held back like the
   // guest, so this waits.
   virtual void AwaitGpuWritesBeforeGuestRead() {}
+  // Called on the command processor thread before it reads or writes guest
+  // memory itself (through the physical view, which no access watch guards):
+  // waits for GPU output recorded into these pages that hasn't reached guest
+  // RAM yet, where signals aren't held behind it (output under a read watch).
+  // The read then sees it, and the write lands over it.
+  virtual void AwaitGpuWritesTo(uint32_t physical_address, uint32_t length) {}
   // The submission whose GPU output other than export output - which
   // TakeMemexportSignalSubmission covers - fences and interrupts are held back
   // behind, or 0 if it has completed.
@@ -699,6 +705,7 @@ class CommandProcessor {
   // with one that remembers what each address held until it's written.
   Shader* LoadShaderAtAddress(xenos::ShaderType shader_type,
                               uint32_t guest_address, uint32_t dword_count) {
+    AwaitGpuWritesTo(guest_address, dword_count * sizeof(uint32_t));
     return LoadShader(shader_type,
                       memory_->TranslatePhysical<const uint32_t*>(guest_address),
                       dword_count);
