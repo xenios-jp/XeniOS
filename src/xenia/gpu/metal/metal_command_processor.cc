@@ -7635,7 +7635,28 @@ const char* MetalCommandProcessor::StripMergeBegin(
                                                layout.band_tile_rows());
 }
 
-void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry) {
+bool MetalCommandProcessor::StripMergeSeedCarry(
+    const StripMerge::Layout& layout, uint32_t band) {
+  if (!render_target_cache_) {
+    return false;
+  }
+  // The copies read what the pass and the transfers queued for it wrote.
+  EndRenderEncoder();
+  if (!render_target_cache_->FlushPendingDrawPassTransfers()) {
+    render_target_cache_->DropStripMergeCarries();
+    return false;
+  }
+  return render_target_cache_->SeedStripMergeCarry(
+      band, layout.strip_count, layout.band_tile_rows(),
+      layout.pitch_tiles_at_32bpp, layout.msaa_samples);
+}
+
+void MetalCommandProcessor::StripMergeDropCarry() {
+  if (render_target_cache_) {
+    render_target_cache_->DropStripMergeCarries();
+  }
+}
+
 void MetalCommandProcessor::StripMergeEnd(uint32_t band, bool carry,
                                           uint32_t band_tile_rows) {
   strip_merge_replicate_draw_ = false;

@@ -268,21 +268,33 @@ void StripMerge::BeginSession(uint64_t bin_select) {
   previous_strip_bits_union_ = slot.previous_strip_bits_union;
   draw_checks_ran_ = candidate_.IsValid();
   uint64_t strip_bits = bin_select & kStripBitsMask;
+  // What merging needs but the verified sessions and the carry.
+  bool mergeable =
+      candidate_.IsValid() &&
       candidate_.strip_bits[0] == strip_bits &&
       (!layout_.IsValid() || layout_ == candidate_) &&
       (cvars::strip_merge_clipped_last_strip ||
        !candidate_.last_band_clipped()) &&
       (carry_session_order_ == kNoCarry ||
        carry_session_order_ == session_order_);
+  bool may_merge = mergeable && !cooldown_sessions_ &&
+                   verified_sessions_ >= kLearnSessions;
+  if (may_merge &&
+      merged_since_learning_ >= kRelearnInterval) {
     // Verify the game still draws the strips the same way.
     may_merge = false;
     merged_since_learning_ = 0;
   }
-  if (may_merge && backend_->StripMergeBegin(candidate_)) {
-    mode_ = Mode::kMerged;
-    layout_ = candidate_;
-    ++merged_since_learning_;
+  // The later bands start from the carry: without one (the first merged
+  // session, or after a recovery) they would start with what the first strip
+  // starts with, which isn't what the strip before leaves.
+  if (may_merge && carry_session_order_ != session_order_) {
+    may_merge = false;
   }
+  // An unmerged session after which this pass may merge leaves the carry.
+  seed_planned_ = !may_merge && mergeable && cooldown_sessions_ <= 1 &&
+                  verified_sessions_ + 1 >= kLearnSessions;
+  seeding_ = false;
   // Merging begins at the first strip's first draw (BeforeDraw).
   merge_planned_ = may_merge;
   BeginStrip(bin_select);
@@ -303,6 +315,20 @@ void StripMerge::EndStrip() {
   first_strip_draw_ = false;
   // A first strip without draws: the session runs unmerged.
   merge_planned_ = false;
+  if (seed_planned_ && mode_ == Mode::kLearn) {
+    // What the strip leaves is what the next one starts with: the carry of
+    // the session after this one.
+    if (strip_index_ == 0) {
+      seeding_ = !failed_ && strips_[0].draws != 0;
+    }
+    if (seeding_ && strip_index_ + 1 < candidate_.strip_count) {
+      seeding_ = !failed_ &&
+                 backend_->StripMergeSeedCarry(candidate_, strip_index_);
+      if (!seeding_) {
+        carry_session_order_ = kNoCarry;
+      }
+    }
+  }
   if (strip_index_ != 0) {
     return;
   }
@@ -424,11 +450,20 @@ void StripMerge::EndSession() {
       outcome = verified ? "candidate" : "not mergeable";
     }
     candidate_ = verified ? derived : Layout();
-    learned_own_used_.clear();
-    if (verified) {
-      for (const OwnWrite& write : strips_[0].own_writes) {
-        learned_own_used_.push_back(write.used);
-      }
+  }
+  if (seed_planned_ && mode_ == Mode::kLearn && !empty) {
+    // The carry is this session's if it leaves the pass mergeable.
+    if (seeding_ && verified && draw_checks_ran_ &&
+        derived == candidate_before && strip_count_ == derived.strip_count) {
+      carry_session_order_ = session_order_;
+    } else if (carry_session_order_ == kNoCarry ||
+               carry_session_order_ == session_order_) {
+      backend_->StripMergeDropCarry();
+      carry_session_order_ = kNoCarry;
+    }
+  }
+  seed_planned_ = false;
+  seeding_ = false;
   if (!(mode_ == Mode::kLearn && empty)) {
     // Dormancy: a pass that never merges costs the recording and hashing of
     // every packet and draw in every session.
