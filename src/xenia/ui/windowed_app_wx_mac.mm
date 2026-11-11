@@ -34,5 +34,24 @@ void ActivateMacApp() {
   [NSApp activateIgnoringOtherApps:YES];
 }
 
+void DisableMacAppNap() {
+  // A window that is covered or in the background, with no audio playing,
+  // makes the process eligible for App Nap, which defers its timers: the
+  // 16.7 ms vblank sleep then returns 100-190 ms late and a title that paces
+  // itself on vblank runs at a fraction of its speed. The activity lasts for
+  // the life of the process; idle system sleep stays allowed.
+  static id<NSObject> activity = nil;
+  if (activity) {
+    return;
+  }
+  activity = [[NSProcessInfo processInfo]
+      beginActivityWithOptions:(NSActivityUserInitiatedAllowingIdleSystemSleep |
+                                NSActivityLatencyCritical)
+                        reason:@"Emulation timing"];
+#if !__has_feature(objc_arc)
+  [activity retain];
+#endif
+}
+
 }  // namespace ui
 }  // namespace xe

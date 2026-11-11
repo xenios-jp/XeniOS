@@ -32,6 +32,15 @@
 DECLARE_bool(enable_console);
 #endif
 
+#if XE_PLATFORM_MAC
+DEFINE_bool(
+    mac_app_nap_off, true,
+    "Keep macOS from throttling the process (App Nap) while its window is "
+    "hidden or in the background. Throttled, the guest's timers, vblank "
+    "included, run several times late.",
+    "UI");
+#endif
+
 namespace xe {
 namespace ui {
 
@@ -43,6 +52,7 @@ char** g_argv = nullptr;
 #if XE_PLATFORM_MAC
 void SuppressMacAutoMenuItems();
 void ActivateMacApp();
+void DisableMacAppNap();
 #endif
 
 bool XeniaWxApp::OnInit() {
@@ -101,6 +111,9 @@ bool XeniaWxApp::OnInit() {
 
 #if XE_PLATFORM_MAC
   ActivateMacApp();
+  if (cvars::mac_app_nap_off) {
+    DisableMacAppNap();
+  }
 #endif
 
   return true;
