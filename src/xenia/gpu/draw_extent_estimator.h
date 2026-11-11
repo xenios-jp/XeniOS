@@ -11,6 +11,7 @@
 #define XENIA_GPU_DRAW_EXTENT_ESTIMATOR_H_
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 
 #include "xenia/gpu/register_file.h"
@@ -31,6 +32,14 @@ class DrawExtentEstimator {
         trace_writer_(trace_writer),
         shader_interpreter_(register_file, memory) {
     shader_interpreter_.SetTraceWriter(trace_writer);
+  }
+
+  // Whether guest memory in a range is yet to be written by GPU work already
+  // recorded (CommandProcessor::AwaitGpuWritesTo): vertices and indices there
+  // can't be read yet, so nothing is estimated from them.
+  void SetUnfinishedGpuWritesQuery(
+      std::function<bool(uint32_t address, uint32_t length)> query) {
+    unfinished_gpu_writes_query_ = std::move(query);
   }
 
   // The shader must have its ucode analyzed.
@@ -92,6 +101,8 @@ class DrawExtentEstimator {
   const RegisterFile& register_file_;
   const Memory& memory_;
   TraceWriter* trace_writer_;
+  std::function<bool(uint32_t address, uint32_t length)>
+      unfinished_gpu_writes_query_;
 
   ShaderInterpreter shader_interpreter_;
 

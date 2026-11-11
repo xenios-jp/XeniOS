@@ -1320,6 +1320,14 @@ bool StripMerge::GetRegisterWrites(uint32_t opcode,
         return false;
       }
       writes_out.count = PayloadDword(payload, 2) & 0xFFF;
+      if (backend_ && backend_->StripMergeMemoryUnfinished(
+                          PayloadDword(payload, 0) & 0x3FFFFFFF,
+                          writes_out.count * sizeof(uint32_t))) {
+        // The session fails whichever caller asked (this is const for them).
+        const_cast<StripMerge*>(this)->Fail(
+            "constants in memory the GPU has yet to write");
+        return false;
+      }
       writes_out.memory = memory_->TranslatePhysical<const uint32_t*>(
           PayloadDword(payload, 0) & 0x3FFFFFFF);
       return writes_out.memory != nullptr;
@@ -1852,6 +1860,13 @@ void StripMerge::CheckDraw(const DrawInfo& draw) {
         uint32_t dword_1 = register_file_[reg + 1];
         uint32_t bytes = ((dword_1 >> 2) & 0xFFFFFF) * 4;
         uint64_t range[3] = {binding.fetch_constant, dword_1, 0};
+        if (bytes && backend_ &&
+            backend_->StripMergeMemoryUnfinished(dword_0 & ~uint32_t(3),
+                                                 bytes)) {
+          // Can't be read yet (the vertex words below are in these ranges).
+          Fail("vertices in memory the GPU has yet to write");
+          return;
+        }
         if (bytes && bytes <= kMaxHashedBytes) {
           range[2] = XXH3_64bits(memory_->TranslatePhysical<const uint8_t*>(
                                      dword_0 & ~uint32_t(3)),

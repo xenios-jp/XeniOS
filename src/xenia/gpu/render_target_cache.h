@@ -154,6 +154,12 @@ class RenderTargetCache {
 
   virtual ~RenderTargetCache();
 
+  // See DrawExtentEstimator::SetUnfinishedGpuWritesQuery.
+  void SetUnfinishedGpuWritesQuery(
+      std::function<bool(uint32_t address, uint32_t length)> query) {
+    draw_extent_estimator_.SetUnfinishedGpuWritesQuery(std::move(query));
+  }
+
   virtual Path GetPath() const = 0;
 
   // Resolution scaling on the EDRAM side is performed by multiplying the EDRAM

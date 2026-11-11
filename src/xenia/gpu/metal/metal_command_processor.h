@@ -316,6 +316,7 @@ class MetalCommandProcessor : public CommandProcessor,
   // deallocation.
   void PrepareForWait() override;
   void AwaitGpuWritesBeforeGuestRead() override;
+  void AwaitGpuWritesTo(uint32_t physical_address, uint32_t length) override;
   uint64_t GetHeldGpuWritesSubmission() override;
   void SubmitBeforeShortMemoryPoll() override { PrepareForWait(); }
   void PollCompletedSubmission() override;
@@ -373,6 +374,9 @@ class MetalCommandProcessor : public CommandProcessor,
 
   // StripMerge::Backend.
   const char* StripMergeBegin(const StripMerge::Layout& layout) override;
+  bool StripMergeMemoryUnfinished(uint32_t address, uint32_t length) override {
+    return UnfinishedGpuWriteSubmission(address, length) != 0;
+  }
   // Issues the draw once, or in each band of the merged render targets when
   // it addresses the strip's band (strip_merge_replicate_draw_). After
   // ApplyViewportAndScissor.
@@ -1655,6 +1659,20 @@ class MetalCommandProcessor : public CommandProcessor,
   std::vector<AdaptiveFenceTest> adaptive_fence_tests_;
   void SubmitResolvesAtGpuFence() override;
   void AdaptiveJudgeFenceTests();
+  // GPU output under the read watch that may not have completed: guest
+  // signals aren't held behind it, and the command processor thread's own
+  // accesses of guest memory aren't watched, so those wait for it
+  // (AwaitGpuWritesTo). The last submission holding such output and the pages
+  // it may be in, cleared once that submission has completed. Command
+  // processor thread only.
+  uint64_t watched_gpu_writes_last_submission_ = 0;
+  uint32_t watched_gpu_writes_page_min_ = UINT32_MAX;
+  uint32_t watched_gpu_writes_page_max_ = 0;
+  void NoteWatchedGpuWrite(uint32_t address, uint32_t length);
+  // The latest submission not yet complete that wrote watched output into the
+  // range, or 0.
+  uint64_t UnfinishedGpuWriteSubmission(uint32_t address, uint32_t length);
+  // Awaited export output under the resolve read watch: the ranges export
   // Whether a resolve recorded now is guarded by a read watch.
   bool ResolveReadWatchActive() const;
   // The last submission handed to the GPU, for other threads.
