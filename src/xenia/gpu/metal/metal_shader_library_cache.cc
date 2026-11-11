@@ -37,8 +37,9 @@ struct RecordHeader {
   uint64_t key_high;
   uint32_t entry_point_length;
   uint32_t metallib_length;
+  uint32_t used_buffer_mask;
 };
-static_assert(sizeof(RecordHeader) == 24);
+static_assert(sizeof(RecordHeader) == 32);
 
 // The main executable's LC_UUID: every link makes a new one.
 std::string ExecutableUuid() {
@@ -159,9 +160,7 @@ void MetalShaderLibraryCache::Open(const std::filesystem::path& path,
       if (end > data.size()) {
         break;
       }
-      locations_[Key{record.key_low, record.key_high}] =
-          Location{entry_point_offset, record.entry_point_length,
-                   metallib_offset, record.metallib_length};
+      locations_[Key{record.key_low, record.key_high}] = Location{
       offset = end;
       valid_end = end;
     }
@@ -232,13 +231,14 @@ bool MetalShaderLibraryCache::Find(const Key& key, Entry& entry_out) {
   entry_out.metallib.assign(
       data_.data() + location.metallib_offset,
       data_.data() + location.metallib_offset + location.metallib_length);
+  entry_out.used_buffer_mask = location.used_buffer_mask;
   ++hits_;
   return true;
 }
 
 void MetalShaderLibraryCache::Store(const Key& key,
                                     const std::vector<uint8_t>& metallib,
-                                    const std::string& entry_point_name) {
+                                    const std::string& entry_point_name,
   if (metallib.empty() || metallib.size() > kMaxRecordBytes ||
       entry_point_name.size() > 256) {
     return;
@@ -247,8 +247,11 @@ void MetalShaderLibraryCache::Store(const Key& key,
   if (!file_ || locations_.count(key) || !stored_.emplace(key, true).second) {
     return;
   }
-  RecordHeader record{key.low, key.high, uint32_t(entry_point_name.size()),
-                      uint32_t(metallib.size())};
+  RecordHeader record{key.low,
+                      key.high,
+                      uint32_t(entry_point_name.size()),
+                      uint32_t(metallib.size()),
+                      used_buffer_mask,
   // One write per record, so a stop between records leaves whole ones.
   std::vector<uint8_t> bytes(sizeof(record) + entry_point_name.size() +
                              metallib.size());

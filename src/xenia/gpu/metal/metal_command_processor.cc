@@ -1111,10 +1111,10 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
     return ShaderCompileStatus::kFailed;
   }
   if (cacheable && !metallib.empty()) {
-    shader_library_cache_.Store(
-        key, metallib,
-        static_cast<DxilShader::DxilTranslation*>(translation)
-            ->entry_point_name());
+    auto* dxil_translation =
+        static_cast<DxilShader::DxilTranslation*>(translation);
+    shader_library_cache_.Store(key, metallib,
+                                dxil_translation->entry_point_name(),
   }
   return ShaderCompileStatus::kReady;
 }
@@ -7621,6 +7621,11 @@ bool MetalCommandProcessor::IssueDrawDxil(
   MTL::RenderPipelineState* pipeline = nullptr;
   DxilTessellationShaders* tessellation_shaders = nullptr;
   bool bound_placeholder = false;
+  // The converter bind points the pipeline's functions can read, by stage.
+  // Tessellated pipelines run more functions than the two translations, so
+  // they keep every bind point.
+  uint32_t vertex_buffer_mask = ~uint32_t(0);
+  uint32_t pixel_buffer_mask = ~uint32_t(0);
   if (is_tessellated) {
     if (!EnsureTessellatorTablesBuffer()) {
       return false;
@@ -7793,7 +7798,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
   if (!PrepareDrawTextures(used_texture_mask, regs)) {
     // TODO(xenios-jp): a draw given up here, or for a failed translation or
     // pipeline above, leaves what Update decided for it: transfers cut around a
-    // clear
+    // clear quad are not put back.
     return true;
   }
   if (texture_cache_) {
@@ -7880,7 +7885,8 @@ bool MetalCommandProcessor::IssueDrawDxil(
                      dxil_guest_constant_versions_[3]};
   if (!dxil_binder_.Bind(current_render_encoder_, dxil_vertex_shader,
                          bind_pixel_shader, constants, memexport_used,
-                         is_tessellated)) {
+                         is_tessellated, vertex_buffer_mask,
+                         pixel_buffer_mask)) {
     return false;
   }
 
@@ -7943,16 +7949,36 @@ bool MetalCommandProcessor::IssueDrawDxil(
       UseRenderEncoderResource(draw_index_buffer.buffer,
                                MTL::ResourceUsageRead);
     }
+    // A vertex function that declares neither bind point gets the same draw
+    // without the two pushes.
+    const bool push_draw_arguments =
+        (vertex_buffer_mask &
+         ((uint32_t(1) << kIRArgumentBufferDrawArgumentsBindPoint) |
+          (uint32_t(1) << kIRArgumentBufferUniformsBindPoint))) != 0;
     DrawStripMergeBands([&]() {
       if (draw_index_buffer.indexed) {
-        IRRuntimeDrawIndexedPrimitives(
-            current_render_encoder_, draw_index_buffer.primitive_type,
-            draw_index_buffer.index_count, draw_index_buffer.index_type,
-            draw_index_buffer.buffer, draw_index_buffer.offset);
-      } else {
+        if (push_draw_arguments) {
+          IRRuntimeDrawIndexedPrimitives(
+              current_render_encoder_, draw_index_buffer.primitive_type,
+              draw_index_buffer.index_count, draw_index_buffer.index_type,
+              draw_index_buffer.buffer, draw_index_buffer.offset);
+        } else {
+          current_render_encoder_->drawIndexedPrimitives(
+              draw_index_buffer.primitive_type,
+              NS::UInteger(draw_index_buffer.index_count),
+              draw_index_buffer.index_type, draw_index_buffer.buffer,
+              NS::UInteger(draw_index_buffer.offset), NS::UInteger(1),
+              NS::Integer(0), NS::UInteger(0));
+        }
+      } else if (push_draw_arguments) {
         IRRuntimeDrawPrimitives(current_render_encoder_,
                                 draw_index_buffer.primitive_type, uint64_t(0),
                                 uint64_t(draw_index_buffer.index_count));
+      } else {
+        current_render_encoder_->drawPrimitives(
+            draw_index_buffer.primitive_type, NS::UInteger(0),
+            NS::UInteger(draw_index_buffer.index_count), NS::UInteger(1),
+            NS::UInteger(0));
       }
     });
   }
@@ -9862,7 +9888,12 @@ void MetalCommandProcessor::ApplyDepthStencilState(
     uint32_t ref_back = primitive_polygonal && depth_control.backface_enable
                             ? stencil_ref_mask_back.stencilref
                             : ref_front;
-    current_render_encoder_->setStencilReferenceValues(ref_front, ref_back);
+    uint32_t reference = ref_front | (ref_back << 8);
+    if (!msl_stencil_reference_valid_ || msl_stencil_reference_ != reference) {
+      current_render_encoder_->setStencilReferenceValues(ref_front, ref_back);
+      msl_stencil_reference_valid_ = true;
+      msl_stencil_reference_ = reference;
+    }
   }
 }
 

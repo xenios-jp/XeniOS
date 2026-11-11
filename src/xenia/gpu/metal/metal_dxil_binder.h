@@ -62,7 +62,8 @@ class MetalDxilBinder {
   // everything they reference resident.
   bool Bind(MTL::RenderCommandEncoder* encoder,
             const SpirvShader* vertex_shader, const SpirvShader* pixel_shader,
-            const Constants& constants, bool memexport_used, bool tessellated);
+            const Constants& constants, bool memexport_used, bool tessellated,
+            uint32_t vertex_buffer_mask, uint32_t pixel_buffer_mask);
 
   // Drops every reused upload slice. Call before the transient argument pages
   // they live in can be recycled.

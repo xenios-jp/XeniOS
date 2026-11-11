@@ -53,11 +53,19 @@ class DxilShader : public SpirvShader {
     // Loads a Metal library this translation was compiled to earlier (see
     // MetalShaderLibraryCache) instead of translating the guest shader.
     bool LoadMetallib(MTL::Device* device, const std::vector<uint8_t>& metallib,
-                      const std::string& entry_point_name);
+                      const std::string& entry_point_name,
+                      uint32_t used_buffer_mask);
 
     MTL::Library* metal_library() const { return metal_library_; }
     MTL::Function* metal_function() const { return metal_function_; }
     const std::string& entry_point_name() const { return entry_point_name_; }
+    // Which of the Metal Shader Converter bind points (the descriptor and
+    // sampler heaps, the top-level argument buffer, the draw arguments and
+    // the draw uniforms) the compiled function can read, a bit a buffer
+    // index. A function compiled by spirv2air never declares the last two and
+    // declares a heap only for a shader with textures or samplers; one from
+    // the converter may declare any. Other buffer indices aren't described.
+    uint32_t used_buffer_mask() const { return used_buffer_mask_; }
 
    private:
     // A pixel shader that reads its render targets
@@ -79,6 +87,7 @@ class DxilShader : public SpirvShader {
     MTL::Library* metal_library_ = nullptr;
     MTL::Function* metal_function_ = nullptr;
     std::string entry_point_name_;
+    uint32_t used_buffer_mask_ = ~uint32_t(0);
   };
 
  protected:
