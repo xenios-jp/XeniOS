@@ -99,6 +99,10 @@ class MetalBufferHazards {
   void Retire();
   // Includes ended encoders in command buffers that have not been committed.
   bool HasPendingAccess(uint32_t start, uint32_t length) const;
+  // The command buffers with recorded accesses that are committed and not
+  // finished, other than `except`. They stay retained until Retire.
+  void GetCommittedUnfinished(MTL::CommandBuffer* except,
+                              std::vector<MTL::CommandBuffer*>& out) const;
 
   // For a command buffer released without a commit - nothing in it will run.
   void Discard(MTL::CommandBuffer* command_buffer);

@@ -279,6 +279,20 @@ bool MetalBufferHazards::HasPendingAccess(uint32_t start,
   return false;
 }
 
+void MetalBufferHazards::GetCommittedUnfinished(
+    MTL::CommandBuffer* except, std::vector<MTL::CommandBuffer*>& out) const {
+  for (const auto& group : groups_) {
+    if (group->command_buffer == except) {
+      continue;
+    }
+    auto status = group->command_buffer->status();
+    if (status >= MTL::CommandBufferStatusCommitted &&
+        status < MTL::CommandBufferStatusCompleted) {
+      out.push_back(group->command_buffer);
+    }
+  }
+}
+
 MetalBufferHazards::Group& MetalBufferHazards::GetGroup(
     MTL::CommandBuffer* command_buffer) {
   if (last_group_ && last_group_->command_buffer == command_buffer) {

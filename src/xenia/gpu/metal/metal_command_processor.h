@@ -1448,6 +1448,8 @@ class MetalCommandProcessor : public CommandProcessor,
   bool ff_blend_factor_valid_ = false;
 
   std::atomic<uint64_t> completed_command_buffers_{0};
+  // Scratch for TracePlaybackWillWriteMemory.
+  std::vector<MTL::CommandBuffer*> await_all_side_command_buffers_;
   std::atomic<uint32_t> pending_completion_handlers_{0};
   // Command buffers that finished with anything but Completed, and the kinds
   // already logged (bits 0-31: error codes, 32-63: other statuses), so each

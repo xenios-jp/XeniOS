@@ -2188,13 +2188,31 @@ void MetalCommandProcessor::TracePlaybackWillWriteMemory(uint32_t base_ptr,
       render_target_cache_ &&
       render_target_cache_->PostPassResolvesWrite(base_ptr, length);
   auto* hazards = shared_memory_->hazards();
+  // The open encoders publish their accesses to the tracker only when they
+  // end: the render pass, and the compute encoder resolves and texture loads
+  // share.
   if (post_pass_write || !hazards ||
       render_encoder_shared_memory_hazards_.HasAccess(base_ptr, length) ||
+      shared_compute_hazards_.HasAccess(base_ptr, length) ||
       hazards->HasPendingAccess(base_ptr, length)) {
     // Submission alone does not keep the GPU from seeing a later CPU restore.
     // Consume this recorded version before overwriting aliased guest RAM.
     int64_t wait_start_ns = GetSteadyTimeNs();
     AwaitAllQueueOperationsCompletion();
+    // Texture loads that could not use the main command buffer are committed
+    // in command buffers of their own, which no submission number names, and
+    // with zero-copy they read guest memory when the GPU runs them. The
+    // hazard tracker holds every command buffer that accesses the shared
+    // memory buffer. Only here: nothing during play waits for them.
+    if (shared_memory_ && shared_memory_->hazards()) {
+      await_all_side_command_buffers_.clear();
+      shared_memory_->hazards()->GetCommittedUnfinished(
+          nullptr, await_all_side_command_buffers_);
+      for (MTL::CommandBuffer* command_buffer :
+           await_all_side_command_buffers_) {
+        command_buffer->waitUntilCompleted();
+      }
+    }
     NoteGpuWait(GpuWaitReason::kTracePlayback, wait_start_ns);
   }
 }
