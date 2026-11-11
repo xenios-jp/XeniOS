@@ -50,6 +50,15 @@ namespace {
 using cpu::JitCorpus;
 using cpu::ppc::PPCContext;
 
+// The corpus holds the whole FPSCR in its field, wherever the context keeps the
+// summary bits.
+void StoreWholeFpscr(const PPCContext* context,
+                     std::vector<uint8_t>* registers) {
+  const uint32_t fpscr = context->fpscr_value();
+  std::memcpy(registers->data() + offsetof(PPCContext, fpscr), &fpscr,
+              sizeof(fpscr));
+}
+
 constexpr uint64_t kSampleMs = 10000;
 constexpr size_t kFunctions = 32;
 constexpr uint32_t kInvocationsPerFunction = 8;
@@ -418,6 +427,7 @@ uint64_t Session::OnEntry(PPCContext* context, cpu::GuestFunction* function,
     auto registers = reinterpret_cast<const uint8_t*>(context);
     invocation_.entry_registers.assign(registers,
                                        registers + JitCorpus::kRegistersSize);
+    StoreWholeFpscr(context, &invocation_.entry_registers);
     deadline_ms_ = Clock::QueryHostUptimeMillis() + kBudgetMs;
     function->Call(context->thread_state, return_address);
     deadline_ms_ = Clock::QueryHostUptimeMillis() + kSnapshotBudgetMs;
@@ -426,6 +436,7 @@ uint64_t Session::OnEntry(PPCContext* context, cpu::GuestFunction* function,
       Snapshot(&exit);
       invocation_.exit_registers.assign(registers,
                                         registers + JitCorpus::kRegistersSize);
+      StoreWholeFpscr(context, &invocation_.exit_registers);
     }
     // False if it blocked or yielded, letting other threads run.
     deadline_ms_ = 0;

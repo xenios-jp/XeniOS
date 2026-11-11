@@ -577,7 +577,7 @@ std::string GDBStub::RegisterRead(xe::cpu::ThreadDebugInfo* thread,
       return string_util::to_hex_string(xer);
     }
     case RegisterIndex::FPSCR:
-      return string_util::to_hex_string(thread->guest_context.fpscr.value);
+      return string_util::to_hex_string(thread->guest_context.fpscr_value());
   }
 
   if (rid >= int(RegisterIndex::PC)) {
@@ -617,9 +617,9 @@ std::string GDBStub::RegisterWrite(xe::cpu::ThreadDebugInfo* thread,
     case RegisterIndex::XER:
       return kGdbReplyError;
     case RegisterIndex::FPSCR:
-      guest_context->fpscr.value =
-          string_util::from_string<uint32_t>(value, true);
-      thread->guest_context.fpscr.value = guest_context->fpscr.value;
+      guest_context->set_fpscr_value(
+          string_util::from_string<uint32_t>(value, true));
+      thread->guest_context.set_fpscr_value(guest_context->fpscr_value());
       return kGdbReplyOK;
   }
 
