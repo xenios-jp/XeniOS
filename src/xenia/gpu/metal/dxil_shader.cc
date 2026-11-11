@@ -10,6 +10,7 @@
 #include "xenia/gpu/metal/dxil_shader.h"
 
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -115,9 +116,42 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
   return true;
 }
 
+// The converter bind points a function spirv2air compiles from |spirv| can
+// declare: always the top-level argument buffer, the descriptor heap only if
+// the module has an image type and the sampler heap only if it has a sampler
+// type (spirv2air declares them for variables of those types), and never the
+// draw arguments or uniforms. Every bit is set if the module can't be walked.
+static uint32_t GetSpirv2airBufferMask(const std::vector<uint8_t>& spirv) {
+  constexpr uint32_t kOpTypeImage = 25;
+  constexpr uint32_t kOpTypeSampler = 26;
+  const size_t word_count = spirv.size() / sizeof(uint32_t);
+  // kIRDescriptorHeapBindPoint, kIRSamplerHeapBindPoint and
+  // kIRArgumentBufferBindPoint, spirv2air's defaults.
+  constexpr uint32_t kDescriptorHeapBuffer = 0;
+  constexpr uint32_t kSamplerHeapBuffer = 1;
+  constexpr uint32_t kArgumentBuffer = 2;
+  uint32_t mask = uint32_t(1) << kArgumentBuffer;
+  for (size_t i = 5; i < word_count;) {
+    uint32_t word;
+    std::memcpy(&word, spirv.data() + i * sizeof(uint32_t), sizeof(word));
+    const uint32_t length = word >> 16;
+    if (!length || length > word_count - i) {
+      return ~uint32_t(0);
+    }
+    const uint32_t opcode = word & 0xFFFF;
+    if (opcode == kOpTypeImage) {
+      mask |= uint32_t(1) << kDescriptorHeapBuffer;
+    } else if (opcode == kOpTypeSampler) {
+      mask |= uint32_t(1) << kSamplerHeapBuffer;
+    }
+    i += length;
+  }
+  return mask;
+}
+
 bool DxilShader::DxilTranslation::LoadMetallib(
     MTL::Device* device, const std::vector<uint8_t>& metallib,
-    const std::string& entry_point_name) {
+    const std::string& entry_point_name, uint32_t used_buffer_mask) {
   if (metal_function_) {
     return true;
   }
@@ -139,6 +173,7 @@ bool DxilShader::DxilTranslation::LoadMetallib(
     library->release();
     return false;
   }
+  used_buffer_mask_ = used_buffer_mask;
   metal_library_ = library;
   metal_function_ = function;
   entry_point_name_ = entry_point_name;
@@ -175,6 +210,8 @@ bool DxilShader::DxilTranslation::CompileToAir(
     return false;
   }
   const char* compiler_name = native_compiled ? "spirv2air" : "msc";
+  used_buffer_mask_ =
+      native_compiled ? GetSpirv2airBufferMask(spirv) : ~uint32_t(0);
 
   const size_t metallib_size = conversion.metallib.size();
   NS::Error* error = nullptr;

@@ -46,6 +46,8 @@ class MetalShaderLibraryCache {
   struct Entry {
     std::vector<uint8_t> metallib;
     std::string entry_point_name;
+    // DxilShader::DxilTranslation::used_buffer_mask of the translation.
+    uint32_t used_buffer_mask = ~uint32_t(0);
   };
 
   ~MetalShaderLibraryCache() { Close(); }
@@ -85,6 +87,7 @@ class MetalShaderLibraryCache {
     uint32_t entry_point_length;
     size_t metallib_offset;
     uint32_t metallib_length;
+    uint32_t used_buffer_mask;
   };
 
   mutable std::mutex mutex_;

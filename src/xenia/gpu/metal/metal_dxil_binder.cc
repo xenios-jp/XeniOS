@@ -131,7 +131,8 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
                            const SpirvShader* vertex_shader,
                            const SpirvShader* pixel_shader,
                            const Constants& constants, bool memexport_used,
-                           bool tessellated) {
+                           bool tessellated, uint32_t vertex_buffer_mask,
+                           uint32_t pixel_buffer_mask) {
   SCOPE_profile_cpu_i("gpu", "MetalDxilBinder::Bind");
   if (!encoder || !converter_.is_available()) {
     return false;
@@ -354,13 +355,16 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
                                               NS::UInteger(bind_point));
   };
   auto bind_all_stages = [&](const Slice& slice, uint64_t bind_point) {
+    // Only to a stage whose function can read the bind point.
     if (tessellated) {
       bind(Stage::kObject, slice, bind_point);
       bind(Stage::kMesh, slice, bind_point);
-    } else {
+    } else if ((vertex_buffer_mask >> bind_point) & 1) {
       bind(Stage::kVertex, slice, bind_point);
     }
-    bind(Stage::kFragment, slice, bind_point);
+    if ((pixel_buffer_mask >> bind_point) & 1) {
+      bind(Stage::kFragment, slice, bind_point);
+    }
   };
   bind_all_stages(texture_heap, kIRDescriptorHeapBindPoint);
   bind_all_stages(sampler_heap, kIRSamplerHeapBindPoint);
