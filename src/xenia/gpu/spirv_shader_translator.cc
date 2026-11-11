@@ -3137,6 +3137,39 @@ void SpirvShaderTranslator::CompleteVertexOrTessEvalShaderInMain() {
         position_v2);
     spv::Id position_final = select_rect_list_value(
         position_v0, position_v1, position_v2, position_v3, type_float4_);
+    // A zero W that the hardware takes the reciprocal of puts the vertex at
+    // infinity along its XY, so a rectangle of such vertices covers the whole
+    // scissor (4D53085B writes the alpha of its character preview with a
+    // (x, y, 0, 0) rectangle). The host rasterizer is not given a W of 0, as
+    // what it draws for a primitive with no finite vertex differs between
+    // hosts, down to nothing: the XY is scaled far outside the viewport and W
+    // is made 1 instead.
+    {
+      spv::Id position_final_w =
+          builder_->createCompositeExtract(position_final, type_float_, 3);
+      spv::Id is_w_zero = builder_->createBinOp(
+          spv::OpLogicalAnd, type_bool_, is_w_not_reciprocal,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, position_final_w,
+                                const_float_0_));
+      uint_vector_temp_.clear();
+      uint_vector_temp_.push_back(0);
+      uint_vector_temp_.push_back(1);
+      spv::Id position_infinite_xy = builder_->createNoContractionBinOp(
+          spv::OpVectorTimesScalar, type_float2_,
+          builder_->createRvalueSwizzle(spv::NoPrecision, type_float2_,
+                                        position_final, uint_vector_temp_),
+          builder_->makeFloatConstant(float(1 << 20)));
+      id_vector_temp_.clear();
+      id_vector_temp_.push_back(position_infinite_xy);
+      id_vector_temp_.push_back(
+          builder_->createCompositeExtract(position_final, type_float_, 2));
+      id_vector_temp_.push_back(const_float_1_);
+      position_final = builder_->createTriOp(
+          spv::OpSelect, type_float4_,
+          builder_->smearScalar(spv::NoPrecision, is_w_zero, type_bool4_),
+          builder_->createCompositeConstruct(type_float4_, id_vector_temp_),
+          position_final);
+    }
     position_final = builder_->createTriOp(
         spv::OpSelect, type_float4_,
         builder_->smearScalar(spv::NoPrecision, rect_positions_have_nan,
