@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include "xenia/gpu/shared_memory.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 
 #include <cstddef>
@@ -5607,7 +5608,8 @@ spv::Id SpirvShaderTranslator::EndianSwap128Uint4(spv::Id value,
 }
 
 spv::Id SpirvShaderTranslator::LoadUint32FromSharedMemory(
-    spv::Id address_dwords_int) {
+    spv::Id address_dwords_int, bool zero_out_of_bounds,
+    bool address_in_bounds) {
   spv::StorageClass storage_class = features_.spirv_version >= spv::Spv_1_3
                                         ? spv::StorageClassStorageBuffer
                                         : spv::StorageClassUniform;
@@ -5616,14 +5618,42 @@ spv::Id SpirvShaderTranslator::LoadUint32FromSharedMemory(
 
   if (!binding_count_log2) {
     // Single binding - load directly.
+    if (address_in_bounds) {
+      id_vector_temp_.clear();
+      // The only SSBO struct member.
+      id_vector_temp_.push_back(const_int_0_);
+      id_vector_temp_.push_back(address_dwords_int);
+      return builder_->createLoad(
+          builder_->createAccessChain(storage_class, buffers_shared_memory_,
+                                      id_vector_temp_),
+          spv::NoPrecision);
+    }
+    // The address is not known to be within the buffer (a vertex index or a
+    // fetch constant may be anything), and a load outside it is undefined.
+    // Wrapping the address keeps the load itself inside.
+    spv::Id address_dwords_uint =
+        builder_->createUnaryOp(spv::OpBitcast, type_uint_, address_dwords_int);
+    spv::Id const_address_dwords_last =
+        builder_->makeUintConstant((SharedMemory::kBufferSize >> 2) - 1);
+    spv::Id address_dwords_wrapped = builder_->createBinOp(
+        spv::OpBitwiseAnd, type_uint_, address_dwords_uint,
+        const_address_dwords_last);
     id_vector_temp_.clear();
     // The only SSBO struct member.
     id_vector_temp_.push_back(const_int_0_);
-    id_vector_temp_.push_back(address_dwords_int);
-    return builder_->createLoad(
+    id_vector_temp_.push_back(address_dwords_wrapped);
+    spv::Id value = builder_->createLoad(
         builder_->createAccessChain(storage_class, buffers_shared_memory_,
                                     id_vector_temp_),
         spv::NoPrecision);
+    if (!zero_out_of_bounds) {
+      return value;
+    }
+    return builder_->createTriOp(
+        spv::OpSelect, type_uint_,
+        builder_->createBinOp(spv::OpULessThanEqual, type_bool_,
+                              address_dwords_uint, const_address_dwords_last),
+        value, const_uint_0_);
   }
 
   // The memory is split into multiple bindings - check which binding to load

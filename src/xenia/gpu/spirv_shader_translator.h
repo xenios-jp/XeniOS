@@ -1231,7 +1231,13 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Perform endian swap of a uint4 vector.
   spv::Id EndianSwap128Uint4(spv::Id value, spv::Id endian);
 
-  spv::Id LoadUint32FromSharedMemory(spv::Id address_dwords_int);
+  // Reads at or past the end of the shared memory return 0, like reads out of
+  // the bounds of a Direct3D 12 buffer or with Vulkan robust buffer access. If
+  // the caller replaces the result for every such address itself,
+  // zero_out_of_bounds may be false: the load is still done within the buffer.
+  spv::Id LoadUint32FromSharedMemory(spv::Id address_dwords_int,
+                                     bool zero_out_of_bounds = true,
+                                     bool address_in_bounds = false);
   // If `replace_mask` is provided, the bits specified in the mask will be
   // replaced with those from the value via OpAtomicAnd/Or.
   // Bits of `value` not in `replace_mask` will be ignored.

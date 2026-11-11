@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include "xenia/gpu/shared_memory.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 
 #include <climits>
@@ -150,6 +151,11 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
                                       fetch_constant_word_1,
                                       builder_->makeUintConstant(2)),
                 builder_->makeUintConstant((uint32_t(1) << 24) - 1))));
+    // The base is within the shared memory, but with the size the end may be
+    // past it, and nothing can be read there.
+    fetch_end = builder_->createBinBuiltinCall(
+        type_int_, ext_inst_glsl_std_450_, GLSLstd450SMin, fetch_end,
+        builder_->makeIntConstant(int(SharedMemory::kBufferSize >> 2)));
     builder_->createStore(fetch_end, var_main_vfetch_bound_);
     if (instr.attributes.stride) {
       // Convert the index to an integer by flooring or by rounding to the
@@ -189,6 +195,25 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
   uint32_t word_count = 0;
   uint32_t words_remaining = needed_words;
   uint32_t word_index;
+  // A load outside the shared memory is undefined even if its result is not
+  // used, so the loads are done from the element moved back into the buffer if
+  // any of its needed words is outside. Which words are used is decided by the
+  // comparison with fetch_end, which is not past the end of the buffer.
+  uint32_t word_first, word_last;
+  xe::bit_scan_forward(needed_words, &word_first);
+  word_last = 31 - xe::lzcnt(needed_words);
+  spv::Id load_address_first = builder_->createUnaryOp(
+      spv::OpBitcast, type_int_,
+      builder_->createBinBuiltinCall(
+          type_uint_, ext_inst_glsl_std_450_, GLSLstd450UMin,
+          builder_->createUnaryOp(
+              spv::OpBitcast, type_uint_,
+              builder_->createBinOp(
+                  spv::OpIAdd, type_int_, address,
+                  builder_->makeIntConstant(
+                      int(instr.attributes.offset + word_first)))),
+          builder_->makeUintConstant((SharedMemory::kBufferSize >> 2) -
+                                     (word_last - word_first + 1))));
   while (xe::bit_scan_forward(words_remaining, &word_index)) {
     words_remaining &= ~(1 << word_index);
     spv::Id word_address = address;
@@ -205,7 +230,16 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
     // hardware's bounds clamping. Games rely on this - e.g. an over-allocated
     // quad-list particle draw whose inactive vertices fetch 0 and collapse to a
     // degenerate (zero-area) primitive instead of exploding to garbage.
-    spv::Id loaded_word = LoadUint32FromSharedMemory(word_address);
+    // fetch_end is not past the end of the shared memory, so the comparison
+    // below also covers the addresses outside it (negative ones as well, as
+    // it is unsigned).
+    spv::Id loaded_word = LoadUint32FromSharedMemory(
+        word_index != word_first
+            ? builder_->createBinOp(
+                  spv::OpIAdd, type_int_, load_address_first,
+                  builder_->makeIntConstant(int(word_index - word_first)))
+            : load_address_first,
+        false, true);
     spv::Id word_in_bounds = builder_->createBinOp(spv::OpULessThan, type_bool_,
                                                    word_address, fetch_end);
     word_composite_constituents[word_count++] = builder_->createTriOp(
@@ -231,7 +265,6 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
                                    fetch_constant_word_1,
                                    builder_->makeUintConstant(0b11));
   }
-  words = EndianSwap32Uint(words, endian);
   words = EndianSwap32Uint(words, endian, true);
 
   spv::Id result = spv::NoResult;
