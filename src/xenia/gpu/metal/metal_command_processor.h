@@ -1673,6 +1673,33 @@ class MetalCommandProcessor : public CommandProcessor,
   // range, or 0.
   uint64_t UnfinishedGpuWriteSubmission(uint32_t address, uint32_t length);
   // Awaited export output under the resolve read watch: the ranges export
+  // draws of the open command buffer wrote, which FlushMemexportWatchRanges makes owners of
+  // their pages and arms before the command buffer is committed, or before
+  // the owners are looked up. Command processor thread only.
+  std::vector<std::pair<uint32_t, uint32_t>> memexport_watch_pending_;
+  void FlushMemexportWatchRanges();
+  // Guest pages (4 KB) holding watched export output, for attributing faults
+  // (any thread). Stale bits only miscount.
+  std::array<std::atomic<uint64_t>, (SharedMemory::kBufferSize >> 12) / 64>
+      memexport_watch_page_bits_{};
+  bool memexport_watch_any_pages_ = false;
+  bool IsMemexportWatchPage(uint32_t physical_address) const {
+    uint32_t page = (physical_address & 0x1FFFFFFF) >> 12;
+    return (memexport_watch_page_bits_[page >> 6].load(
+                std::memory_order_relaxed) >>
+            (page & 63)) &
+           1;
+  }
+  // Faults on those pages and the waits they made this frame. Past either
+  // bound in a frame, export output is awaited as without the watch for
+  // kMemexportWatchHoldoffFrames. Chosen, not measured.
+  std::atomic<uint32_t> memexport_watch_frame_faults_{0};
+  std::atomic<uint32_t> memexport_watch_frame_waits_{0};
+  static constexpr uint32_t kMemexportWatchMaxFrameFaults = 512;
+  static constexpr uint32_t kMemexportWatchMaxFrameWaits = 16;
+  static constexpr uint32_t kMemexportWatchHoldoffFrames = 600;
+  uint32_t memexport_watch_holdoff_frames_ = 0;
+  void EndMemexportWatchFrame();
   // Whether a resolve recorded now is guarded by a read watch.
   bool ResolveReadWatchActive() const;
   // The last submission handed to the GPU, for other threads.

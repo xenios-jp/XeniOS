@@ -2362,13 +2362,97 @@ void MetalCommandProcessor::NoteMemexportRangesWritten() {
   if (!shared_memory_ || memexport_ranges_.empty()) {
     return;
   }
+  // Awaited output can go under the resolve read watch instead of being
+  // waited for at coherency requests and signals (FlushMemexportWatchRanges).
+  bool watch = memexport_ranges_awaited_ && !memexport_watch_holdoff_frames_ &&
+               ResolveReadWatchActive();
   for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
     uint32_t base_bytes = memexport_range.base_address_dwords << 2;
     shared_memory_->RangeWrittenByGpu(base_bytes, memexport_range.size_bytes);
-    MarkMemexportPagesWritten(base_bytes, memexport_range.size_bytes,
-                              memexport_ranges_awaited_);
+    if (watch && memexport_range.size_bytes &&
+        base_bytes < SharedMemory::kBufferSize) {
+      memexport_watch_pending_.emplace_back(
+          base_bytes, std::min(memexport_range.size_bytes,
+                               SharedMemory::kBufferSize - base_bytes));
+      NoteWatchedGpuWrite(base_bytes, memexport_range.size_bytes);
+    } else {
+      MarkMemexportPagesWritten(base_bytes, memexport_range.size_bytes,
+                                memexport_ranges_awaited_);
+    }
+  }
+  if (watch) {
+    // A guest sync point submits this command buffer first
+    // (SubmitResolvesForGuestSync), which arms the watch before the commit.
+    resolve_unsubmitted_owner_ = true;
   }
   copy_resolve_writes_pending_ = true;
+}
+
+void MetalCommandProcessor::FlushMemexportWatchRanges() {
+  if (memexport_watch_pending_.empty()) {
+    return;
+  }
+  // One owner and one arm per run of ranges sharing pages, not per export
+  // draw. Still in the command buffer that holds the draws, so the owners
+  // name its submission.
+  std::sort(memexport_watch_pending_.begin(), memexport_watch_pending_.end());
+  bool active = ResolveReadWatchActive();
+  size_t i = 0;
+  while (i < memexport_watch_pending_.size()) {
+    uint32_t address = memexport_watch_pending_[i].first;
+    uint64_t end = uint64_t(address) + memexport_watch_pending_[i].second;
+    for (++i; i < memexport_watch_pending_.size() &&
+              memexport_watch_pending_[i].first <=
+                  ((end + 4095) & ~uint64_t(4095));
+         ++i) {
+      end = std::max(end, uint64_t(memexport_watch_pending_[i].first) +
+                              memexport_watch_pending_[i].second);
+    }
+    uint32_t length = uint32_t(end - address);
+    if (active && IsResolveDestinationResident(address, length)) {
+      // Not a destination to submit ahead for (SubmitRequestedResolve).
+      bool submit_requested = resolve_submit_requested_;
+      NoteResolveForReadback(address, length, false);
+      resolve_submit_requested_ = submit_requested;
+      uint32_t first_page = address >> 12;
+      uint32_t last_page = uint32_t((end - 1) >> 12);
+      for (uint32_t page = first_page; page <= last_page; ++page) {
+        memexport_watch_page_bits_[page >> 6].fetch_or(
+            uint64_t(1) << (page & 63), std::memory_order_relaxed);
+      }
+      memexport_watch_any_pages_ = true;
+    } else {
+      // Not watchable after all: awaited as without the watch.
+      MarkMemexportPagesWritten(address, length, true);
+    }
+  }
+  memexport_watch_pending_.clear();
+}
+
+void MetalCommandProcessor::EndMemexportWatchFrame() {
+  uint32_t faults =
+      memexport_watch_frame_faults_.exchange(0, std::memory_order_relaxed);
+  uint32_t waits =
+      memexport_watch_frame_waits_.exchange(0, std::memory_order_relaxed);
+  if (memexport_watch_holdoff_frames_) {
+    --memexport_watch_holdoff_frames_;
+  } else if (faults > kMemexportWatchMaxFrameFaults ||
+             waits > kMemexportWatchMaxFrameWaits) {
+    // The CPU works in the export pages every frame: each access faults and
+    // may wait for the GPU, which costs guest threads more than the await it
+    // replaces costs this one. Awaited as before for a while.
+    memexport_watch_holdoff_frames_ = kMemexportWatchHoldoffFrames;
+    XELOGW(
+        "Metal: export output read watch took {} faults and {} waits in a "
+        "frame; export output is awaited again for {} frames",
+        faults, waits, kMemexportWatchHoldoffFrames);
+  }
+  // Merged export ranges need not recur, so their read marks may never be
+  // taken; forgetting them only forgets which destinations were read.
+  std::lock_guard<std::mutex> lock(resolve_read_mutex_);
+  if (resolve_read_keys_.size() > 8192) {
+    resolve_read_keys_.clear();
+  }
 }
 
 bool MetalCommandProcessor::CanKeepRenderPassAfterTileResolve() const {
@@ -2978,6 +3062,9 @@ bool MetalCommandProcessor::FaultCopyResolveToGuestRam(
     AdaptiveNoteAccess(owner_it->first, owner_it->second.submission, true,
                        wait_ns);
   }
+  if (IsMemexportWatchPage(ranges.front().first)) {
+    memexport_watch_frame_waits_.fetch_add(1, std::memory_order_relaxed);
+  }
   if (!completed) {
     uint32_t hits =
         resolve_fault_bound_hits_.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -3221,6 +3308,12 @@ void MetalCommandProcessor::ResolveReadCallbackThunk(
   // A read that arrives before its resolve's submission asks for the
   // submission (ResolveOwnerStateAt).
   if (access == Memory::PhysicalAccess::kRead) {
+    command_processor->ResolveOwnerStateAt(physical_address, true);
+  }
+  if (command_processor->IsMemexportWatchPage(physical_address)) {
+    command_processor->memexport_watch_frame_faults_.fetch_add(
+        1, std::memory_order_relaxed);
+  }
   switch (access) {
     case Memory::PhysicalAccess::kRead:
       command_processor->MarkResolvePagesRead(physical_address, length);
@@ -3272,6 +3365,8 @@ uint64_t MetalCommandProcessor::UnfinishedGpuWriteSubmission(uint32_t address,
   if (watched_gpu_writes_page_min_ > watched_gpu_writes_page_max_ || !length) {
     return 0;
   }
+  // Export output of the open command buffer has no owners yet.
+  FlushMemexportWatchRanges();
   // As TranslatePhysical masks.
   address &= 0x1FFFFFFF;
   uint32_t first_page = address >> 12;
@@ -4000,6 +4095,7 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // autorelease pool drain.
   EndCommandBuffer();
   NoteResolveFrame();
+  EndMemexportWatchFrame();
 
   if (primitive_processor_ && frame_open_) {
     primitive_processor_->EndFrame();
@@ -7642,6 +7738,18 @@ bool MetalCommandProcessor::IssueCopy() {
 
   // The resolve overwrote any export output here, so no fence need await it.
   ClearMemexportPages(written_address, written_length);
+  if (memexport_watch_any_pages_ &&
+      written_address < SharedMemory::kBufferSize) {
+    // Faults there are no longer counted as export pages.
+    uint32_t end_page = std::min(written_address + written_length,
+                                 SharedMemory::kBufferSize) >>
+                        12;
+    for (uint32_t page = (written_address + 4095) >> 12; page < end_page;
+         ++page) {
+      memexport_watch_page_bits_[page >> 6].fetch_and(
+          ~(uint64_t(1) << (page & 63)), std::memory_order_relaxed);
+    }
+  }
   // With zero-copy the resolve writes guest RAM itself, which the guest may
   // read once a fence or interrupt tells it the GPU got past the resolve.
   if (shared_memory_->is_zero_copy()) {
@@ -9104,6 +9212,9 @@ void MetalCommandProcessor::MaybeSavePipelineArchive() {
 }
 
 void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
+  // Before the commit: export output of this command buffer goes under the
+  // read watch while its owners can still name this submission.
+  FlushMemexportWatchRanges();
   if (shader_storage_flush_needed_ || pipeline_storage_flush_needed_) {
     storage_writer_.RequestFlush(shader_storage_flush_needed_,
                                  pipeline_storage_flush_needed_);
