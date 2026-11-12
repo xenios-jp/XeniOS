@@ -24,6 +24,7 @@
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 #include "xenia/vfs/iso_metadata.h"
 #include "xenia/vfs/stfs_metadata.h"
+#include "xenia/vfs/xbe_metadata.h"
 #include "xenia/vfs/xex_metadata.h"
 #include "xenia/vfs/zar_metadata.h"
 #include "xenia/xbox.h"
@@ -446,6 +447,12 @@ bool BuildDiscoveredGameFromPath(const std::filesystem::path& path, IOSDiscovere
 
     game.system = IOSGameSystem::kXbox360;
     game.title = NormalizeGameTitleForUI(LibraryFallbackTitleFromPath(path));
+    // An original Xbox disc has no default.xex: its title ID is in default.xbe.
+    // With it the game gets its cover, compatibility and saved data like the rest.
+    if (auto xbe = xe::vfs::ExtractXbeMetadata(path); xbe.has_value() && xbe->title_id) {
+      game.title_id = xbe->title_id;
+      game.disc_number = xbe->disc_number;
+    }
     EnsureDiscoveredGameDiscList(&game);
     *game_out = std::move(game);
     return true;
