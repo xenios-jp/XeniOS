@@ -24,9 +24,9 @@
 namespace {
 
 constexpr IOSStorageKind kListedKinds[] = {
-    IOSStorageKind::kGames,     IOSStorageKind::kContent, IOSStorageKind::kSaves,
-    IOSStorageKind::kGameData,  IOSStorageKind::kShaders, IOSStorageKind::kOther,
-    IOSStorageKind::kLeftovers,
+    IOSStorageKind::kGames,    IOSStorageKind::kLinked,  IOSStorageKind::kContent,
+    IOSStorageKind::kSaves,    IOSStorageKind::kGameData, IOSStorageKind::kShaders,
+    IOSStorageKind::kOther,    IOSStorageKind::kLeftovers,
 };
 
 NSString* KindName(IOSStorageKind kind) {
@@ -45,6 +45,9 @@ NSString* KindName(IOSStorageKind kind) {
       return NSLocalizedString(@"Art, Logs and Other", @"storage: kind; also system software");
     case IOSStorageKind::kLeftovers:
       return NSLocalizedString(@"Leftover Files", @"storage: kind");
+    case IOSStorageKind::kLinked:
+      return NSLocalizedString(@"Linked Games", @"storage: kind; games in linked folders on "
+                                                @"this device");
     default:
       return @"";
   }
@@ -64,6 +67,8 @@ UIColor* KindColor(IOSStorageKind kind) {
       return [UIColor systemPurpleColor];
     case IOSStorageKind::kLeftovers:
       return [UIColor systemYellowColor];
+    case IOSStorageKind::kLinked:
+      return [UIColor systemGreenColor];
     default:
       return [UIColor systemGrayColor];
   }
@@ -271,6 +276,10 @@ enum class TitleAction {
   self.title = TitleName(title_);
   kinds_.clear();
   for (IOSStorageKind kind : kListedKinds) {
+    // The Games row says what a linked copy takes.
+    if (kind == IOSStorageKind::kLinked) {
+      continue;
+    }
     if (KindBytes(title_.bytes, kind) || (kind == IOSStorageKind::kGames && title_.in_library)) {
       kinds_.push_back(kind);
     }
@@ -520,7 +529,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   std::vector<size_t> library_titles_;
   std::vector<size_t> other_titles_;
   BOOL has_linked_games_;
-  // What the library's games take in linked folders: not the app's storage.
+  // What the library's games take in linked folders on other drives: not this
+  // device's storage, so not in the total.
   uint64_t linked_bytes_;
 }
 
@@ -634,7 +644,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
     (report.titles[i].in_library ? library_titles_ : other_titles_).push_back(i);
     has_linked_games_ |= IsLinkedOnly(report.titles[i]);
     if (report.titles[i].in_library) {
-      linked_bytes_ += report.titles[i].linked_bytes;
+      linked_bytes_ += report.titles[i].linked_bytes -
+                       KindBytes(report.titles[i].bytes, IOSStorageKind::kLinked);
     }
   }
   if (!library_titles_.empty()) {
@@ -769,8 +780,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
     case Section::kLibrary:
       return has_linked_games_
                  ? NSLocalizedString(@"A game in a linked folder shows its size there. "
-                                     @"Linked folders aren’t in the total above. Swipe a "
-                                     @"game to delete it.",
+                                     @"Linked folders on this device count in the total "
+                                     @"above. Swipe a game to delete it.",
                                      @"storage: footer")
                  : NSLocalizedString(@"Swipe a game to delete it.", @"storage: footer");
     case Section::kNotInLibrary:
@@ -849,7 +860,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
     case Section::kKinds: {
       if (indexPath.row > [self listedKindCount]) {
         cell.textLabel.text =
-            NSLocalizedString(@"Games in Linked Folders", @"storage: row; not in the total");
+            NSLocalizedString(@"Linked on Other Drives", @"storage: row; not in the total");
         cell.detailTextLabel.text = ByteText(linked_bytes_);
         cell.imageView.image = XERowSymbolImage(@"link", nil);
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -894,7 +905,9 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
           section == Section::kLibrary ? library_titles_ : other_titles_;
       const IOSStorageTitle& title = report.titles[rows[size_t(indexPath.row)]];
       cell.textLabel.text = TitleName(title);
-      cell.detailTextLabel.text = ByteText(title.Total() + title.linked_bytes);
+      cell.detailTextLabel.text =
+          ByteText(title.Total() + title.linked_bytes -
+                   KindBytes(title.bytes, IOSStorageKind::kLinked));
       cell.imageView.image = XERowSymbolImage(!title.in_library     ? @"questionmark.folder"
                                               : IsLinkedOnly(title) ? @"link"
                                                                     : @"gamecontroller",
