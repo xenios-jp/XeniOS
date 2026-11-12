@@ -600,6 +600,49 @@ jobs:
           # writes after its own configure.
           python3 -c "import runpy; runpy.run_path('xenia-build.py')['generate_version_h']('build-macos')"
 
+      - name: Import the Developer ID certificate
+        id: macos-signing
+        shell: bash
+        env:
+          P12_BASE64: "${{ secrets.XENIOS_MACOS_DEVELOPER_ID_P12 }}"
+          PUBLISH: "${{ needs.resolve-metadata.outputs.publish }}"
+        run: |
+          set -euo pipefail
+          if [ -z "${P12_BASE64}" ]; then
+            if [ "${PUBLISH}" = "true" ]; then
+              echo "::error::XENIOS_MACOS_DEVELOPER_ID_P12 is not configured"
+              exit 1
+            fi
+            echo "::warning::No Developer ID certificate: this build-only DMG is ad-hoc signed"
+            echo "identity=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          keychain="${RUNNER_TEMP}/xenios-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "${P12_BASE64}" | base64 --decode > "${RUNNER_TEMP}/developer-id.p12"
+          security create-keychain -p "${keychain_password}" "${keychain}"
+          security set-keychain-settings -lut 21600 "${keychain}"
+          security unlock-keychain -p "${keychain_password}" "${keychain}"
+          security import "${RUNNER_TEMP}/developer-id.p12" -k "${keychain}" \
+            -P "xenios" -T /usr/bin/codesign
+          rm -f "${RUNNER_TEMP}/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "${keychain_password}" "${keychain}" > /dev/null
+          # Put the signing keychain first in the search list, keeping the others.
+          keychains=("${keychain}")
+          while IFS= read -r line; do
+            line="${line//\"/}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            [ -n "${line}" ] && keychains+=("${line}")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "${keychains[@]}"
+          security find-identity -v -p codesigning "${keychain}" | \
+            grep -q "Developer ID Application" || {
+              echo "::error::the certificate holds no Developer ID Application identity"
+              exit 1
+            }
+          echo "identity=Developer ID Application" >> "$GITHUB_OUTPUT"
+
       - name: Build and package the DMG
         shell: bash
         env:
@@ -614,6 +657,12 @@ jobs:
           BUILD_NUMBER: "${{ needs.resolve-metadata.outputs.build_number }}"
           STAGE: "${{ needs.resolve-metadata.outputs.stage }}"
           ISSUED_AT: "${{ needs.resolve-metadata.outputs.issued_at }}"
+          # Developer ID signing with the hardened runtime, then notarization and
+          # stapling. Without the certificate the DMG is ad-hoc signed as before.
+          XENIOS_MACOS_SIGN_IDENTITY: "${{ steps.macos-signing.outputs.identity }}"
+          XENIOS_NOTARY_APPLE_ID: "${{ vars.XENIOS_NOTARY_APPLE_ID }}"
+          XENIOS_NOTARY_TEAM_ID: "${{ vars.XENIOS_NOTARY_TEAM_ID }}"
+          XENIOS_NOTARY_PASSWORD: "${{ secrets.XENIOS_NOTARY_PASSWORD }}"
         run: |
           set -euo pipefail
           if [ -z "${XENIOS_BUILD_ATTESTATION_KEY}" ]; then
@@ -622,6 +671,10 @@ jobs:
               exit 1
             fi
             echo "::warning::No attestation key: this build-only DMG reports itself as self-built"
+          fi
+          if [ "${PUBLISH}" = "true" ] && { [ -z "${XENIOS_NOTARY_PASSWORD}" ] || [ -z "${XENIOS_NOTARY_APPLE_ID}" ] || [ -z "${XENIOS_NOTARY_TEAM_ID}" ]; }; then
+            echo "::error::the XENIOS_NOTARY_PASSWORD secret or the XENIOS_NOTARY_APPLE_ID / XENIOS_NOTARY_TEAM_ID variables are not configured"
+            exit 1
           fi
 
           ./tools/build_apple_release.sh \
@@ -635,6 +688,16 @@ jobs:
             --issued-at "${ISSUED_AT}"
 
           test -f scratch/artifacts/xenios_macos_apple_silicon.dmg
+
+      - name: Remove the signing keychain
+        if: always()
+        shell: bash
+        run: |
+          keychain="${RUNNER_TEMP}/xenios-signing.keychain-db"
+          if [ -f "${keychain}" ]; then
+            security delete-keychain "${keychain}" || true
+          fi
+          rm -f "${RUNNER_TEMP}/developer-id.p12"
 
       - name: Upload the DMG
         uses: actions/upload-artifact@v4

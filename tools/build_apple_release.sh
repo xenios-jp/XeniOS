@@ -55,8 +55,13 @@ Notes:
   -G "Ninja Multi-Config" -DCMAKE_SYSTEM_NAME=iOS ...); this script builds
   its xenia-app target. The same goes for the macOS tree (cmake -S . -B DIR
   -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64).
-- The Mac app ships as XeniOS.app (com.xenios), ad-hoc signed. The CMake build
-  keeps its Xenia-edge name; the package is renamed.
+- The Mac app ships as XeniOS.app (com.xenios). It is ad-hoc signed unless
+  XENIOS_MACOS_SIGN_IDENTITY names a Developer ID Application identity in the
+  keychain; then it is signed with the hardened runtime, and the DMG is
+  notarized and stapled when XENIOS_NOTARY_PROFILE (a notarytool keychain
+  profile) or XENIOS_NOTARY_APPLE_ID, XENIOS_NOTARY_TEAM_ID and
+  XENIOS_NOTARY_PASSWORD are set. The CMake build keeps its Xenia-edge name;
+  the package is renamed.
 - Marketing version defaults to the latest reachable vX.Y.Z git tag.
 - If no matching tag is available, the marketing version falls back to 2.3.2.
 - Public release stage defaults to stable.
@@ -561,27 +566,74 @@ stage_macos_app() {
   printf '%s' "$staged_app"
 }
 
-# Ad-hoc signs the nested dylibs, then the bundle with the app's entitlements
-# (JIT, unsigned executable memory, library validation off for the shader
-# converter).
+# Signs the nested dylibs, then the bundle with the app's entitlements (JIT,
+# unsigned executable memory, library validation off for the shader
+# converter). Ad hoc unless XENIOS_MACOS_SIGN_IDENTITY names a Developer ID
+# Application identity: then with the hardened runtime and a secure timestamp,
+# and without the debugging entitlements, which notarization refuses.
 sign_macos_app() {
   local app_bundle="$1"
   local entitlements="$2"
   local frameworks_dir="$app_bundle/Contents/Frameworks"
-
-  codesign --remove-signature "$app_bundle" >/dev/null 2>&1 || true
-  if [ -d "$frameworks_dir" ]; then
-    find "$frameworks_dir" -name "*.dylib" -type f -print0 | \
-      xargs -0 -I{} codesign --force --sign - --timestamp=none "{}"
+  local identity="$macos_sign_identity"
+  local sign_args=(--force --sign - --timestamp=none)
+  if [ -n "$identity" ]; then
+    sign_args=(--force --sign "$identity" --options runtime --timestamp)
+    local release_entitlements
+    release_entitlements="$(mktemp "${TMPDIR:-/tmp}/xenios_entitlements.XXXXXX")"
+    cp "$entitlements" "$release_entitlements"
+    /usr/libexec/PlistBuddy -c 'Delete :com.apple.security.get-task-allow' \
+      "$release_entitlements" >/dev/null 2>&1 || true
+    /usr/libexec/PlistBuddy -c 'Delete :com.apple.security.cs.allow-dyld-environment-variables' \
+      "$release_entitlements" >/dev/null 2>&1 || true
+    entitlements="$release_entitlements"
   fi
-  codesign --force --sign - --timestamp=none --entitlements "$entitlements" "$app_bundle"
+
   # Provenance and quarantine xattrs from the build break the seal on macOS 15.
   if ! xattr -cr "$app_bundle" >/dev/null 2>&1; then
     chmod -R u+w "$app_bundle" >/dev/null 2>&1 || true
     xattr -cr "$app_bundle" >/dev/null 2>&1 || \
       echo "warning: failed to clear one or more extended attributes in $app_bundle" >&2
   fi
+  codesign --remove-signature "$app_bundle" >/dev/null 2>&1 || true
+  if [ -d "$frameworks_dir" ]; then
+    find "$frameworks_dir" -name "*.dylib" -type f -print0 | \
+      xargs -0 -I{} codesign "${sign_args[@]}" "{}"
+  fi
+  codesign "${sign_args[@]}" --entitlements "$entitlements" "$app_bundle"
   codesign --verify --strict --deep "$app_bundle"
+}
+
+# With a Developer ID identity, signs the DMG; with notary credentials as well
+# (XENIOS_NOTARY_PROFILE, a notarytool keychain profile, or
+# XENIOS_NOTARY_APPLE_ID, XENIOS_NOTARY_TEAM_ID and XENIOS_NOTARY_PASSWORD),
+# notarizes it and staples the ticket. A rejection prints Apple's log and fails.
+notarize_macos_dmg() {
+  local dmg="$1"
+  [ -n "$macos_sign_identity" ] || return 0
+  codesign --force --timestamp --sign "$macos_sign_identity" "$dmg"
+  local auth=()
+  if [ -n "$notary_profile" ]; then
+    auth=(--keychain-profile "$notary_profile")
+  elif [ -n "$notary_apple_id" ]; then
+    auth=(--apple-id "$notary_apple_id" --team-id "$notary_team_id" --password "$notary_password")
+  else
+    echo "warning: no notary credentials, $dmg is signed but not notarized" >&2
+    return 0
+  fi
+  local result
+  result="$(xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json)" || true
+  local status id
+  status="$(printf '%s' "$result" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))' 2>/dev/null || true)"
+  id="$(printf '%s' "$result" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)"
+  echo "notarization: ${status:-no answer}"
+  if [ "$status" != "Accepted" ]; then
+    [ -n "$id" ] && xcrun notarytool log "$id" "${auth[@]}" >&2 || true
+    die "notarization of $dmg failed"
+  fi
+  xcrun stapler staple "$dmg"
+  xcrun stapler validate "$dmg"
+  spctl --assess --type open --context context:primary-signature "$dmg"
 }
 
 package_macos_dmg() {
@@ -682,6 +734,14 @@ attestation_key="${XENIOS_BUILD_ATTESTATION_KEY:-}"
 # compilers, codesign): only the stamping below uses it.
 unset XENIOS_BUILD_ATTESTATION_KEY
 attestation_key_id="${XENIOS_BUILD_ATTESTATION_KEY_ID:-ci-hmac-v1}"
+macos_sign_identity="${XENIOS_MACOS_SIGN_IDENTITY:-}"
+notary_profile="${XENIOS_NOTARY_PROFILE:-}"
+notary_apple_id="${XENIOS_NOTARY_APPLE_ID:-}"
+notary_team_id="${XENIOS_NOTARY_TEAM_ID:-}"
+notary_password="${XENIOS_NOTARY_PASSWORD:-}"
+# The notary password, like the attestation key, stays out of the environment of
+# the tools this script starts; notarytool gets it as an argument.
+unset XENIOS_NOTARY_PASSWORD
 ios_bundle_id="${XENIOS_IOS_BUNDLE_ID:-}"
 force_random_ios_bundle_id=0
 diagnostics_url="${XENIOS_DIAGNOSTICS_URL:-}"
@@ -888,7 +948,11 @@ fi
 
 if [ -n "$macos_build_dir" ]; then
   echo ""
-  echo "== macOS arm64 (CMake-built, ad-hoc-signed dmg) =="
+  if [ -n "$macos_sign_identity" ]; then
+    echo "== macOS arm64 (CMake-built, Developer ID signed dmg) =="
+  else
+    echo "== macOS arm64 (CMake-built, ad-hoc-signed dmg) =="
+  fi
 
   cmake --build "$macos_build_dir" --config "$buildcfg" --target xenia-app
 
@@ -911,6 +975,7 @@ if [ -n "$macos_build_dir" ]; then
     "$release_build_number" "$release_stage" "$commit_short" "$issued_at" "$attestation_key_id" "$attestation_key"
   sign_macos_app "$app_bundle" "$root/xenia.entitlements"
   package_macos_dmg "$app_bundle" "$out_dir/xenios_macos_apple_silicon.dmg" "$root/LICENSE"
+  notarize_macos_dmg "$out_dir/xenios_macos_apple_silicon.dmg"
 fi
 
 echo ""
