@@ -12,6 +12,7 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstring>
 #include <mutex>
@@ -81,6 +82,87 @@ bool IsVersionFolder(const std::filesystem::path& path) {
 bool IsNameForVersion(const std::string& name, const std::string& version) {
   return !version.empty() && name.compare(0, version.size(), version) == 0 &&
          (name.size() == version.size() || name[version.size()] == '-');
+}
+
+bool IsDashboardFileName(const std::filesystem::path& path) {
+  std::string name = path.filename().string();
+  std::transform(name.begin(), name.end(), name.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return name == "dash.xex";
+}
+
+// The files of a dashboard on its own, as copied from a console's flash rather
+// than installed from a USB system update: |source_path| is dash.xex, or a
+// folder with it and the files beside it (its shared resources, say). Empty
+// when it is neither.
+std::vector<std::filesystem::path> DashboardFilesOf(const std::filesystem::path& source_path) {
+  std::vector<std::filesystem::path> files;
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(source_path, ec)) {
+    if (IsDashboardFileName(source_path)) {
+      files.push_back(source_path);
+    }
+    return files;
+  }
+  bool has_dashboard = false;
+  for (std::filesystem::directory_iterator it(source_path, ec), end; !ec && it != end;
+       it.increment(ec)) {
+    const auto& path = it->path();
+    if (IsHiddenName(path) || !it->is_regular_file(ec)) {
+      continue;
+    }
+    has_dashboard |= IsDashboardFileName(path);
+    files.push_back(path);
+  }
+  if (!has_dashboard) {
+    files.clear();
+  }
+  return files;
+}
+
+// Puts a dashboard's |files| in |system_path| where a system update's install
+// has them: in its flash, beside an empty sysext and sysaux.
+SystemFilesResult InstallDashboardFiles(
+    const std::vector<std::filesystem::path>& files, const std::filesystem::path& system_path,
+    const std::function<bool(size_t done, size_t total)>& progress) {
+  const auto flash_path = system_path / "flash";
+  std::error_code ec;
+  for (const char* folder : {"flash", "sysext", "sysaux"}) {
+    std::filesystem::create_directories(system_path / folder, ec);
+    if (ec) {
+      return SystemFilesResult::kWriteFailed;
+    }
+  }
+  size_t done = 0;
+  for (const auto& file : files) {
+    if (progress && !progress(done, files.size())) {
+      return SystemFilesResult::kCancelled;
+    }
+    // The name the library and the launch look for, whatever its case was.
+    const auto name = IsDashboardFileName(file) ? std::filesystem::path("dash.xex")
+                                                : file.filename();
+    std::filesystem::copy_file(file, flash_path / name,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      XELOGE("iOS: copying a dashboard file failed: {}", ec.message());
+      return std::filesystem::exists(file, ec) ? SystemFilesResult::kWriteFailed
+                                               : SystemFilesResult::kReadFailed;
+    }
+    ++done;
+  }
+  if (progress) {
+    progress(done, files.size());
+  }
+  return SystemFilesResult::kSuccess;
+}
+
+// A system update, or a dashboard on its own.
+SystemFilesResult InstallSystemSource(
+    const std::filesystem::path& source_path, const std::filesystem::path& system_path,
+    const std::function<bool(size_t done, size_t total)>& progress) {
+  const auto dashboard_files = DashboardFilesOf(source_path);
+  return dashboard_files.empty() ? InstallSystemFiles(source_path, system_path, progress)
+                                 : InstallDashboardFiles(dashboard_files, system_path, progress);
 }
 
 // A folder of system-versions for |version| that isn't there yet.
@@ -400,7 +482,7 @@ SystemFilesResult StageIOSSystemSoftware(
   if (!IsIOSDashboardInstalled()) {
     // No version for games yet: this is it, installed where the only version
     // always was.
-    return InstallSystemFiles(source_path, system_path, progress);
+    return InstallSystemSource(source_path, system_path, progress);
   }
   std::error_code ec;
   // A previous install that couldn't be put back stays until it is dealt with.
@@ -412,7 +494,7 @@ SystemFilesResult StageIOSSystemSoftware(
   if (ec) {
     return SystemFilesResult::kWriteFailed;
   }
-  const auto result = InstallSystemFiles(source_path, incoming_path, progress);
+  const auto result = InstallSystemSource(source_path, incoming_path, progress);
   if (result != SystemFilesResult::kSuccess) {
     DiscardIOSStagedSystemSoftware();
     return result;

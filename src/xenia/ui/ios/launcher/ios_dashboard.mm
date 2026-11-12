@@ -400,6 +400,57 @@ bool RemoveIOSSystemSoftware() {
   return true;
 }
 
+UIDocumentPickerViewController* NewIOSSystemSoftwarePicker(id<UIDocumentPickerDelegate> delegate) {
+  NSMutableArray<UTType*>* types = [NSMutableArray arrayWithObjects:UTTypeZIP, UTTypeFolder, nil];
+  // dash.xex and the resources beside it.
+  for (NSString* extension in @[ @"xex", @"xzp" ]) {
+    if (UTType* type = [UTType typeWithFilenameExtension:extension]) {
+      [types addObject:type];
+    }
+  }
+  UIDocumentPickerViewController* picker =
+      [[[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types
+                                                                   asCopy:NO] autorelease];
+  picker.delegate = delegate;
+  picker.allowsMultipleSelection = YES;
+  return picker;
+}
+
+NSURL* IOSSystemSoftwareSourceForPickedURLs(NSArray<NSURL*>* urls) {
+  if (urls.count <= 1) {
+    return urls.firstObject;
+  }
+  NSFileManager* files = [NSFileManager defaultManager];
+  NSURL* folder = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+      URLByAppendingPathComponent:[@"dashboard-"
+                                      stringByAppendingString:[NSUUID UUID].UUIDString]
+                      isDirectory:YES];
+  if (![files createDirectoryAtURL:folder
+          withIntermediateDirectories:YES
+                           attributes:nil
+                                error:nil]) {
+    return nil;
+  }
+  for (NSURL* url in urls) {
+    const BOOL access_granted = [url startAccessingSecurityScopedResource];
+    NSError* error = nil;
+    const BOOL copied =
+        [files copyItemAtURL:url
+                       toURL:[folder URLByAppendingPathComponent:url.lastPathComponent]
+                       error:&error];
+    if (access_granted) {
+      [url stopAccessingSecurityScopedResource];
+    }
+    if (!copied) {
+      XELOGE("iOS: copying a picked system file failed: {}",
+             error.localizedDescription.UTF8String ?: "unknown");
+      [files removeItemAtURL:folder error:nil];
+      return nil;
+    }
+  }
+  return folder;
+}
+
 NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result) {
   switch (result) {
     case SystemFilesResult::kSuccess:
@@ -407,8 +458,9 @@ NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result) {
       return nil;
     case SystemFilesResult::kNotSystemUpdate:
       return NSLocalizedString(
-          @"This isn't a USB system update. Pick the system update zip from Microsoft, or the "
-          @"folder Files expands it to.",
+          @"This isn't a USB system update or a Dashboard. Pick the system update zip from "
+          @"Microsoft or the folder Files expands it to, or a folder with a Dashboard's "
+          @"dash.xex.",
           @"system software view controller: install error");
     case SystemFilesResult::kReadFailed:
       return NSLocalizedString(@"The system update couldn't be read.",

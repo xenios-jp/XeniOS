@@ -295,21 +295,22 @@ enum InstallRow : NSInteger {
         return NSLocalizedString(
             @"XeniOS downloads the system update from Microsoft and installs it. Or "
             @"install a USB system update you have in Files: the zip, or the folder "
-            @"Files expands it to.",
+            @"Files expands it to. A folder with a Dashboard's dash.xex installs too.",
             @"system software view controller: footer");
       }
       return [self hasDownloadedVersion]
                  ? NSLocalizedString(
                        @"Reinstall downloads the system update from Microsoft and installs it "
                        @"again. To add another version, install its USB system update from "
-                       @"Files: the zip, or the folder Files expands it to. Each version gets its "
-                       @"own Dashboard in the Library.",
+                       @"Files (the zip, or the folder Files expands it to) or a folder with its "
+                       @"Dashboard's dash.xex. Each version gets its own Dashboard in the "
+                       @"Library.",
                        @"system software view controller: footer")
                  : NSLocalizedString(
                        @"Download & Install adds the latest system update from Microsoft. To add "
-                       @"another version, install its USB system update from Files: the zip, or "
-                       @"the folder Files expands it to. Each version gets its own Dashboard in "
-                       @"the Library.",
+                       @"another version, install its USB system update from Files (the zip, or "
+                       @"the folder Files expands it to) or a folder with its Dashboard's "
+                       @"dash.xex. Each version gets its own Dashboard in the Library.",
                        @"system software view controller: footer");
     case kSectionRemove:
       return game_running_ ? NSLocalizedString(@"Quit the game to remove the system software.",
@@ -541,22 +542,22 @@ enum InstallRow : NSInteger {
 }
 
 - (void)presentInstallPicker {
-  // A copy, so the install reads local files the picker's access doesn't
-  // have to cover.
-  UIDocumentPickerViewController* picker =
-      [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeZIP, UTTypeFolder ]
-                                                                  asCopy:YES];
-  picker.delegate = self;
-  picker.allowsMultipleSelection = NO;
-  [self presentViewController:picker animated:YES completion:nil];
-  [picker release];
+  [self presentViewController:xe::ui::NewIOSSystemSoftwarePicker(self) animated:YES completion:nil];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController* __unused)controller
     didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-  NSURL* url = urls.firstObject;
-  if (url) {
+  if (!urls.count) {
+    return;
+  }
+  if (NSURL* url = xe::ui::IOSSystemSoftwareSourceForPickedURLs(urls)) {
     [self installFromURL:url];
+  } else {
+    XEPresentOKAlert(self,
+                     NSLocalizedString(@"Couldn't Install the System Software",
+                                       @"system software view controller: title"),
+                     xe::ui::IOSSystemSoftwareInstallFailureMessage(
+                         xe::ui::SystemFilesResult::kReadFailed));
   }
 }
 
