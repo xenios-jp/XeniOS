@@ -583,11 +583,12 @@ static std::vector<IOSConfigSection> BuildCompatibilitySections() {
 
 static std::vector<IOSConfigSection> BuildSystemSections() {
   std::vector<IOSConfigSection> sections;
+  // What XeniOS does when it starts.
   IOSConfigSection automation;
-  automation.title = "Automation";
+  automation.title = "JIT";
   AddUserDefaultBoolSetting(
       automation.items, kXeniaAutoOpenStikDebugOnLaunchPreferenceKey,
-      "Auto-Enable JIT via StikDebug",
+      "Turn On JIT Automatically",
       "Opens StikDebug when XeniOS starts, to turn on JIT and come back. Needs StikDebug set "
       "up with a pairing file.",
       false);
@@ -1064,7 +1065,7 @@ std::string IOSConfigCatalogTitle(IOSConfigCatalogKind kind) {
     case IOSConfigCatalogKind::kDiagnostics:
       return "Diagnostics";
     case IOSConfigCatalogKind::kSystem:
-      return "Automation";
+      return "Startup";
     case IOSConfigCatalogKind::kOnline:
       return "Online";
     case IOSConfigCatalogKind::kPerGame:
@@ -1237,7 +1238,7 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(IOSConfigCatalogKind
       PushFilteredSection(sections, all_sections, "Display",
                           {"present_letterbox", "framerate_limit",
                            "guest_display_refresh_cap"});
-      PushWholeSection(sections, all_sections, "Automation");
+      PushWholeSection(sections, all_sections, "JIT");
       return sections;
     }
   }

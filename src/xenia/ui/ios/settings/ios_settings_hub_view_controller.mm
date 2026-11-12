@@ -1705,6 +1705,15 @@ titleForFooterInSection:(NSInteger)section {
   XeniaSettingsHubSection* app = [XeniaSettingsHubSection
       sectionWithTitle:NSLocalizedString(@"App", @"settings hub view controller: title")
                  items:@[
+                   // What XeniOS does when it starts: turn on JIT, open a Dashboard.
+                   [XeniaSettingsHubItem
+                       itemWithKind:XeniaSettingsHubCategoryKindAutomation
+                              title:NSLocalizedString(@"Startup",
+                                                      @"settings hub view controller: title")
+                           subtitle:NSLocalizedString(@"JIT and the Dashboard.",
+                                                      @"settings hub view controller: title")
+                         symbolName:@"power"
+                          tintColor:nil],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAppearance
                               title:NSLocalizedString(@"Appearance",
@@ -1821,14 +1830,6 @@ titleForFooterInSection:(NSInteger)section {
                                         @"Fixes for specific games.",
                                         @"settings hub view controller: title")
                          symbolName:@"wrench.and.screwdriver.fill"
-                          tintColor:nil],
-                   [XeniaSettingsHubItem
-                       itemWithKind:XeniaSettingsHubCategoryKindAutomation
-                              title:NSLocalizedString(@"Automation",
-                                                      @"settings hub view controller: title")
-                           subtitle:NSLocalizedString(@"Open StikDebug on launch.",
-                                                      @"settings hub view controller: title")
-                         symbolName:@"wand.and.stars"
                           tintColor:nil],
                    [XeniaSettingsHubItem
                        itemWithKind:XeniaSettingsHubCategoryKindAdvancedDebug
