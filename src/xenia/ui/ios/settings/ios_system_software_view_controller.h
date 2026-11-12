@@ -14,9 +14,9 @@
 
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
-// Settings > Xbox 360 System Software: what is installed, Microsoft's page for
-// the USB system update, installing it from Files, and removing it. Installing
-// and removing wait for the running game to end.
+// Settings > Xbox 360 System Software: what is installed, downloading the
+// system update from Microsoft, installing one from Files (any version), and
+// removing it. Installing and removing wait for the running game to end.
 @interface XeniaSystemSoftwareViewController : XESheetTableViewController
 - (instancetype)initWithGameRunning:(BOOL)game_running;
 // Shown on its own, from the launcher, rather than inside Settings.
