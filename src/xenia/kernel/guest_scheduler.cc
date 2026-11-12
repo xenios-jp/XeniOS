@@ -1093,6 +1093,8 @@ bool GuestScheduler::YieldExecution(bool quantum_end) {
   if (cvars::guest_scheduler_stats) {
     stats_.skipped_yields.fetch_add(1, std::memory_order_relaxed);
   }
+  // TODO(xenios-jp): back off a thread that polls here with nothing else to run
+  // on its dispatch thread.
   return false;
 }
 
