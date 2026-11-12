@@ -49,7 +49,7 @@ void xe_load_game_art_thumbnail(uint32_t title_id, CGFloat max_pixels,
                                 void (^completion)(UIImage* _Nullable image));
 void xe_purge_game_art_cache(void);
 
-// Deletes cached covers for titles not in `keep_title_ids` (NSNumber uint32)
+// Deletes cached covers and backgrounds for titles not in `keep_title_ids` (NSNumber uint32)
 // that have not been shown for 30 days. Runs off the main thread.
 void xe_prune_game_art_cache(NSSet<NSNumber*>* keep_title_ids);
 
