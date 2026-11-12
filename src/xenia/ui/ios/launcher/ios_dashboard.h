@@ -27,7 +27,9 @@
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
 
+@class UIDocumentPickerViewController;
 @class XeniaIOSExternalLibraryAccess;
+@protocol UIDocumentPickerDelegate;
 
 // Posted on the main thread when the system software is installed or removed.
 extern NSNotificationName const XeniaIOSSystemSoftwareDidChangeNotification;
@@ -126,6 +128,16 @@ void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bo
                                    void (^confirm_replace)(NSString* version,
                                                            void (^answer)(BOOL replace)),
                                    void (^completion)(SystemFilesResult result));
+
+// The Files picker for what InstallIOSSystemSoftwareAsync installs: a system
+// update's zip or folder, or a dashboard on its own, as its folder or as
+// dash.xex picked with the files beside it. Nothing is copied: a folder can
+// only be picked in place.
+UIDocumentPickerViewController* NewIOSSystemSoftwarePicker(id<UIDocumentPickerDelegate> delegate);
+// What to install for the picker's |urls|: the one item picked, or a folder
+// in tmp with copies of the several files picked. Nil when they can't be
+// copied.
+NSURL* IOSSystemSoftwareSourceForPickedURLs(NSArray<NSURL*>* urls);
 
 // What a download that didn't succeed says. Nil for a finished or cancelled
 // one.

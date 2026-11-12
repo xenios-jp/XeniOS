@@ -263,20 +263,17 @@ constexpr CGFloat kContentWidth = 440.0;
     return;
   }
   if (stage_ == SetupStage::kGetUpdate) {
-    // A copy, so the install reads local files the picker's access doesn't
-    // have to cover.
-    UIDocumentPickerViewController* picker = [[[UIDocumentPickerViewController alloc]
-        initForOpeningContentTypes:@[ UTTypeZIP, UTTypeFolder ]
-                            asCopy:YES] autorelease];
-    picker.delegate = self;
-    picker.allowsMultipleSelection = NO;
-    [self presentViewController:picker animated:YES completion:nil];
+    [self presentViewController:xe::ui::NewIOSSystemSoftwarePicker(self)
+                       animated:YES
+                     completion:nil];
   }
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController* __unused)controller
     didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
-  if (NSURL* url = urls.firstObject) {
+  // Several files picked together are a dashboard's own. Copies that fail leave the page as
+  // it is, to pick again.
+  if (NSURL* url = xe::ui::IOSSystemSoftwareSourceForPickedURLs(urls)) {
     [self installFromURL:url];
   }
 }
