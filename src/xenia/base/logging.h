@@ -53,8 +53,9 @@ class LogSink {
 
 class FileLogSink final : public LogSink {
  public:
-  explicit FileLogSink(FILE* file, bool own_file)
-      : file_(file), owns_file_(own_file) {}
+  // max_bytes 0 is no limit; past it, the file stops growing.
+  explicit FileLogSink(FILE* file, bool own_file, uint64_t max_bytes = 0)
+      : file_(file), owns_file_(own_file), max_bytes_(max_bytes) {}
   ~FileLogSink();
 
   void Write(const char* buf, size_t size) override;
@@ -63,6 +64,8 @@ class FileLogSink final : public LogSink {
  private:
   FILE* file_;
   bool owns_file_;
+  uint64_t max_bytes_;
+  uint64_t written_ = 0;
 };
 
 class DebugPrintLogSink final : public LogSink {

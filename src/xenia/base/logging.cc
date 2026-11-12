@@ -57,6 +57,14 @@ DEFINE_bool(log_to_logcat, true, "Write log output to Android Logcat.",
             "Logging");
 #else
 DEFINE_path(log_file, "", "Logs are written to the given file", "Logging");
+#if XE_PLATFORM_IOS
+// The log is in Documents, so it is backed up and counts against the device.
+constexpr int32_t kLogFileMaxMbDefault = 256;
+#else
+constexpr int32_t kLogFileMaxMbDefault = 0;
+#endif  // XE_PLATFORM_IOS
+DEFINE_int32(log_file_max_mb, kLogFileMaxMbDefault,
+             "Largest size of the log file in MB, 0 for no limit.", "Logging");
 DEFINE_transient_bool(log_append, false,
                       "Append to existing log file instead of overwriting. "
                       "Set for the processes a running xenia starts.",
@@ -434,9 +442,21 @@ FileLogSink::~FileLogSink() {
 }
 
 void FileLogSink::Write(const char* buf, size_t size) {
-  if (file_) {
-    fwrite(buf, 1, size, file_);
+  if (!file_) {
+    return;
   }
+  if (max_bytes_ && written_ + size > max_bytes_) {
+    if (written_ <= max_bytes_) {
+      static const char kStopped[] =
+          "\n--- The log reached log_file_max_mb; nothing more is written. "
+          "---\n";
+      fwrite(kStopped, 1, sizeof(kStopped) - 1, file_);
+      written_ = max_bytes_ + 1;
+    }
+    return;
+  }
+  fwrite(buf, 1, size, file_);
+  written_ += size;
 }
 
 void FileLogSink::Flush() {
@@ -828,7 +848,8 @@ void InitializeLogging(const std::string_view app_name) {
       log_path = cvars::log_file;
     }
     logger_->AddLogSink(std::make_unique<FileLogSink>(
-        OpenLogFile(log_path, !cvars::log_append), true));
+        OpenLogFile(log_path, !cvars::log_append), true,
+        uint64_t(std::max(cvars::log_file_max_mb, 0)) << 20));
   }
 
   if (cvars::log_to_stdout) {
