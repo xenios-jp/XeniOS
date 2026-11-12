@@ -9,6 +9,7 @@
 
 #import "xenia/ui/ios/launcher/ios_jit_sheet_view_controller.h"
 
+#import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_theme_controls.h"
 
@@ -288,13 +289,56 @@ NSArray<NSLayoutConstraint*>* CenteredInScroll(UIView* view, UIScrollView* scrol
   header.translatesAutoresizingMaskIntoConstraints = NO;
   header_stack_ = [header retain];
 
+  // The same setting as Settings > Startup, where the player needs it: XeniOS does step 1 by
+  // itself each time it starts without JIT.
+  UILabel* automatic_title = [[[UILabel alloc] init] autorelease];
+  automatic_title.text =
+      NSLocalizedString(@"Open StikDebug Automatically", @"JIT sheet: switch title");
+  automatic_title.textColor = [XeniaTheme textPrimary];
+  automatic_title.numberOfLines = 0;
+  xe_apply_label_font(automatic_title, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  UILabel* automatic_detail = [[[UILabel alloc] init] autorelease];
+  automatic_detail.text = NSLocalizedString(@"Each time XeniOS starts without JIT.",
+                                            @"JIT sheet: switch caption");
+  automatic_detail.textColor = [XeniaTheme textSecondary];
+  automatic_detail.numberOfLines = 0;
+  xe_apply_label_font(automatic_detail, UIFontTextStyleSubheadline, 15.0, UIFontWeightRegular);
+  UIStackView* automatic_text = [[[UIStackView alloc]
+      initWithArrangedSubviews:@[ automatic_title, automatic_detail ]] autorelease];
+  automatic_text.axis = UILayoutConstraintAxisVertical;
+  automatic_text.spacing = 2.0;
+  automatic_text.isAccessibilityElement = NO;
+  automatic_title.isAccessibilityElement = NO;
+  automatic_detail.isAccessibilityElement = NO;
+  UISwitch* automatic_switch = [[[UISwitch alloc] init] autorelease];
+  automatic_switch.on = GetUserDefaultBool(kXeniaAutoOpenStikDebugOnLaunchPreferenceKey, false);
+  automatic_switch.onTintColor = [XeniaTheme accent];
+  automatic_switch.accessibilityLabel = automatic_title.text;
+  automatic_switch.accessibilityHint = automatic_detail.text;
+  [automatic_switch addTarget:self
+                       action:@selector(automaticChanged:)
+             forControlEvents:UIControlEventValueChanged];
+  [automatic_switch setContentHuggingPriority:UILayoutPriorityRequired
+                                      forAxis:UILayoutConstraintAxisHorizontal];
+  [automatic_switch setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                                    forAxis:UILayoutConstraintAxisHorizontal];
+  UIStackView* automatic_row = [[[UIStackView alloc]
+      initWithArrangedSubviews:@[ automatic_text, automatic_switch ]] autorelease];
+  automatic_row.axis = UILayoutConstraintAxisHorizontal;
+  automatic_row.alignment = UIStackViewAlignmentCenter;
+  automatic_row.spacing = 12.0;
+  automatic_row.layoutMarginsRelativeArrangement = YES;
+  automatic_row.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(12.0, 18.0, 12.0, 18.0);
+  UIView* automatic_group = NewGroup(@[ automatic_row ]);
+
   UIStackView* stack = [[[UIStackView alloc]
-      initWithArrangedSubviews:@[ header, steps, other_ways_group_ ]] autorelease];
+      initWithArrangedSubviews:@[ header, steps, automatic_group, other_ways_group_ ]] autorelease];
   stack.axis = UILayoutConstraintAxisVertical;
   stack.alignment = UIStackViewAlignmentFill;
   stack.spacing = 8.0;
   [stack setCustomSpacing:26.0 afterView:header];
-  [stack setCustomSpacing:16.0 afterView:steps];
+  [stack setCustomSpacing:12.0 afterView:steps];
+  [stack setCustomSpacing:16.0 afterView:automatic_group];
   stack.translatesAutoresizingMaskIntoConstraints = NO;
   content_stack_ = [stack retain];
 
@@ -438,6 +482,10 @@ NSArray<NSLayoutConstraint*>* CenteredInScroll(UIView* view, UIScrollView* scrol
                                open_stikdebug();
                              }
                            }];
+}
+
+- (void)automaticChanged:(UISwitch*)sender {
+  SetUserDefaultBool(kXeniaAutoOpenStikDebugOnLaunchPreferenceKey, sender.on);
 }
 
 - (void)helpTapped:(id)sender {

@@ -54,6 +54,8 @@ constexpr NSTimeInterval kXeniaPendingExternalLaunchTTLSeconds = 120.0;
 }  // namespace
 
 NSString* const kXeniaAutoOpenStikDebugOnLaunchPreferenceKey = @"ios_auto_open_stikdebug_on_launch";
+NSString* const kXeniaStikDebugAutomationPromptAnsweredPreferenceKey =
+    @"ios_stikdebug_automation_prompt_answered";
 NSString* const kXeniaLastAutoStikDebugAttemptTimestampPreferenceKey =
     @"ios_last_auto_stikdebug_attempt_timestamp";
 
@@ -678,6 +680,7 @@ bool ResetAllIOSConfigToDefaults(void) {
   }
   // iOS-only switches that live in NSUserDefaults rather than cvars.
   [GetUserDefaults() removeObjectForKey:kXeniaAutoOpenStikDebugOnLaunchPreferenceKey];
+  [GetUserDefaults() removeObjectForKey:kXeniaStikDebugAutomationPromptAnsweredPreferenceKey];
   // Display scaling is a display setting; Stretch would otherwise keep letterboxing off after
   // present_letterbox goes back to its default.
   XeniaIOSSetCurrentWindowScalingMode(XeniaIOSWindowScalingModeFit);

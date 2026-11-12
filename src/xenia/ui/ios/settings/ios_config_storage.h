@@ -22,6 +22,9 @@
 #include "xenia/ui/ios/settings/ios_config_models.h"
 
 extern NSString* const kXeniaAutoOpenStikDebugOnLaunchPreferenceKey;
+// The offer to open StikDebug automatically was answered with Not Now. It is made once; the
+// setting stays in Settings > Startup and on the JIT sheet.
+extern NSString* const kXeniaStikDebugAutomationPromptAnsweredPreferenceKey;
 extern NSString* const kXeniaLastAutoStikDebugAttemptTimestampPreferenceKey;
 
 // Writes the items of |sections| back to their cvars / user defaults. With |dirty_keys|, only

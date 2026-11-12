@@ -1694,7 +1694,9 @@ static bool XeJITUsable() {
     return NO;
   }
   SetUserDefaultBool(kXeniaPendingStikDebugAutomationPromptPreferenceKey, false);
-  return !GetUserDefaultBool(kXeniaAutoOpenStikDebugOnLaunchPreferenceKey, false);
+  // Offered once: whoever said Not Now has the switch on the JIT sheet and in Settings.
+  return !GetUserDefaultBool(kXeniaAutoOpenStikDebugOnLaunchPreferenceKey, false) &&
+         !GetUserDefaultBool(kXeniaStikDebugAutomationPromptAnsweredPreferenceKey, false);
 }
 
 - (void)presentStikDebugAutomationPromptWithCompletion:(void (^)(void))completion {
@@ -1711,8 +1713,9 @@ static bool XeJITUsable() {
           NSLocalizedString(@"Always Auto-Enable JIT?",
                             @"Alert title: offers to enable JIT through StikDebug automatically")
                        message:NSLocalizedString(
-                                   @"StikDebug enabled JIT successfully. XeniOS can use the same "
-                                   @"StikDebug handoff automatically next time JIT is missing.",
+                                   @"StikDebug turned JIT on. XeniOS can open it for you each "
+                                   @"time it starts without JIT. You can change this in Settings, "
+                                   @"under Startup.",
                                    @"Alert message: offers to enable JIT through StikDebug "
                                    @"automatically")
                 preferredStyle:UIAlertControllerStyleAlert];
@@ -1743,6 +1746,8 @@ static bool XeJITUsable() {
                                                          @"Alert button: dismiss without enabling")
                                  style:UIAlertActionStyleCancel
                                handler:^(__unused UIAlertAction* action) {
+                                 SetUserDefaultBool(
+                                     kXeniaStikDebugAutomationPromptAnsweredPreferenceKey, true);
                                  finish();
                                }]];
   [self presentViewController:alert animated:YES completion:nil];
@@ -1778,7 +1783,7 @@ static bool XeJITUsable() {
   self.launcherOverlayView.openStikDebugHandler = ^{
     [unsafe_self requestStikDebugJITHandoffForPendingLaunchPath:nullptr
                                               requirePreference:NO
-                                   promptForAutomationOnSuccess:NO];
+                                   promptForAutomationOnSuccess:YES];
   };
   self.launcherOverlayView.headerOverArtChangedHandler = ^{
     [unsafe_self setNeedsStatusBarAppearanceUpdate];
