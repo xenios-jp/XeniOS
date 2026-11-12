@@ -89,6 +89,54 @@ NSString* ByteText(uint64_t bytes) {
   return [formatter stringFromByteCount:static_cast<long long>(bytes)];
 }
 
+// A row's value at its trailing edge, with the chevron of a row that opens a page. A label of
+// its own: beside a long name the cell's detail label is the one that truncates ("7.11…"),
+// where this keeps its width and the name wraps.
+UIView* ValueAccessory(NSString* text, BOOL chevron) {
+  UILabel* label = [[[UILabel alloc] init] autorelease];
+  xe_apply_label_font(label, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  label.textColor = [XeniaTheme textSecondary];
+  label.text = text;
+  [label sizeToFit];
+  CGFloat width = ceil(label.bounds.size.width);
+  const CGFloat height = ceil(label.bounds.size.height);
+  UIView* view = [[[UIView alloc] init] autorelease];
+  label.frame = CGRectMake(0.0, 0.0, width, height);
+  [view addSubview:label];
+  if (chevron) {
+    UIImageSymbolConfiguration* symbol =
+        [UIImageSymbolConfiguration configurationWithTextStyle:UIFontTextStyleFootnote
+                                                         scale:UIImageSymbolScaleMedium];
+    symbol = [symbol configurationByApplyingConfiguration:
+                         [UIImageSymbolConfiguration
+                             configurationWithWeight:UIImageSymbolWeightSemibold]];
+    UIImageView* arrow = [[[UIImageView alloc]
+        initWithImage:[UIImage systemImageNamed:@"chevron.right" withConfiguration:symbol]]
+        autorelease];
+    arrow.tintColor = [UIColor tertiaryLabelColor];
+    [arrow sizeToFit];
+    const CGSize size = arrow.bounds.size;
+    arrow.frame = CGRectMake(width + 10.0, round((height - size.height) / 2.0), size.width,
+                             size.height);
+    [view addSubview:arrow];
+    width += 10.0 + ceil(size.width);
+  }
+  view.frame = CGRectMake(0.0, 0.0, width, height);
+  view.isAccessibilityElement = NO;
+  return view;
+}
+
+// The cell's detail text becomes its trailing value (see ValueAccessory).
+void MoveDetailToAccessory(UITableViewCell* cell) {
+  NSString* value = [[cell.detailTextLabel.text copy] autorelease];
+  cell.detailTextLabel.text = nil;
+  const BOOL chevron = cell.accessoryType == UITableViewCellAccessoryDisclosureIndicator;
+  cell.accessoryView = value.length ? ValueAccessory(value, chevron) : nil;
+  XEApplyAccessibility(cell, cell.textLabel.text, value, nil, cell.accessibilityTraits);
+}
+
+NSString* const kSortByNameDefaultsKey = @"XeniaStorageSortByName";
+
 // Played from a linked folder, with no copy in the app's storage.
 bool IsLinkedOnly(const IOSStorageTitle& title) {
   return title.has_linked_copy && !title.has_imported_copy;
@@ -386,6 +434,7 @@ enum class TitleAction {
     cell.imageView.image = SwatchImage(KindColor(kind));
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.accessibilityTraits = UIAccessibilityTraitStaticText;
+    MoveDetailToAccessory(cell);
     return cell;
   }
   const TitleAction action = actions_[size_t(indexPath.row)];
@@ -421,6 +470,7 @@ enum class TitleAction {
   cell.textLabel.text = text;
   cell.textLabel.textColor = color;
   cell.detailTextLabel.text = nil;
+  cell.accessoryView = nil;
   cell.imageView.image = XERowSymbolImage(symbol, color);
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityTraits = UIAccessibilityTraitButton;
@@ -513,7 +563,7 @@ enum class TitleAction {
 #pragma mark - Storage
 
 namespace {
-enum class Section { kKinds, kFree, kLibrary, kNotInLibrary };
+enum class Section { kKinds, kFree, kSort, kLibrary, kNotInLibrary };
 enum class FreeAction { kLeftovers, kGameData, kShaders };
 }  // namespace
 
@@ -648,6 +698,18 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
                        KindBytes(report.titles[i].bytes, IOSStorageKind::kLinked);
     }
   }
+  if ([[NSUserDefaults standardUserDefaults] boolForKey:kSortByNameDefaultsKey]) {
+    // The report is largest first.
+    auto by_name = [&report](size_t a, size_t b) {
+      return [TitleName(report.titles[a]) localizedStandardCompare:TitleName(report.titles[b])] ==
+             NSOrderedAscending;
+    };
+    std::stable_sort(library_titles_.begin(), library_titles_.end(), by_name);
+    std::stable_sort(other_titles_.begin(), other_titles_.end(), by_name);
+  }
+  if (library_titles_.size() + other_titles_.size() > 1) {
+    sections_.push_back(Section::kSort);
+  }
   if (!library_titles_.empty()) {
     sections_.push_back(Section::kLibrary);
   }
@@ -748,6 +810,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       return 1 + [self listedKindCount] + (linked_bytes_ ? 1 : 0);
     case Section::kFree:
       return NSInteger(free_actions_.size());
+    case Section::kSort:
+      return 1;
     case Section::kLibrary:
       return NSInteger(library_titles_.size());
     case Section::kNotInLibrary:
@@ -759,6 +823,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 - (NSString*)tableView:(__unused UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
   switch (sections_[size_t(section)]) {
     case Section::kKinds:
+    case Section::kSort:
       return nil;
     case Section::kFree:
       return NSLocalizedString(@"Free Up Space", @"storage: section");
@@ -853,10 +918,29 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   cell.textLabel.textColor = [XeniaTheme textPrimary];
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
   cell.accessoryType = UITableViewCellAccessoryNone;
+  cell.accessoryView = nil;
+  cell.detailTextLabel.text = nil;
   cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   cell.accessibilityTraits = UIAccessibilityTraitButton;
   const IOSStorageReport& report = measurement_.report;
   switch (section) {
+    case Section::kSort: {
+      cell.textLabel.text = NSLocalizedString(@"Sort By", @"storage: row");
+      cell.imageView.image = XERowSymbolImage(@"arrow.up.arrow.down", nil);
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      UISegmentedControl* order = [[[UISegmentedControl alloc] initWithItems:@[
+        NSLocalizedString(@"Size", @"storage: sort order"),
+        NSLocalizedString(@"Name", @"storage: sort order"),
+      ]] autorelease];
+      order.selectedSegmentIndex =
+          [[NSUserDefaults standardUserDefaults] boolForKey:kSortByNameDefaultsKey] ? 1 : 0;
+      [order addTarget:self
+                    action:@selector(onSortOrderChanged:)
+          forControlEvents:UIControlEventValueChanged];
+      [order sizeToFit];
+      cell.accessoryView = order;
+      return cell;
+    }
     case Section::kKinds: {
       if (indexPath.row > [self listedKindCount]) {
         cell.textLabel.text =
@@ -916,9 +1000,15 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       break;
     }
   }
-  XEApplyAccessibility(cell, cell.textLabel.text, cell.detailTextLabel.text, nil,
-                       cell.accessibilityTraits);
+  MoveDetailToAccessory(cell);
   return cell;
+}
+
+- (void)onSortOrderChanged:(UISegmentedControl*)sender {
+  [[NSUserDefaults standardUserDefaults] setBool:sender.selectedSegmentIndex == 1
+                                          forKey:kSortByNameDefaultsKey];
+  [self rebuild];
+  [self.tableView reloadData];
 }
 
 // A library game's row swipes to the launcher's delete sheet, as its page's Delete Game does.
