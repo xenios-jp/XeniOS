@@ -499,6 +499,22 @@ bool BuildDiscoveredGameFromPath(const std::filesystem::path& path, IOSDiscovere
     return true;
   }
 
+  // An original Xbox game copied out of its disc: a folder with default.xbe.
+  if (IsDefaultXbePath(path)) {
+    game.system = IOSGameSystem::kXbox360;
+    auto xbe = xe::vfs::ExtractXbeMetadata(path);
+    if (xbe.has_value()) {
+      game.title_id = xbe->title_id;
+      game.disc_number = xbe->disc_number;
+    }
+    game.title = NormalizeGameTitleForUI(xbe.has_value() && !xbe->title_name.empty()
+                                             ? xbe->title_name
+                                             : LibraryFallbackTitleFromPath(path));
+    EnsureDiscoveredGameDiscList(&game);
+    *game_out = std::move(game);
+    return true;
+  }
+
   if (!IsLikelyGodContainerFile(path)) {
     return false;
   }
