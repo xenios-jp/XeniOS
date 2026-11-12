@@ -4225,7 +4225,7 @@ static bool XeJITUsable() {
   }
   // An original Xbox game runs through the Xbox emulator, which the user brings. Said here,
   // before the game starts, so the launch doesn't fail for it later.
-  if (preparation.original_xbox && !xe::ui::IsIOSXeFuReady()) {
+  if (preparation.original_xbox && !xe::ui::IsIOSXeFuReady(preparation.title_id)) {
     [self presentMissingXboxEmulatorAlert];
     return;
   }
@@ -5112,6 +5112,7 @@ static bool XeJITUsable() {
                                                    gameTitle:game_title];
   config_controller.appContext = self.appContext;
   config_controller.gameRunning = self.gameRunning;
+  config_controller.originalXbox = game.original_xbox;
   XeniaLandscapeNavigationController* navigation_controller =
       [[XeniaLandscapeNavigationController alloc] initWithRootViewController:config_controller];
   [self presentGameScreen:navigation_controller preferredSize:CGSizeMake(640.0, 760.0)];

@@ -20,6 +20,10 @@ std::vector<IOSConfigSection> BuildIOSConfigSectionsForKind(
     IOSConfigCatalogKind kind);
 std::vector<IOSConfigSection> BuildAllCvarSections(void);
 std::vector<IOSConfigSection> BuildDebugSettingsSections(void);
+// The row that picks the Xbox emulator build one original Xbox game starts through, in a section
+// of its own. Without the Xbox emulator installed it opens System Software instead. Reads the
+// folder, which is quick.
+IOSConfigSection BuildIOSXboxEmulatorBuildSection(void);
 std::string IOSConfigCatalogTitle(IOSConfigCatalogKind kind);
 std::string ChoiceTitleForItem(const IOSConfigItem& item);
 
