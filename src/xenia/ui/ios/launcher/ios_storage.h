@@ -26,7 +26,8 @@ enum class IOSStorageKind : int {
   kSaves,      // Saves and profiles
   kGameData,   // The emulated cache drives games install to
   kShaders,    // Saved shaders and pipelines, the system's Metal cache
-  kOther,      // System software, art, logs, small caches
+  kSystem,     // Xbox 360 system software, every installed version
+  kOther,      // Art, logs, small caches
   kLeftovers,  // Nothing uses them: archiver copies, old temporary files
   kLinked,     // Games in linked folders that are on this device's own storage
   kCount,
@@ -78,6 +79,8 @@ struct IOSStorageTitle {
 
 struct IOSStorageReport {
   IOSStorageBytes bytes = {};
+  // The installed system software versions, all counted in bytes[kSystem].
+  size_t system_versions = 0;
   // Largest first.
   std::vector<IOSStorageTitle> titles;
   uint64_t Total() const;

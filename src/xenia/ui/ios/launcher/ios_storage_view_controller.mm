@@ -26,9 +26,9 @@
 namespace {
 
 constexpr IOSStorageKind kListedKinds[] = {
-    IOSStorageKind::kGames,    IOSStorageKind::kLinked,  IOSStorageKind::kContent,
-    IOSStorageKind::kSaves,    IOSStorageKind::kGameData, IOSStorageKind::kShaders,
-    IOSStorageKind::kOther,    IOSStorageKind::kLeftovers,
+    IOSStorageKind::kGames,  IOSStorageKind::kLinked,   IOSStorageKind::kContent,
+    IOSStorageKind::kSaves,  IOSStorageKind::kGameData, IOSStorageKind::kShaders,
+    IOSStorageKind::kSystem, IOSStorageKind::kOther,    IOSStorageKind::kLeftovers,
 };
 
 NSString* KindName(IOSStorageKind kind) {
@@ -43,8 +43,10 @@ NSString* KindName(IOSStorageKind kind) {
       return NSLocalizedString(@"Game Data", @"storage: kind; what games install to the cache");
     case IOSStorageKind::kShaders:
       return NSLocalizedString(@"Shaders", @"storage: kind");
+    case IOSStorageKind::kSystem:
+      return NSLocalizedString(@"System Software", @"storage: kind; the Xbox 360 system software");
     case IOSStorageKind::kOther:
-      return NSLocalizedString(@"Art, Logs and Other", @"storage: kind; also system software");
+      return NSLocalizedString(@"Art, Logs and Other", @"storage: kind");
     case IOSStorageKind::kLeftovers:
       return NSLocalizedString(@"Leftover Files", @"storage: kind");
     case IOSStorageKind::kLinked:
@@ -67,6 +69,8 @@ UIColor* KindColor(IOSStorageKind kind) {
       return [UIColor systemIndigoColor];
     case IOSStorageKind::kShaders:
       return [UIColor systemPurpleColor];
+    case IOSStorageKind::kSystem:
+      return [UIColor systemPinkColor];
     case IOSStorageKind::kLeftovers:
       return [UIColor systemYellowColor];
     case IOSStorageKind::kLinked:
@@ -1539,6 +1543,14 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       }
       const IOSStorageKind kind = [self kindAtRow:indexPath.row];
       cell.textLabel.text = KindName(kind);
+      if (kind == IOSStorageKind::kSystem && report.system_versions > 1) {
+        // Every installed version is in the size.
+        cell.textLabel.text = [NSString
+            stringWithFormat:NSLocalizedString(@"System Software (%lu Versions)",
+                                               @"storage: kind; the number of installed Xbox 360 "
+                                               @"system software versions"),
+                             static_cast<unsigned long>(report.system_versions)];
+      }
       cell.detailTextLabel.text = ByteText(KindBytes(report.bytes, kind));
       cell.imageView.image = SwatchImage(KindColor(kind));
       cell.selectionStyle = UITableViewCellSelectionStyleNone;
