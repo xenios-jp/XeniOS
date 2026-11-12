@@ -25,6 +25,7 @@
 
 #include "xenia/base/cvar.h"
 #include "xenia/ui/config_helpers.h"
+#include "xenia/ui/ios/launcher/ios_dashboard.h"
 
 #import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
@@ -598,6 +599,27 @@ static std::vector<IOSConfigSection> BuildSystemSections() {
                  "Opens the Xbox 360 Dashboard when XeniOS starts, instead of the library, "
                  "and goes back to it when a game exits. Needs the system software.",
                  false);
+  // Which one, once there is more than one: the one of the version games use,
+  // or always a given version's.
+  std::vector<std::pair<std::string, std::string>> startup_dashboards = {{"Version Games Use", ""}};
+  const std::string chosen_dashboard = xe::ui::IOSHomeDashboardVersion();
+  for (const auto& version : xe::ui::ListIOSSystemVersions()) {
+    if (!version.has_dashboard || version.version.empty() ||
+        (version.is_default && version.version != chosen_dashboard)) {
+      continue;
+    }
+    const bool listed =
+        std::any_of(startup_dashboards.begin(), startup_dashboards.end(),
+                    [&version](const auto& choice) { return choice.second == version.version; });
+    if (!listed) {
+      startup_dashboards.push_back({version.version, version.version});
+    }
+  }
+  if (startup_dashboards.size() > 1) {
+    AddStringChoiceSetting(dashboard.items, "boot_dashboard_version", "Startup Dashboard",
+                           "The system software version whose Dashboard XeniOS starts with.", "",
+                           std::move(startup_dashboards));
+  }
   PushIfNotEmpty(sections, std::move(dashboard));
 
   return sections;

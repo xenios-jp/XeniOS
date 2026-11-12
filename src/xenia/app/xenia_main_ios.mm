@@ -839,12 +839,12 @@ bool EmulatorAppIOS::OnInitialize() {
     if ((dashboard_session_.load(std::memory_order_acquire) || xe::ui::IsIOSDashboardHome()) &&
         !game_stop_requested_.load(std::memory_order_acquire)) {
       std::lock_guard<std::mutex> lock(launch_mutex_);
-      // The dashboard the session started on, which may be another version's
-      // than the one games use. Home is always that one.
+      // The dashboard the session started on, whichever version's it is, or
+      // else the home dashboard.
       const auto dashboard_path =
           dashboard_session_.load(std::memory_order_acquire) && !session_dashboard_path_.empty()
               ? session_dashboard_path_
-              : xe::ui::IOSInstalledDashboardPath();
+              : xe::ui::IOSHomeDashboardPath();
       std::error_code ec;
       if (std::filesystem::is_regular_file(dashboard_path, ec) &&
           !queued_launch_path_.has_value()) {
