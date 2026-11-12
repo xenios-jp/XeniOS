@@ -123,6 +123,7 @@ DECLARE_uint32(launch_flags);
 DECLARE_string(launch_data);
 
 DECLARE_string(cpu);
+DECLARE_uint32(kernel_build_version);
 
 namespace xe {
 namespace app {
@@ -562,32 +563,37 @@ cvar::ConfigVar<T>* FindConfigVar(const char* name) {
 // thread, like both functions.
 bool dashboard_system_version_applied = false;
 
-// The dashboard of a system software version other than the one games use,
-// like any executable in that version's folder, runs on its own version: the
-// folder is mounted in place of the system folder, and the kernel reports its
-// build, as on the console it comes from. For this launch only. Both are set
-// at the game config's priority, which no config file is written from and
-// which the next title's config load drops; the game the dashboard starts is a
-// launch of its own, on the version games use.
+// A dashboard, like any executable in its version's folder, runs on its own
+// system software: the kernel reports that version's build, as on the console
+// it comes from, and for a version other than the one games use its folder is
+// mounted in place of the system folder. For this launch only. Both are set at
+// the game config's priority, which no config file is written from and which
+// the next title's config load drops; the game the dashboard starts is a
+// launch of its own, on the version games use and the configured build.
 void ApplyDashboardSystemVersion(const std::filesystem::path& game_path) {
   const auto version = xe::ui::FindIOSSystemVersionForFile(game_path);
-  if (!version || version->is_default) {
+  if (!version) {
     return;
   }
-  auto* system_files_path = FindConfigVar<std::filesystem::path>("system_files_path");
-  if (!system_files_path) {
-    return;
+  if (!version->is_default) {
+    auto* system_files_path = FindConfigVar<std::filesystem::path>("system_files_path");
+    if (!system_files_path) {
+      return;
+    }
+    system_files_path->SetGameConfigValue(version->path);
+    dashboard_system_version_applied = true;
   }
-  system_files_path->SetGameConfigValue(version->path);
   // Unknown when the dashboard's version can't be read: the kernel keeps its
   // own then.
   auto* kernel_build_version = FindConfigVar<uint32_t>("kernel_build_version");
-  if (kernel_build_version && version->build) {
+  if (kernel_build_version && version->build && version->build != cvars::kernel_build_version) {
     kernel_build_version->SetGameConfigValue(version->build);
+    dashboard_system_version_applied = true;
   }
-  dashboard_system_version_applied = true;
-  XELOGI("iOS: this dashboard runs on its own system software, version {}",
-         version->version.empty() ? "unknown" : version->version);
+  if (dashboard_system_version_applied) {
+    XELOGI("iOS: this dashboard runs on its own system software, version {}",
+           version->version.empty() ? "unknown" : version->version);
+  }
 }
 
 // Drops what ApplyDashboardSystemVersion set for the last launch, also for a
