@@ -51,6 +51,8 @@ bool IsIOSDashboardInstalled();
 // boot_to_dashboard, as on edge: the installed dashboard is the home screen.
 // XeniOS opens on it, and every title exits back to it.
 bool IsIOSDashboardHome();
+// Whether |path| is the dashboard of an installed version, the one games use
+// or another.
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path);
 
 // The version games use, in the system folder, and every installed version.

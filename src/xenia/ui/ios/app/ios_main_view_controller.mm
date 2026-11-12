@@ -490,6 +490,8 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   uint32_t live_invite_launch_title_;
   // The dashboard was launched from the library; the games it starts exit back to it.
   BOOL dashboard_session_;
+  // That dashboard: the one of the system software games use, or another version's.
+  std::filesystem::path dashboard_session_path_;
   std::string active_touch_layout_local_id_;
   UITapGestureRecognizer* in_game_menu_tap_recognizer_;  // owned by self.view
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* active_external_game_accesses_;
@@ -780,10 +782,15 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [self.launcherOverlayView setDashboardInstalled:xe::ui::IsIOSDashboardInstalled()];
 }
 
+// |path| is the dashboard of an installed system software version.
+- (void)launchDashboardAtPath:(const std::filesystem::path&)path {
+  [self launchGameAtPath:path
+             displayName:NSLocalizedString(@"Xbox 360 Dashboard", @"main view controller: title")];
+}
+
+// The dashboard of the system software games use.
 - (void)launchDashboard {
-  [self launchGameAtPath:xe::ui::IOSInstalledDashboardPath()
-             displayName:NSLocalizedString(@"Xbox 360 Dashboard",
-                                           @"main view controller: title")];
+  [self launchDashboardAtPath:xe::ui::IOSInstalledDashboardPath()];
 }
 
 // The library's Dashboard tile starts the dashboard, or, before there is
@@ -2153,7 +2160,12 @@ static bool XeJITUsable() {
   if (self.gameStopInProgress) {
     return;
   }
-  [self launchDashboard];
+  // The one the session started on; with the dashboard as home, the one games use.
+  if (dashboard_session_ && !dashboard_session_path_.empty()) {
+    [self launchDashboardAtPath:dashboard_session_path_];
+  } else {
+    [self launchDashboard];
+  }
 }
 
 - (void)exitGameTapped:(UIButton*)sender {
@@ -4190,6 +4202,7 @@ static bool XeJITUsable() {
   [launched_accesses_ release];
   launched_accesses_ = [launch_external_accesses copy];
   dashboard_session_ = launches_dashboard;
+  dashboard_session_path_ = launches_dashboard ? launch_path : std::filesystem::path();
   self.inGameMenuOverlay.exitsToDashboard = NO;
 
   if (self.gameStopInProgress || self.gameRunning) {

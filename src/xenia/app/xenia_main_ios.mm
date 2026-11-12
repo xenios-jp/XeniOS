@@ -549,6 +549,61 @@ constexpr const char kPresenterAttachFailedMessage[] =
 constexpr const char kTitleUpdateInstallBusyMessage[] =
     "A title update is still installing. Wait for it to finish, then start the game again.";
 
+template <typename T>
+cvar::ConfigVar<T>* FindConfigVar(const char* name) {
+  if (!cvar::ConfigVars) {
+    return nullptr;
+  }
+  const auto it = cvar::ConfigVars->find(name);
+  return it != cvar::ConfigVars->end() ? dynamic_cast<cvar::ConfigVar<T>*>(it->second) : nullptr;
+}
+
+// Whether ApplyDashboardSystemVersion set its values. Only on the emulator
+// thread, like both functions.
+bool dashboard_system_version_applied = false;
+
+// The dashboard of a system software version other than the one games use,
+// like any executable in that version's folder, runs on its own version: the
+// folder is mounted in place of the system folder, and the kernel reports its
+// build, as on the console it comes from. For this launch only. Both are set
+// at the game config's priority, which no config file is written from and
+// which the next title's config load drops; the game the dashboard starts is a
+// launch of its own, on the version games use.
+void ApplyDashboardSystemVersion(const std::filesystem::path& game_path) {
+  const auto version = xe::ui::FindIOSSystemVersionForFile(game_path);
+  if (!version || version->is_default) {
+    return;
+  }
+  auto* system_files_path = FindConfigVar<std::filesystem::path>("system_files_path");
+  if (!system_files_path) {
+    return;
+  }
+  system_files_path->SetGameConfigValue(version->path);
+  // Unknown when the dashboard's version can't be read: the kernel keeps its
+  // own then.
+  auto* kernel_build_version = FindConfigVar<uint32_t>("kernel_build_version");
+  if (kernel_build_version && version->build) {
+    kernel_build_version->SetGameConfigValue(version->build);
+  }
+  dashboard_system_version_applied = true;
+  XELOGI("iOS: this dashboard runs on its own system software, version {}",
+         version->version.empty() ? "unknown" : version->version);
+}
+
+// Drops what ApplyDashboardSystemVersion set for the last launch, also for a
+// launch that reads no title config.
+void ClearDashboardSystemVersion() {
+  if (!std::exchange(dashboard_system_version_applied, false)) {
+    return;
+  }
+  if (auto* system_files_path = FindConfigVar<std::filesystem::path>("system_files_path")) {
+    system_files_path->ClearGameConfigValue();
+  }
+  if (auto* kernel_build_version = FindConfigVar<uint32_t>("kernel_build_version")) {
+    kernel_build_version->ClearGameConfigValue();
+  }
+}
+
 }  // namespace
 
 class EmulatorAppIOS final : public xe::ui::WindowedApp {
@@ -623,6 +678,9 @@ class EmulatorAppIOS final : public xe::ui::WindowedApp {
   std::mutex launch_mutex_;
   std::optional<std::filesystem::path> queued_launch_path_;
   LaunchExtras queued_launch_extras_;  // Of queued_launch_path_.
+  // The dashboard the session started on, which its games go back to: the one
+  // of the version games use, or another version's. Under launch_mutex_.
+  std::filesystem::path session_dashboard_path_;
   // Set by each launch from the library: whether it is the dashboard, which
   // boots with the console's animation and which a game it starts goes back to.
   std::atomic<bool> dashboard_session_{false};
@@ -773,11 +831,18 @@ bool EmulatorAppIOS::OnInitialize() {
     // does every game when the dashboard is home, unless the app is already
     // stopping it.
     if ((dashboard_session_.load(std::memory_order_acquire) || xe::ui::IsIOSDashboardHome()) &&
-        !game_stop_requested_.load(std::memory_order_acquire) &&
-        xe::ui::IsIOSDashboardInstalled()) {
+        !game_stop_requested_.load(std::memory_order_acquire)) {
       std::lock_guard<std::mutex> lock(launch_mutex_);
-      if (!queued_launch_path_.has_value()) {
-        queued_launch_path_ = xe::ui::IOSInstalledDashboardPath();
+      // The dashboard the session started on, which may be another version's
+      // than the one games use. Home is always that one.
+      const auto dashboard_path =
+          dashboard_session_.load(std::memory_order_acquire) && !session_dashboard_path_.empty()
+              ? session_dashboard_path_
+              : xe::ui::IOSInstalledDashboardPath();
+      std::error_code ec;
+      if (std::filesystem::is_regular_file(dashboard_path, ec) &&
+          !queued_launch_path_.has_value()) {
+        queued_launch_path_ = dashboard_path;
         queued_launch_extras_ = {};
       }
     }
@@ -1015,6 +1080,10 @@ bool EmulatorAppIOS::OnInitialize() {
       dashboard_session_.store(is_dashboard, std::memory_order_release);
       boot_animation_pending_.store(is_dashboard && !returns_to_dashboard,
                                     std::memory_order_release);
+      {
+        std::lock_guard<std::mutex> lock(launch_mutex_);
+        session_dashboard_path_ = is_dashboard ? game_path : std::filesystem::path();
+      }
     }
 
     bool should_queue_launch = false;
@@ -2264,11 +2333,15 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       }
     }
   } launch_status;
+  // Whatever the last launch ran on, this one starts from the system software
+  // games use.
+  ClearDashboardSystemVersion();
   if (launched_with_game) {
     ui::ios::BeginLaunchStatus();
     launch_status.open = true;
     XELOGI("iOS: Loading game config for: {}", xe::strip_pii(xe::path_to_utf8(game_path)));
     config::LoadGameConfigForFile(game_path);
+    ApplyDashboardSystemVersion(game_path);
     app_context().CallInUIThread([this]() {
       ApplyGuestDisplayRefreshCapToWindowFromUIThread(cvars::guest_display_refresh_cap);
     });

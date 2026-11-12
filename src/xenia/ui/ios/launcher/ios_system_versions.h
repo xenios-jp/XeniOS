@@ -65,6 +65,10 @@ std::vector<IOSSystemVersion> ListIOSSystemVersions();
 // The installed version |path| is the dashboard of.
 std::optional<IOSSystemVersion> FindIOSSystemVersionForDashboard(
     const std::filesystem::path& path);
+// The installed version whose folder the file |path| is in: its dashboard, or
+// another of its executables, which the dashboard starts.
+std::optional<IOSSystemVersion> FindIOSSystemVersionForFile(
+    const std::filesystem::path& path);
 
 // The size of a version's folder. Walks it, so keep it off the main thread.
 uint64_t MeasureIOSSystemVersion(const std::filesystem::path& version_path);

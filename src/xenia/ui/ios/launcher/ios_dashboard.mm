@@ -292,8 +292,7 @@ bool IsIOSDashboardInstalled() {
 bool IsIOSDashboardHome() { return cvars::boot_to_dashboard && IsIOSDashboardInstalled(); }
 
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path) {
-  std::error_code ec;
-  return !path.empty() && std::filesystem::equivalent(path, IOSInstalledDashboardPath(), ec);
+  return FindIOSSystemVersionForDashboard(path).has_value();
 }
 
 IOSSystemSoftwareInfo ReadIOSSystemSoftwareInfo() {
