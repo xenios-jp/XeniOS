@@ -34,6 +34,10 @@ enum class IOSStorageKind : int {
 
 using IOSStorageBytes = std::array<uint64_t, size_t(IOSStorageKind::kCount)>;
 
+// The console's own original Xbox emulator. Every original Xbox game runs as
+// it, so their shaders and saved data are kept together under its title ID.
+inline constexpr uint32_t kIOSStorageXboxEmulatorTitleId = 0xFFFE07D2;
+
 // One disc file of a library game.
 struct IOSStorageDisc {
   // As the library spells it, to find the disc again for Delete Disc.
@@ -53,6 +57,9 @@ struct IOSStorageTitle {
   uint32_t title_id = 0;
   std::string name;
   bool in_library = false;
+  // An original Xbox game, or what original Xbox games share
+  // (kIOSStorageXboxEmulatorTitleId).
+  bool original_xbox = false;
   // A copy of the game is in the app's own storage.
   bool has_imported_copy = false;
   // A copy of the game is in a linked folder (outside the app's storage).
