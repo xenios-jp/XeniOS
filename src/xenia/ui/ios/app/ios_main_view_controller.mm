@@ -779,7 +779,24 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 }
 
 - (void)onSystemSoftwareDidChange:(NSNotification* __unused)note {
-  [self.launcherOverlayView setDashboardInstalled:xe::ui::IsIOSDashboardInstalled()];
+  [self refreshDashboardTiles];
+}
+
+// One Dashboard tile for each installed system software version that has a dashboard, the one
+// games use first.
+- (void)refreshDashboardTiles {
+  NSMutableArray<XeniaIOSDashboardTile*>* tiles = [NSMutableArray array];
+  for (const auto& version : xe::ui::ListIOSSystemVersions()) {
+    if (!version.has_dashboard) {
+      continue;
+    }
+    XeniaIOSDashboardTile* tile = [[[XeniaIOSDashboardTile alloc] init] autorelease];
+    tile.dashboardPath = ToNSString(version.dashboard_path().string());
+    tile.version = version.version.empty() ? nil : ToNSString(version.version);
+    tile.build = version.build;
+    [tiles addObject:tile];
+  }
+  [self.launcherOverlayView setDashboardTiles:tiles];
 }
 
 // |path| is the dashboard of an installed system software version.
@@ -793,9 +810,20 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [self launchDashboardAtPath:xe::ui::IOSInstalledDashboardPath()];
 }
 
-// The library's Dashboard tile starts the dashboard, or, before there is
-// system software, sets it up.
-- (void)openDashboard {
+// A Dashboard tile of the library starts its system software version's
+// dashboard, given by its path. The tile there is before there is system
+// software (nil) sets it up.
+- (void)openDashboardAtPath:(NSString*)dashboard_path {
+  if (dashboard_path.length) {
+    const std::filesystem::path path(dashboard_path.fileSystemRepresentation);
+    if (xe::ui::IsIOSInstalledDashboardPath(path)) {
+      [self launchDashboardAtPath:path];
+    } else {
+      // Its version was removed since the tiles were made.
+      [self refreshDashboardTiles];
+    }
+    return;
+  }
   if (xe::ui::IsIOSDashboardInstalled()) {
     [self launchDashboard];
     return;
@@ -1509,7 +1537,7 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 
 - (void)controllerNavigationLaunchGameAtIndex:(NSInteger)index {
   if ([self.launcherOverlayView isDashboardItem:index]) {
-    [self openDashboard];
+    [self openDashboardAtPath:[self.launcherOverlayView dashboardPathForItem:index]];
     return;
   }
   index = [self.launcherOverlayView gameIndexForItem:index];
@@ -1740,13 +1768,13 @@ static bool XeJITUsable() {
   self.launcherOverlayView.importHandler = ^{
     [unsafe_self presentLibraryAddSheetFromView:unsafe_self.launcherOverlayView];
   };
-  self.launcherOverlayView.dashboardHandler = ^{
-    [unsafe_self openDashboard];
+  self.launcherOverlayView.dashboardHandler = ^(NSString* dashboardPath) {
+    [unsafe_self openDashboardAtPath:dashboardPath];
   };
   self.launcherOverlayView.dashboardSystemSoftwareHandler = ^{
     [unsafe_self openSystemSoftware];
   };
-  [self.launcherOverlayView setDashboardInstalled:xe::ui::IsIOSDashboardInstalled()];
+  [self refreshDashboardTiles];
   self.launcherOverlayView.openStikDebugHandler = ^{
     [unsafe_self requestStikDebugJITHandoffForPendingLaunchPath:nullptr
                                               requirePreference:NO

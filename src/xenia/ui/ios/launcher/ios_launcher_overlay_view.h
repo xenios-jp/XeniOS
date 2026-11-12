@@ -30,6 +30,16 @@ typedef NS_ENUM(NSInteger, XeniaIOSLauncherFocusTarget) {
   XeniaIOSLauncherFocusTargetLibrary,
 };
 
+// One Dashboard tile: an installed system software version with a dashboard.
+@interface XeniaIOSDashboardTile : NSObject
+// Its dash.xex, which the tile starts.
+@property(nonatomic, copy) NSString* dashboardPath;
+// Like "2.0.17559.0", drawn on the tile's art. Nil when it can't be read.
+@property(nonatomic, copy) NSString* version;
+// The build in the version, which picks the art's colours. 0 when it can't be read.
+@property(nonatomic, assign) uint32_t build;
+@end
+
 @interface XeniaIOSLauncherGameSnapshot : NSObject
 @property(nonatomic, copy) NSString* title;
 @property(nonatomic, copy) NSString* contentTypeName;
@@ -69,11 +79,12 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 @property(nonatomic, copy) void (^settingsHandler)(void);
 @property(nonatomic, copy) void (^profileHandler)(void);
 @property(nonatomic, copy) void (^importHandler)(void);
-// Back the Xbox 360 Dashboard's tile, which leads the library while it has
-// games (an empty library offers the dashboard beside Import instead). The
-// tile starts the dashboard, or sets it up; its menu also opens the system
-// software page.
-@property(nonatomic, copy) void (^dashboardHandler)(void);
+// Back the Xbox 360 Dashboard's tiles, one for each installed system software
+// version, which lead the library while it has games (an empty library offers
+// the dashboard beside Import instead). A tile starts its dashboard, given by
+// its path, or sets the dashboard up when there is none (nil); its menu also
+// opens the system software page.
+@property(nonatomic, copy) void (^dashboardHandler)(NSString* dashboardPath);
 @property(nonatomic, copy) void (^dashboardSystemSoftwareHandler)(void);
 // The pull-down menu behind +: ways to add games, and converting the library to ZAR.
 @property(nonatomic, retain) UIMenu* addMenu;
@@ -98,22 +109,27 @@ NSDate* XeniaIOSLastPlayedDate(uint32_t title_id);
 
 - (void)setGames:(NSArray<XeniaIOSLauncherGameSnapshot*>*)games;
 - (void)setJITAcquired:(BOOL)acquired;
-- (void)setDashboardInstalled:(BOOL)installed;
+// The installed dashboards, the one games use first. None shows one tile that
+// sets the dashboard up.
+- (void)setDashboardTiles:(NSArray<XeniaIOSDashboardTile*>*)tiles;
 - (void)setJITStatusText:(NSString*)text;
 - (void)setMemoryEntitlementEnabled:(BOOL)enabled;
 - (void)setMemoryEntitlementStatusText:(NSString*)text;
 // The ZAR suggestion's line, as "Save 18 GB" and what it takes; nil hides it.
 - (void)setZarSuggestionTitle:(NSString*)title detail:(NSString*)detail;
-// The focus index counts the grid's items, the Dashboard tile included; the
+// The focus index counts the grid's items, the Dashboard tiles included; the
 // game handlers above get indexes into the games.
 - (void)setFocusedGameIndex:(NSInteger)index scroll:(BOOL)scroll;
 - (NSInteger)focusedGameIndex;
 - (void)reloadGames;
 // Search and sort decide which games the grid shows and in what order, so the
-// grid's items map to game indexes through these. -1 when there is none (the
+// grid's items map to game indexes through these. -1 when there is none (a
 // Dashboard tile, past the end, or a game the search hides).
 - (NSInteger)libraryItemCount;
 - (BOOL)isDashboardItem:(NSInteger)item;
+// The dashboard a Dashboard tile starts; nil for the tile that sets it up, and
+// for a game's item.
+- (NSString*)dashboardPathForItem:(NSInteger)item;
 - (NSInteger)gameIndexForItem:(NSInteger)item;
 - (NSInteger)itemForGameIndex:(NSInteger)gameIndex;
 @property(nonatomic, assign, getter=isActionsEnabled) BOOL actionsEnabled;
