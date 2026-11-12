@@ -16,8 +16,9 @@
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 
 // Live log viewer presented as a sheet from the launcher and from the
-// in-game overlay. Tails xenia.log every 0.5s, supports refresh / share /
-// gamepad navigation (LB/RB to scroll, X share, Y refresh).
+// in-game overlay. Tails xenia.log every 0.5s into a console that colours each
+// line by level and can list only warnings or errors; supports refresh / share
+// / gamepad navigation (LB/RB to scroll, X share, Y refresh).
 @interface XeniaLogViewController : XESheetViewController
 - (BOOL)handleControllerActions:(const xe::ui::apple::ControllerActionSet&)actions;
 @end
