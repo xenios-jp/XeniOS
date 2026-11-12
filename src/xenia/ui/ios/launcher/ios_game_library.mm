@@ -474,6 +474,11 @@ bool BuildDiscoveredGameFromPath(const std::filesystem::path& path, IOSDiscovere
 
     game.system = IOSGameSystem::kXbox360;
     game.title = NormalizeGameTitleForUI(LibraryFallbackTitleFromPath(path));
+    // An archive of an original Xbox disc, as for a disc image above.
+    if (auto xbe = xe::vfs::ExtractXbeMetadata(path); xbe.has_value() && xbe->title_id) {
+      game.title_id = xbe->title_id;
+      game.disc_number = xbe->disc_number;
+    }
     EnsureDiscoveredGameDiscList(&game);
     *game_out = std::move(game);
     return true;
