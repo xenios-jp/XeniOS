@@ -355,6 +355,8 @@ constexpr CGFloat kContentWidth = 440.0;
           [self setProgressPercent:percent];
         }
       },
+      // First-time setup: there is no version to replace.
+      nil,
       ^(xe::ui::SystemFilesResult result) {
         [self finishInstallWithResult:result source:url];
         [self release];

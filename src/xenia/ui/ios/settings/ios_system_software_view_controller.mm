@@ -420,6 +420,7 @@ enum InstallRow : NSInteger {
       ^(int percent) {
         [self setProgressPercent:percent];
       },
+      nil,
       ^(xe::ui::SystemFilesResult result) {
         [self finishInstallWithResult:result pickedURL:url];
       });
