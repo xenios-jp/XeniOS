@@ -188,6 +188,12 @@ DEFINE_path(xefu_path, "",
             "under the storage root.",
             "Storage");
 
+DEFINE_path(system_files_path, "",
+            "Folder with the console's flash and system partitions, as Install "
+            "System Files lays them out (flash, sysext and sysaux). Empty for "
+            "the system folder under the storage root.",
+            "Storage");
+
 DEFINE_string(xefu_launcher, "xbox.xex",
               "File in xefu_path that original Xbox games start through. "
               "xbox.xex picks the XeFu build for each game as the console "
@@ -908,6 +914,11 @@ X_STATUS Emulator::LaunchDiscImage(const std::filesystem::path& path) {
   }
   SetDeploymentType(XDeploymentType::kOpticalDisc);
   return result;
+}
+
+std::filesystem::path Emulator::system_files_path() const {
+  return cvars::system_files_path.empty() ? storage_root_ / "system"
+                                          : cvars::system_files_path;
 }
 
 std::filesystem::path Emulator::xefu_path() const {
