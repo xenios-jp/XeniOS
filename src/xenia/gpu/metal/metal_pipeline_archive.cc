@@ -51,12 +51,24 @@ NS::URL* FileUrl(const std::filesystem::path& path) {
 // app's) at its top.
 std::vector<std::filesystem::path> GpuArchiverStagingDirs() {
   std::vector<std::filesystem::path> dirs;
+#if XE_PLATFORM_IOS
+  // The container's Library/Caches, where the archiver writes. Looking under
+  // confstr's per-user cache directory left 229 copies (1.2 GB) in
+  // Library/Caches/<bundle id>/com.apple.gpuarchiver on an iPhone.
+  const char* home = std::getenv("HOME");
+  if (!home || !*home) {
+    return dirs;
+  }
+  const std::filesystem::path cache =
+      std::filesystem::path(home) / "Library" / "Caches";
+#else
   char buffer[1024];
   size_t length = confstr(_CS_DARWIN_USER_CACHE_DIR, buffer, sizeof(buffer));
   if (!length || length > sizeof(buffer)) {
     return dirs;
   }
   const std::filesystem::path cache(buffer);
+#endif  // XE_PLATFORM_IOS
   if (CFStringRef identifier = CFBundleGetIdentifier(CFBundleGetMainBundle())) {
     char name[256];
     if (CFStringGetCString(identifier, name, sizeof(name),
@@ -277,8 +289,13 @@ void MetalPipelineArchive::Open(MTL::Device* device,
 #if XE_PLATFORM_IOS
   // What runs that ended without closing left. On macOS another instance could
   // be using them.
+  size_t leftovers = 0;
   for (const std::filesystem::path& entry : ListStaging()) {
-    std::filesystem::remove_all(entry, ec);
+    leftovers += std::filesystem::remove_all(entry, ec) ? 1 : 0;
+  }
+  if (leftovers) {
+    XELOGI("Metal pipeline archive: removed {} leftover archiver copies",
+           leftovers);
   }
 #endif  // XE_PLATFORM_IOS
   staging_before_ = ListStaging();
