@@ -10,7 +10,9 @@
 #import "xenia/ui/ios/launcher/ios_storage_view_controller.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -145,6 +147,19 @@ bool IsLinkedOnly(const IOSStorageTitle& title) {
 // The same game in a newer report: by title ID, or by path for a game without one.
 bool SameTitle(const IOSStorageTitle& a, const IOSStorageTitle& b) {
   return a.title_id ? a.title_id == b.title_id : !b.title_id && a.game_path == b.game_path;
+}
+
+// A row's identity while it is selected, across measures and sorts. Its section is part of
+// it: a game that left the library keeps its data under the same title ID, and that row was
+// never chosen.
+std::string SelectionKey(const IOSStorageTitle& title) {
+  std::string key = title.in_library ? "L:" : "N:";
+  if (title.title_id) {
+    char id[9];
+    std::snprintf(id, sizeof(id), "%08X", title.title_id);
+    return key + id;
+  }
+  return key + "/" + title.game_path;
 }
 
 NSString* TitleName(const IOSStorageTitle& title) {
@@ -778,6 +793,13 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   // What the library's games take in linked folders on other drives: not this
   // device's storage, so not in the total.
   uint64_t linked_bytes_;
+  // Select mode: rows of the two game lists are chosen, then deleted together.
+  BOOL selecting_;
+  std::set<std::string> selected_;  // SelectionKey of each chosen row
+  UIBarButtonItem* select_item_;
+  UIBarButtonItem* select_all_item_;
+  UIBarButtonItem* select_done_item_;
+  UIButton* delete_button_;  // Not retained: the page's commit button.
 }
 
 - (instancetype)initWithGameRunning:(BOOL)game_running {
@@ -790,6 +812,9 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [header_ release];
+  [select_item_ release];
+  [select_all_item_ release];
+  [select_done_item_ release];
   [super dealloc];
 }
 
@@ -805,6 +830,21 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   self.tableView.estimatedRowHeight = 52.0;
   header_ = [[XEStatusHeaderView alloc] init];
   [self refreshHeader];
+  select_item_ =
+      [[UIBarButtonItem alloc] initWithTitle:NSLocalizedString(@"Select", @"storage: header button")
+                                       style:UIBarButtonItemStylePlain
+                                      target:self
+                                      action:@selector(onSelectTapped:)];
+  select_all_item_ = [[UIBarButtonItem alloc]
+      initWithTitle:NSLocalizedString(@"Select All", @"storage: header button")
+              style:UIBarButtonItemStylePlain
+             target:self
+             action:@selector(onSelectAllTapped:)];
+  select_done_item_ =
+      [[UIBarButtonItem alloc] initWithTitle:NSLocalizedString(@"Done", @"storage: header button")
+                                       style:UIBarButtonItemStylePlain
+                                      target:self
+                                      action:@selector(onSelectDoneTapped:)];
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(storageDidChange:)
                                                name:XeniaStorageDidChangeNotification
@@ -912,6 +952,279 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   if (!other_titles_.empty()) {
     sections_.push_back(Section::kNotInLibrary);
   }
+  // A row stays selected only while it is still listed, in the same section.
+  std::set<std::string> still_listed;
+  for (const IOSStorageTitle& title : report.titles) {
+    const std::string key = SelectionKey(title);
+    if (selected_.count(key)) {
+      still_listed.insert(key);
+    }
+  }
+  selected_.swap(still_listed);
+  if (library_titles_.empty() && other_titles_.empty()) {
+    selecting_ = NO;
+  }
+  [self refreshSelectChrome];
+}
+
+#pragma mark Select
+
+- (size_t)selectableCount {
+  return library_titles_.size() + other_titles_.size();
+}
+
+// Select in the header; while selecting, Select All and Done there and Delete at the bottom.
+- (void)refreshSelectChrome {
+  if (!self.isViewLoaded || !select_item_) {
+    return;
+  }
+  const size_t selectable = [self selectableCount];
+  select_all_item_.title = selectable && selected_.size() >= selectable
+                               ? NSLocalizedString(@"Deselect All", @"storage: header button")
+                               : NSLocalizedString(@"Select All", @"storage: header button");
+  // The same items each time, so the header is laid out again only when they change. Done is
+  // last, next to ✕.
+  XESetSheetActions(self, selecting_   ? @[ select_all_item_, select_done_item_ ]
+                          : selectable ? @[ select_item_ ]
+                                       : @[]);
+  // The header's buttons take the title's room on a phone.
+  self.navigationItem.title = selecting_ ? @"" : self.title;
+  if (selecting_ && !delete_button_) {
+    delete_button_ = XESetFormCommit(self, @"", self, @selector(onDeleteSelectedTapped:));
+    // The page's one commit button, in the colour of what it does.
+    delete_button_.configurationUpdateHandler = ^(UIButton* button) {
+      UIButtonConfiguration* config = [[button.configuration copy] autorelease];
+      const BOOL usable = button.enabled;
+      config.background.backgroundColor =
+          [[XeniaTheme statusError] colorWithAlphaComponent:usable ? 1.0 : 0.3];
+      config.baseForegroundColor = usable ? [UIColor colorWithWhite:0.0 alpha:1.0]
+                                          : [UIColor colorWithWhite:1.0 alpha:0.5];
+      button.configuration = config;
+    };
+  }
+  if (!delete_button_) {
+    return;
+  }
+  UIButtonConfiguration* config = [[delete_button_.configuration copy] autorelease];
+  config.title =
+      selected_.empty()
+          ? NSLocalizedString(@"Delete", @"storage: delete the selected rows; none selected")
+          : [NSString stringWithFormat:NSLocalizedString(@"Delete (%lu)",
+                                                         @"storage: delete the selected rows; "
+                                                         @"how many"),
+                                       (unsigned long)selected_.size()];
+  delete_button_.configuration = config;
+  delete_button_.enabled = !selected_.empty();
+  [delete_button_ setNeedsUpdateConfiguration];
+  XESetFormCommitHidden(self, !selecting_);
+}
+
+// Leaving Select mode, or entering it, starts with nothing selected.
+- (void)setSelecting:(BOOL)selecting {
+  selecting_ = selecting;
+  selected_.clear();
+  [self refreshSelectChrome];
+  [self.tableView reloadData];
+}
+
+- (void)onSelectTapped:(id)__unused sender {
+  [self setSelecting:YES];
+}
+
+- (void)onSelectDoneTapped:(id)__unused sender {
+  [self setSelecting:NO];
+}
+
+- (void)onSelectAllTapped:(id)__unused sender {
+  const BOOL all = selected_.size() >= [self selectableCount];
+  selected_.clear();
+  if (!all) {
+    for (const IOSStorageTitle& title : measurement_.report.titles) {
+      selected_.insert(SelectionKey(title));
+    }
+  }
+  [self refreshSelectChrome];
+  [self.tableView reloadData];
+}
+
+// A selectable row's leading mark in Select mode.
+- (void)applySelected:(BOOL)selected toCell:(UITableViewCell*)cell {
+  cell.imageView.image = XERowSymbolImage(selected ? @"checkmark.circle.fill" : @"circle",
+                                          selected ? [XeniaTheme accent] : nil);
+  cell.accessibilityTraits =
+      UIAccessibilityTraitButton | (selected ? UIAccessibilityTraitSelected : 0);
+}
+
+// One sheet for everything selected: what goes, how many and how much, and for the library's
+// games the choices Delete Game gives. The launcher does the deleting, as for one game.
+- (void)onDeleteSelectedTapped:(id)__unused sender {
+  if (game_running_) {
+    PresentCloseGameFirst(self);
+    return;
+  }
+  const IOSStorageReport& report = measurement_.report;
+  // The rows by title ID and path, not by place: the list can sort or measure again while
+  // the sheet is up.
+  NSMutableArray<NSDictionary*>* entries = [NSMutableArray array];
+  unsigned long imported = 0, linked_only = 0, others = 0;
+  uint64_t imported_bytes = 0, other_bytes = 0;
+  BOOL any_linked = NO, any_content = NO, any_saves = NO;
+  for (const IOSStorageTitle& title : report.titles) {
+    if (!selected_.count(SelectionKey(title)) || (!title.in_library && !title.title_id)) {
+      continue;
+    }
+    [entries addObject:@{
+      XeniaStorageTitleIdKey : @(title.title_id),
+      XeniaStorageGamePathKey : [NSString stringWithUTF8String:title.game_path.c_str()] ?: @"",
+      XeniaStorageNameKey : TitleName(title),
+      XeniaStorageInLibraryKey : @(title.in_library),
+    }];
+    if (!title.in_library) {
+      ++others;
+      other_bytes += title.Total();
+      continue;
+    }
+    if (title.has_imported_copy) {
+      ++imported;
+      imported_bytes += KindBytes(title.bytes, IOSStorageKind::kGames);
+    } else {
+      ++linked_only;
+    }
+    any_linked |= title.has_linked_copy;
+    if (title.title_id) {
+      any_content |= KindBytes(title.bytes, IOSStorageKind::kContent) != 0;
+      any_saves |= KindBytes(title.bytes, IOSStorageKind::kSaves) != 0;
+    }
+  }
+  if (!entries.count) {
+    return;
+  }
+  NSString* device = UIDevice.currentDevice.model;
+  NSMutableArray<NSString*>* lines = [NSMutableArray array];
+  if (imported && others) {
+    [lines addObject:[NSString stringWithFormat:NSLocalizedString(@"This frees %@.",
+                                                                  @"storage: delete selected; "
+                                                                  @"the total size"),
+                                                ByteText(imported_bytes + other_bytes)]];
+  }
+  if (imported == 1) {
+    [lines addObject:[NSString
+                         stringWithFormat:NSLocalizedString(@"1 game is deleted from this %1$@ "
+                                                            @"(%2$@).",
+                                                            @"storage: delete selected; the "
+                                                            @"device's kind, the game's size"),
+                                          device, ByteText(imported_bytes)]];
+  } else if (imported) {
+    [lines addObject:[NSString
+                         stringWithFormat:NSLocalizedString(@"%1$lu games are deleted from this "
+                                                            @"%2$@ (%3$@).",
+                                                            @"storage: delete selected; how "
+                                                            @"many, the device's kind, their "
+                                                            @"size"),
+                                          imported, device, ByteText(imported_bytes)]];
+  }
+  if (linked_only == 1) {
+    [lines addObject:NSLocalizedString(@"1 game in a linked folder is removed from the library.",
+                                       @"storage: delete selected")];
+  } else if (linked_only) {
+    [lines addObject:[NSString
+                         stringWithFormat:NSLocalizedString(@"%lu games in linked folders are "
+                                                            @"removed from the library.",
+                                                            @"storage: delete selected; how many"),
+                                          linked_only]];
+  }
+  if (any_linked) {
+    [lines addObject:NSLocalizedString(@"Files in linked folders stay there unless you choose "
+                                       @"to delete them.",
+                                       @"storage: delete selected")];
+  }
+  if (others == 1) {
+    [lines addObject:[NSString
+                         stringWithFormat:NSLocalizedString(@"The updates, add-ons, saves and "
+                                                            @"shaders of 1 game that isn’t in "
+                                                            @"your library are deleted (%@).",
+                                                            @"storage: delete selected; their "
+                                                            @"size"),
+                                          ByteText(other_bytes)]];
+  } else if (others) {
+    [lines addObject:[NSString
+                         stringWithFormat:NSLocalizedString(@"The updates, add-ons, saves and "
+                                                            @"shaders of %1$lu games that "
+                                                            @"aren’t in your library are "
+                                                            @"deleted (%2$@).",
+                                                            @"storage: delete selected; how "
+                                                            @"many, their size"),
+                                          others, ByteText(other_bytes)]];
+  }
+  if (any_content || any_saves) {
+    [lines addObject:NSLocalizedString(@"Updates, add-ons and saves of the library’s games are "
+                                       @"kept unless you choose otherwise. Achievements stay "
+                                       @"on their profile.",
+                                       @"storage: delete selected")];
+  }
+  const BOOL deletes = imported || others;
+  [lines addObject:deletes ? NSLocalizedString(@"This can’t be undone.",
+                                               @"storage: delete selected")
+                           : NSLocalizedString(@"Deleting files from a folder can’t be undone.",
+                                               @"storage: delete selected")];
+  NSString* title =
+      entries.count == 1
+          ? NSLocalizedString(@"Delete 1 Item?", @"storage: delete selected; title")
+          : [NSString stringWithFormat:NSLocalizedString(@"Delete %lu Items?",
+                                                         @"storage: delete selected; title"),
+                                       (unsigned long)entries.count];
+  UIAlertController* confirm =
+      [UIAlertController alertControllerWithTitle:title
+                                          message:[lines componentsJoinedByString:@" "]
+                                   preferredStyle:UIAlertControllerStyleActionSheet];
+  // Reached from the button at the bottom: on iPad the sheet sits mid-screen.
+  confirm.popoverPresentationController.sourceView = self.view;
+  confirm.popoverPresentationController.sourceRect =
+      CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 0, 0);
+  confirm.popoverPresentationController.permittedArrowDirections = 0;
+  void (^add)(NSString*, BOOL, BOOL, BOOL) =
+      ^(NSString* action_title, BOOL content, BOOL saves, BOOL linked_files) {
+        [confirm addAction:[UIAlertAction
+                               actionWithTitle:action_title
+                                         style:UIAlertActionStyleDestructive
+                                       handler:^(UIAlertAction* __unused action) {
+                                         [self setSelecting:NO];
+                                         [[NSNotificationCenter defaultCenter]
+                                             postNotificationName:
+                                                 XeniaStorageDeleteEntriesRequestNotification
+                                                           object:nil
+                                                         userInfo:@{
+                                                           XeniaStorageEntriesKey : entries,
+                                                           XeniaStorageDeleteContentKey :
+                                                               @(content),
+                                                           XeniaStorageDeleteSavesKey : @(saves),
+                                                           XeniaStorageDeleteLinkedFilesKey :
+                                                               @(linked_files),
+                                                         }];
+                                       }]];
+      };
+  add(deletes ? NSLocalizedString(@"Delete", @"storage: delete selected; button")
+              : NSLocalizedString(@"Remove from Library", @"Delete game: button"),
+      NO, NO, NO);
+  if (any_linked) {
+    add(NSLocalizedString(@"Also Delete Files from Linked Folders",
+                          @"storage: delete selected; button"),
+        NO, NO, YES);
+  }
+  if (any_content) {
+    add(NSLocalizedString(@"Also Delete Updates & Add-ons", @"Delete game: button"), YES, NO, NO);
+  }
+  if (any_saves) {
+    add(any_content
+            ? NSLocalizedString(@"Also Delete Updates, Add-ons & Saves", @"Delete game: button")
+            : NSLocalizedString(@"Also Delete Saves", @"Delete game: button"),
+        any_content, YES, NO);
+  }
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(@"Cancel", @"storage: alert button")
+                                   style:UIAlertActionStyleCancel
+                                 handler:nil]];
+  [self presentViewController:confirm animated:YES completion:nil];
 }
 
 // "● 10.3 GB" over the free space left on the device.
@@ -1042,9 +1355,12 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       return has_linked_games_
                  ? NSLocalizedString(@"A game in a linked folder shows its size there. "
                                      @"Linked folders on this device count in the total "
-                                     @"above. Swipe a game to delete it.",
+                                     @"above. Swipe a game to delete it, or tap Select to "
+                                     @"delete several.",
                                      @"storage: footer")
-                 : NSLocalizedString(@"Swipe a game to delete it.", @"storage: footer");
+                 : NSLocalizedString(@"Swipe a game to delete it, or tap Select to delete "
+                                     @"several.",
+                                     @"storage: footer");
     case Section::kNotInLibrary:
       return NSLocalizedString(@"Updates, saves and shaders of games that aren’t in your "
                                @"library.",
@@ -1174,9 +1490,15 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
           cell.textLabel.text = NSLocalizedString(@"Clear All Shaders", @"storage: action");
           break;
       }
-      cell.textLabel.textColor = [XeniaTheme accent];
+      // Select mode is for the games below: these wait.
+      UIColor* color = selecting_ ? [XeniaTheme textMuted] : [XeniaTheme accent];
+      cell.textLabel.textColor = color;
       cell.detailTextLabel.text = ByteText(KindBytes(report.bytes, kind));
-      cell.imageView.image = XERowSymbolImage(symbol, [XeniaTheme accent]);
+      cell.imageView.image = XERowSymbolImage(symbol, color);
+      if (selecting_) {
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.accessibilityTraits = UIAccessibilityTraitButton | UIAccessibilityTraitNotEnabled;
+      }
       break;
     }
     case Section::kLibrary:
@@ -1188,6 +1510,11 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       cell.detailTextLabel.text =
           ByteText(title.Total() + title.linked_bytes -
                    KindBytes(title.bytes, IOSStorageKind::kLinked));
+      if (selecting_) {
+        // A mark to tick in place of the row's symbol and chevron.
+        [self applySelected:selected_.count(SelectionKey(title)) != 0 toCell:cell];
+        break;
+      }
       cell.imageView.image = XERowSymbolImage(!title.in_library     ? @"questionmark.folder"
                                               : IsLinkedOnly(title) ? @"link"
                                                                     : @"gamecontroller",
@@ -1210,7 +1537,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 // A library game's row swipes to the launcher's delete sheet, as its page's Delete Game does.
 - (UISwipeActionsConfiguration*)tableView:(__unused UITableView*)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (sections_[size_t(indexPath.section)] != Section::kLibrary) {
+  if (selecting_ || sections_[size_t(indexPath.section)] != Section::kLibrary) {
     return nil;
   }
   const IOSStorageTitle& title =
@@ -1241,6 +1568,23 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   const Section section = sections_[size_t(indexPath.section)];
   const IOSStorageReport& report = measurement_.report;
+  if (selecting_) {
+    // Only the two game lists select; a tap ticks or clears the row.
+    if (section == Section::kLibrary || section == Section::kNotInLibrary) {
+      const std::vector<size_t>& rows =
+          section == Section::kLibrary ? library_titles_ : other_titles_;
+      const std::string key = SelectionKey(report.titles[rows[size_t(indexPath.row)]]);
+      const BOOL selected = selected_.erase(key) == 0;
+      if (selected) {
+        selected_.insert(key);
+      }
+      if (UITableViewCell* cell = [tableView cellForRowAtIndexPath:indexPath]) {
+        [self applySelected:selected toCell:cell];
+      }
+      [self refreshSelectChrome];
+    }
+    return;
+  }
   if (section == Section::kLibrary || section == Section::kNotInLibrary) {
     const std::vector<size_t>& rows =
         section == Section::kLibrary ? library_titles_ : other_titles_;

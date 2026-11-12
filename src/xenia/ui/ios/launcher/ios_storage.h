@@ -126,6 +126,24 @@ extern NSString* const XeniaStorageGamePathKey;
 // and the disc's library path (NSString) under XeniaStorageDiscPathKey.
 extern NSNotificationName const XeniaStorageDeleteDiscRequestNotification;
 extern NSString* const XeniaStorageDiscPathKey;
+// Posted by the Storage screen, once the user confirmed, to have the launcher
+// delete several entries together. XeniaStorageEntriesKey is an NSArray of
+// NSDictionary, one per entry: XeniaStorageTitleIdKey, XeniaStorageGamePathKey,
+// its name (NSString) under XeniaStorageNameKey and whether it is a library
+// game (NSNumber) under XeniaStorageInLibraryKey. A library game is deleted as
+// Delete Game does; an entry that isn't in the library has its data deleted
+// (xe_ios_remove_title_data). The choices for the library games are NSNumber
+// booleans: XeniaStorageDeleteContentKey (their updates and add-ons too),
+// XeniaStorageDeleteSavesKey (their saves too), XeniaStorageDeleteLinkedFilesKey
+// (delete the files of games in linked folders, not only take them out of the
+// library).
+extern NSNotificationName const XeniaStorageDeleteEntriesRequestNotification;
+extern NSString* const XeniaStorageEntriesKey;
+extern NSString* const XeniaStorageNameKey;
+extern NSString* const XeniaStorageInLibraryKey;
+extern NSString* const XeniaStorageDeleteContentKey;
+extern NSString* const XeniaStorageDeleteSavesKey;
+extern NSString* const XeniaStorageDeleteLinkedFilesKey;
 #endif  // __OBJC__
 
 #endif  // XENIA_UI_IOS_LAUNCHER_IOS_STORAGE_H_
