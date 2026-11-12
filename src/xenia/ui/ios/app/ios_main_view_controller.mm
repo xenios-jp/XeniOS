@@ -208,6 +208,60 @@ static bool XeniaRemoveGameCopy(const std::filesystem::path& path, bool is_exter
   return false;
 }
 
+// Removes a library game: each of its copies, then what was asked to go with
+// it, and with its last copy its shaders and art. Blocking: call from a
+// background queue. `error_out` is what failed first.
+static bool XeniaRemoveLibraryGame(const IOSDiscoveredGame& game, bool content, bool saves,
+                                   bool delete_linked_files, bool last_copy,
+                                   std::string* error_out) {
+  std::string error;
+  bool ok = true;
+  // Each copy with its own message: a copy that is removed leaves a note in it too.
+  auto remove_copy = [&](const std::filesystem::path& path, bool is_external) {
+    std::string copy_error;
+    if (!XeniaRemoveGameCopy(path, is_external, delete_linked_files, &copy_error)) {
+      if (ok) {
+        error = copy_error;
+      }
+      ok = false;
+    }
+  };
+  if (game.discs.empty()) {
+    remove_copy(game.path, game.is_external);
+  }
+  for (const auto& disc : game.discs) {
+    remove_copy(disc.path, disc.is_external);
+  }
+  if (ok && content && game.title_id) {
+    ok = xe_remove_title_content(game.title_id, &error);
+  }
+  if (ok && saves && game.title_id) {
+    ok = xe_remove_title_saves(game.title_id, &error);
+  }
+  if (ok && last_copy) {
+    uintmax_t removed = 0;
+    std::error_code cache_error;
+    xe_ios_clear_title_shaders(game.title_id, &removed, &cache_error);
+    xe_ios_remove_title_art(game.title_id);
+  }
+  if (!ok) {
+    *error_out = error;
+  }
+  return ok;
+}
+
+// One entry of a Storage screen's batch: a library game, or the data left of a
+// game that isn't in the library.
+struct StorageRemoval {
+  std::string name;
+  bool in_library = false;
+  IOSDiscoveredGame game;  // in_library
+  bool last_copy = false;  // in_library
+  uint32_t title_id = 0;
+  // Set before anything runs: the entry can't be removed, and why.
+  std::string refusal;
+};
+
 // Whether two paths name one file: the library saves /private/var/... where
 // Foundation says /var/...
 static bool XeniaSameFilePath(const std::filesystem::path& a, const std::filesystem::path& b) {
@@ -674,6 +728,10 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(onStorageDeleteDiscRequest:)
                                                name:XeniaStorageDeleteDiscRequestNotification
+                                             object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(onStorageDeleteEntriesRequest:)
+                                               name:XeniaStorageDeleteEntriesRequestNotification
                                              object:nil];
   // Show the last scan's result at once (read from disk, no folder walk), then
   // rescan in the background.
@@ -4576,25 +4634,8 @@ static bool XeJITUsable() {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     std::string error;
-    bool ok = true;
-    if (game_copy.discs.empty()) {
-      ok = XeniaRemoveGameCopy(game_copy.path, game_copy.is_external, delete_linked_files, &error);
-    }
-    for (const auto& disc : game_copy.discs) {
-      ok = XeniaRemoveGameCopy(disc.path, disc.is_external, delete_linked_files, &error) && ok;
-    }
-    if (ok && content) {
-      ok = xe_remove_title_content(game_copy.title_id, &error);
-    }
-    if (ok && saves) {
-      ok = xe_remove_title_saves(game_copy.title_id, &error);
-    }
-    if (ok && last_copy) {
-      uintmax_t removed = 0;
-      std::error_code cache_error;
-      xe_ios_clear_title_shaders(game_copy.title_id, &removed, &cache_error);
-      xe_ios_remove_title_art(game_copy.title_id);
-    }
+    const bool ok = XeniaRemoveLibraryGame(game_copy, content, saves, delete_linked_files,
+                                           last_copy, &error);
     NSString* failure = nil;
     if (!ok) {
       failure = error.empty() ? NSLocalizedString(@"The game couldn’t be removed.",
@@ -4608,6 +4649,142 @@ static bool XeJITUsable() {
                                     failure:failure
                                        from:presenter
                               keepPresenter:keep_presenter];
+    });
+  });
+}
+
+// Deletes what the Storage screen's Select mode chose, already confirmed there:
+// library games as Delete Game does, and the data of games that aren't in the
+// library. One busy alert, one list of what failed, one scan.
+- (void)onStorageDeleteEntriesRequest:(NSNotification*)notification {
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  if (self.gameRunning) {
+    XEPresentOKAlert(presenter,
+                     NSLocalizedString(@"Couldn’t Delete Game", @"Delete game: alert title"),
+                     NSLocalizedString(@"Close the game first.", @"Delete game: alert message"));
+    return;
+  }
+  NSDictionary* request = notification.userInfo;
+  const bool content = [request[XeniaStorageDeleteContentKey] boolValue];
+  const bool saves = [request[XeniaStorageDeleteSavesKey] boolValue];
+  const bool delete_linked_files = [request[XeniaStorageDeleteLinkedFilesKey] boolValue];
+  // Each entry is found again by title ID and path: the library can have changed
+  // since the Storage screen measured.
+  auto removals = std::make_shared<std::vector<StorageRemoval>>();
+  std::vector<size_t> game_indexes;
+  for (NSDictionary* entry in request[XeniaStorageEntriesKey]) {
+    StorageRemoval removal;
+    NSString* name = entry[XeniaStorageNameKey];
+    removal.name = name.UTF8String ?: "";
+    removal.in_library = [entry[XeniaStorageInLibraryKey] boolValue];
+    removal.title_id = [entry[XeniaStorageTitleIdKey] unsignedIntValue];
+    if (removal.in_library) {
+      size_t game_index = 0;
+      if (![self findStorageGame:entry index:&game_index]) {
+        removal.refusal =
+            NSLocalizedString(@"It is no longer in the library.", @"Delete selected: reason")
+                .UTF8String;
+      } else if (std::find(game_indexes.begin(), game_indexes.end(), game_index) !=
+                 game_indexes.end()) {
+        continue;  // Named twice.
+      } else {
+        game_indexes.push_back(game_index);
+        removal.game = discovered_games_[game_index];
+      }
+    } else if (!removal.title_id) {
+      continue;  // Nothing is kept without a title ID.
+    } else if (std::any_of(discovered_games_.begin(), discovered_games_.end(),
+                           [&removal](const IOSDiscoveredGame& game) {
+                             return game.title_id == removal.title_id;
+                           })) {
+      // Its updates and saves belong to a game again.
+      removal.refusal =
+          NSLocalizedString(@"It is in your library now.", @"Delete selected: reason").UTF8String;
+    }
+    removals->push_back(std::move(removal));
+  }
+  if (removals->empty()) {
+    return;
+  }
+  // Another copy of a title that stays in the library still uses its shader
+  // cache.
+  for (StorageRemoval& removal : *removals) {
+    if (!removal.in_library || !removal.refusal.empty() || !removal.game.title_id) {
+      continue;
+    }
+    const uint32_t title_id = removal.game.title_id;
+    const auto copies = std::count_if(
+        discovered_games_.begin(), discovered_games_.end(),
+        [title_id](const IOSDiscoveredGame& other) { return other.title_id == title_id; });
+    const auto going =
+        std::count_if(removals->begin(), removals->end(), [title_id](const StorageRemoval& other) {
+          return other.in_library && other.refusal.empty() && other.game.title_id == title_id;
+        });
+    removal.last_copy = copies <= going;
+  }
+  // A library entry, found or not, means the list on screen is out of date.
+  const BOOL rescan =
+      std::any_of(removals->begin(), removals->end(),
+                  [](const StorageRemoval& removal) { return removal.in_library; });
+  UIAlertController* busy =
+      [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Deleting…",
+                                                                    @"Delete game: progress")
+                                          message:nil
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [presenter presentViewController:busy animated:YES completion:nil];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // "Name: why", one line for each entry that couldn't be removed.
+    NSMutableArray<NSString*>* failed = [[NSMutableArray alloc] init];
+    for (const StorageRemoval& removal : *removals) {
+      @autoreleasepool {
+        std::string error = removal.refusal;
+        bool ok = error.empty();
+        if (ok && removal.in_library) {
+          ok = XeniaRemoveLibraryGame(removal.game, content, saves, delete_linked_files,
+                                      removal.last_copy, &error);
+        } else if (ok) {
+          ok = xe_ios_remove_title_data(removal.title_id, &error);
+        }
+        if (!ok) {
+          NSString* why = error.empty() ? NSLocalizedString(@"It couldn’t be removed.",
+                                                            @"Delete selected: reason")
+                                        : ToNSString(error);
+          [failed addObject:[NSString stringWithFormat:@"%@: %@", ToNSString(removal.name), why]];
+        }
+      }
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      NSString* failure_title = nil;
+      NSString* failure = nil;
+      if (failed.count) {
+        failure_title =
+            failed.count == 1
+                ? NSLocalizedString(@"Couldn’t Delete 1 Item", @"Delete selected: alert title")
+                : [NSString stringWithFormat:NSLocalizedString(@"Couldn’t Delete %lu Items",
+                                                               @"Delete selected: alert title"),
+                                             (unsigned long)failed.count];
+        failure = [failed componentsJoinedByString:@"\n"];
+      }
+      [failed release];
+      if (!rescan) {
+        // Nothing left the library: the Storage screen only measures again.
+        [busy dismissViewControllerAnimated:YES
+                                 completion:^{
+                                   if (failure) {
+                                     XEPresentOKAlert(presenter, failure_title, failure);
+                                   }
+                                   [[NSNotificationCenter defaultCenter]
+                                       postNotificationName:XeniaStorageDidChangeNotification
+                                                     object:nil];
+                                 }];
+        return;
+      }
+      [unsafe_self finishDeleteGameWithBusy:busy
+                               failureTitle:failure_title
+                                    failure:failure
+                                       from:presenter
+                              keepPresenter:YES];
     });
   });
 }

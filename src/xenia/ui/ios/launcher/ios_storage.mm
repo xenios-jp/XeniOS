@@ -37,6 +37,14 @@ NSString* const XeniaStorageGamePathKey = @"gamePath";
 NSNotificationName const XeniaStorageDeleteDiscRequestNotification =
     @"XeniaStorageDeleteDiscRequestNotification";
 NSString* const XeniaStorageDiscPathKey = @"discPath";
+NSNotificationName const XeniaStorageDeleteEntriesRequestNotification =
+    @"XeniaStorageDeleteEntriesRequestNotification";
+NSString* const XeniaStorageEntriesKey = @"entries";
+NSString* const XeniaStorageNameKey = @"name";
+NSString* const XeniaStorageInLibraryKey = @"inLibrary";
+NSString* const XeniaStorageDeleteContentKey = @"deleteContent";
+NSString* const XeniaStorageDeleteSavesKey = @"deleteSaves";
+NSString* const XeniaStorageDeleteLinkedFilesKey = @"deleteLinkedFiles";
 
 namespace {
 
