@@ -1329,7 +1329,8 @@ static std::vector<IOSDiscoveredGame> ScanIOSGameLibraryImpl(NSDictionary* title
         }
       } else if (entry.is_regular_file(ec) && entry.path().extension() != ".part" &&
                  (IsISOPath(entry.path()) || IsZarPath(entry.path()) ||
-                  IsDefaultXexPath(entry.path()) || IsLikelyGodContainerFile(entry.path()))) {
+                  IsDefaultXexPath(entry.path()) || IsDefaultXbePath(entry.path()) ||
+                  IsLikelyGodContainerFile(entry.path()))) {
         ++candidate_files;
         const std::filesystem::path canonical_path =
             std::filesystem::weakly_canonical(entry.path(), ec);
