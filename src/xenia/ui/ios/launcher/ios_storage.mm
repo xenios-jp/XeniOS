@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <ctime>
 #include <string_view>
@@ -54,6 +55,15 @@ constexpr const char* kGameDataDrives[] = {"cache", "cache0", "cache1"};
 // Every path here comes from Foundation, so they share one spelling of the
 // container (/var or /private/var) and compare as prefixes of each other.
 fs::path HomePath() { return NSHomeDirectory().UTF8String; }
+
+// The library saves canonical paths (/private/var/...) where Foundation says
+// /var/...: one spelling, so a path can be compared with the walk's.
+fs::path Spelled(const fs::path& path) {
+  const std::string text = path.lexically_normal().string();
+  constexpr std::string_view kPrivate = "/private";
+  return text.rfind("/private/var/", 0) == 0 ? fs::path(text.substr(kPrivate.size()))
+                                             : fs::path(text);
+}
 
 fs::path DocumentsPath() { return xe_get_ios_documents_path(); }
 
@@ -196,16 +206,16 @@ bool IsUnder(const fs::path& path, const fs::path& root) {
 class StorageWalk {
  public:
   StorageWalk()
-      : home_(HomePath()),
-        documents_(DocumentsPath()),
-        caches_(CachesPath()),
-        cache_root_(xe_ios_cache_root()),
+      : home_(Spelled(HomePath())),
+        documents_(Spelled(DocumentsPath())),
+        caches_(Spelled(CachesPath())),
+        cache_root_(Spelled(xe_ios_cache_root())),
         shaders_(xe::gpu::GetShaderStorageRoot(cache_root_)),
         bundle_(BundleId()) {
     for (const fs::path& dir : ArchiverStagingDirs()) {
-      leftover_dirs_.push_back(dir);
+      leftover_dirs_.push_back(Spelled(dir));
     }
-    leftover_dirs_.push_back(FilesTrashPath());
+    leftover_dirs_.push_back(Spelled(FilesTrashPath()));
     uint64_t untitled_key = kUntitledKeyBase;
     for (const xe::ui::IOSDiscoveredGame& game : xe::ui::LoadCachedIOSGameLibrary()) {
       // A game whose title ID couldn't be read is still in the library: list it
@@ -223,7 +233,7 @@ class StorageWalk {
         if (path.empty()) {
           return;
         }
-        const fs::path normal = path.lexically_normal();
+        const fs::path normal = Spelled(path);
         // Decided by where the file is, not the entry's linked flag: a folder
         // linked from inside the app's own storage still takes the app's space.
         if (!IsUnder(normal, home_)) {
@@ -251,6 +261,7 @@ class StorageWalk {
     Walk(documents_);
     Walk(home_ / "Library");
     MeasureLinked();
+    AdoptUntitledGames();
     IOSStorageReport report;
     report.bytes = bytes_;
     for (auto& [key, title] : titles_) {
@@ -266,13 +277,65 @@ class StorageWalk {
     }
     std::sort(
         report.titles.begin(), report.titles.end(),
-        [](const IOSStorageTitle& a, const IOSStorageTitle& b) { return a.Total() > b.Total(); });
+        [](const IOSStorageTitle& a, const IOSStorageTitle& b) {
+          return a.Total() + a.linked_bytes > b.Total() + b.linked_bytes;
+        });
     return report;
   }
 
  private:
   // Titles are keyed by title ID; games without one by kUntitledKeyBase + n.
   static constexpr uint64_t kUntitledKeyBase = uint64_t(1) << 32;
+
+  // A library game whose title ID the scan couldn't read (an original Xbox
+  // disc) still saves under its title ID. Data whose title has the game's name
+  // is the game's: one entry, under the title ID.
+  void AdoptUntitledGames() {
+    auto lower = [](std::string text) {
+      std::transform(text.begin(), text.end(), text.begin(),
+                     [](unsigned char c) { return char(std::tolower(c)); });
+      return text;
+    };
+    std::vector<uint64_t> untitled;
+    for (const auto& [key, title] : titles_) {
+      if (key >= kUntitledKeyBase && title.in_library && !title.name.empty()) {
+        untitled.push_back(key);
+      }
+    }
+    for (uint64_t game_key : untitled) {
+      const IOSStorageTitle game = titles_[game_key];
+      const std::string name = lower(game.name);
+      IOSStorageTitle* data = nullptr;
+      for (auto& [key, title] : titles_) {
+        if (key >= kUntitledKeyBase || key == kProfileTitleId || title.in_library) {
+          continue;
+        }
+        std::string data_name = title.name;
+        if (data_name.empty()) {
+          if (const xe::app::GameTitleInfo* info = xe::app::GetGameTitleInfo(title.title_id)) {
+            data_name = info->name;
+          }
+        }
+        if (lower(data_name) == name) {
+          data = &title;
+          break;
+        }
+      }
+      if (!data) {
+        continue;
+      }
+      data->name = game.name;
+      data->in_library = true;
+      data->has_imported_copy = game.has_imported_copy;
+      data->has_linked_copy = game.has_linked_copy;
+      data->linked_bytes = game.linked_bytes;
+      data->game_path = game.game_path;
+      for (size_t kind = 0; kind < data->bytes.size(); ++kind) {
+        data->bytes[kind] += game.bytes[kind];
+      }
+      titles_.erase(game_key);
+    }
+  }
 
   IOSStorageTitle& Title(uint64_t key, uint32_t title_id) {
     IOSStorageTitle& title = titles_[key];

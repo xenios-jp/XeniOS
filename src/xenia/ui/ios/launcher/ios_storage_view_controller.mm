@@ -520,6 +520,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   std::vector<size_t> library_titles_;
   std::vector<size_t> other_titles_;
   BOOL has_linked_games_;
+  // What the library's games take in linked folders: not the app's storage.
+  uint64_t linked_bytes_;
 }
 
 - (instancetype)initWithGameRunning:(BOOL)game_running {
@@ -611,6 +613,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   library_titles_.clear();
   other_titles_.clear();
   has_linked_games_ = NO;
+  linked_bytes_ = 0;
   if (!loaded_) {
     return;
   }
@@ -630,6 +633,9 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   for (size_t i = 0; i < report.titles.size(); ++i) {
     (report.titles[i].in_library ? library_titles_ : other_titles_).push_back(i);
     has_linked_games_ |= IsLinkedOnly(report.titles[i]);
+    if (report.titles[i].in_library) {
+      linked_bytes_ += report.titles[i].linked_bytes;
+    }
   }
   if (!library_titles_.empty()) {
     sections_.push_back(Section::kLibrary);
@@ -727,11 +733,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 - (NSInteger)tableView:(__unused UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
   switch (sections_[size_t(section)]) {
     case Section::kKinds:
-      // The bar, then each kind that takes space.
-      return 1 + NSInteger(std::count_if(std::begin(kListedKinds), std::end(kListedKinds),
-                                         [self](IOSStorageKind kind) {
-                                           return KindBytes(measurement_.report.bytes, kind) != 0;
-                                         }));
+      // The bar, each kind that takes space, then the games in linked folders.
+      return 1 + [self listedKindCount] + (linked_bytes_ ? 1 : 0);
     case Section::kFree:
       return NSInteger(free_actions_.size());
     case Section::kLibrary:
@@ -765,10 +768,11 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
                                @"storage: footer");
     case Section::kLibrary:
       return has_linked_games_
-                 ? NSLocalizedString(@"Games played from a linked folder take no space here. "
-                                     @"Their size there shows on each game’s page.",
+                 ? NSLocalizedString(@"A game in a linked folder shows its size there. "
+                                     @"Linked folders aren’t in the total above. Swipe a "
+                                     @"game to delete it.",
                                      @"storage: footer")
-                 : nil;
+                 : NSLocalizedString(@"Swipe a game to delete it.", @"storage: footer");
     case Section::kNotInLibrary:
       return NSLocalizedString(@"Updates, saves and shaders of games that aren’t in your "
                                @"library.",
@@ -776,6 +780,13 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
     default:
       return nil;
   }
+}
+
+- (NSInteger)listedKindCount {
+  return NSInteger(std::count_if(std::begin(kListedKinds), std::end(kListedKinds),
+                                 [self](IOSStorageKind kind) {
+                                   return KindBytes(measurement_.report.bytes, kind) != 0;
+                                 }));
 }
 
 - (IOSStorageKind)kindAtRow:(NSInteger)row {
@@ -836,6 +847,15 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   const IOSStorageReport& report = measurement_.report;
   switch (section) {
     case Section::kKinds: {
+      if (indexPath.row > [self listedKindCount]) {
+        cell.textLabel.text =
+            NSLocalizedString(@"Games in Linked Folders", @"storage: row; not in the total");
+        cell.detailTextLabel.text = ByteText(linked_bytes_);
+        cell.imageView.image = XERowSymbolImage(@"link", nil);
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.accessibilityTraits = UIAccessibilityTraitStaticText;
+        break;
+      }
       const IOSStorageKind kind = [self kindAtRow:indexPath.row];
       cell.textLabel.text = KindName(kind);
       cell.detailTextLabel.text = ByteText(KindBytes(report.bytes, kind));
@@ -874,7 +894,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
           section == Section::kLibrary ? library_titles_ : other_titles_;
       const IOSStorageTitle& title = report.titles[rows[size_t(indexPath.row)]];
       cell.textLabel.text = TitleName(title);
-      cell.detailTextLabel.text = ByteText(title.Total());
+      cell.detailTextLabel.text = ByteText(title.Total() + title.linked_bytes);
       cell.imageView.image = XERowSymbolImage(!title.in_library     ? @"questionmark.folder"
                                               : IsLinkedOnly(title) ? @"link"
                                                                     : @"gamecontroller",
@@ -886,6 +906,36 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   XEApplyAccessibility(cell, cell.textLabel.text, cell.detailTextLabel.text, nil,
                        cell.accessibilityTraits);
   return cell;
+}
+
+// A library game's row swipes to the launcher's delete sheet, as its page's Delete Game does.
+- (UISwipeActionsConfiguration*)tableView:(__unused UITableView*)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (sections_[size_t(indexPath.section)] != Section::kLibrary) {
+    return nil;
+  }
+  const IOSStorageTitle& title =
+      measurement_.report.titles[library_titles_[size_t(indexPath.row)]];
+  NSDictionary* request = @{
+    XeniaStorageTitleIdKey : @(title.title_id),
+    XeniaStorageGamePathKey : [NSString stringWithUTF8String:title.game_path.c_str()] ?: @"",
+  };
+  UIContextualAction* remove = [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleDestructive
+                          title:NSLocalizedString(@"Delete", @"storage: swipe action")
+                        handler:^(__unused UIContextualAction* action, __unused UIView* view,
+                                  void (^done)(BOOL)) {
+                          [[NSNotificationCenter defaultCenter]
+                              postNotificationName:XeniaStorageDeleteGameRequestNotification
+                                            object:nil
+                                          userInfo:request];
+                          done(NO);
+                        }];
+  remove.image = [UIImage systemImageNamed:@"trash"];
+  UISwipeActionsConfiguration* actions =
+      [UISwipeActionsConfiguration configurationWithActions:@[ remove ]];
+  actions.performsFirstActionWithFullSwipe = NO;
+  return actions;
 }
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {

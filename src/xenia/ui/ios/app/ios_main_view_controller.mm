@@ -4357,13 +4357,18 @@ static bool XeJITUsable() {
   const uint32_t title_id = [notification.userInfo[XeniaStorageTitleIdKey] unsignedIntValue];
   // A game without a title ID is found by its library path.
   NSString* game_path = notification.userInfo[XeniaStorageGamePathKey];
-  for (size_t i = 0; i < discovered_games_.size(); ++i) {
-    const IOSDiscoveredGame& game = discovered_games_[i];
-    if (title_id ? game.title_id == title_id
-                 : game_path.length && game.path == std::filesystem::path(game_path.UTF8String)) {
-      delete_from_storage_ = YES;
-      [self confirmDeleteGameAtIndex:i];
-      return;
+  // By title ID first; by path for a game the scan read no title ID from, also
+  // when the Storage screen knows its ID from the data it saved.
+  for (int by_path = 0; by_path < 2; ++by_path) {
+    for (size_t i = 0; i < discovered_games_.size(); ++i) {
+      const IOSDiscoveredGame& game = discovered_games_[i];
+      if (by_path ? game_path.length && !game.title_id &&
+                        game.path == std::filesystem::path(game_path.UTF8String)
+                  : title_id && game.title_id == title_id) {
+        delete_from_storage_ = YES;
+        [self confirmDeleteGameAtIndex:i];
+        return;
+      }
     }
   }
 }
