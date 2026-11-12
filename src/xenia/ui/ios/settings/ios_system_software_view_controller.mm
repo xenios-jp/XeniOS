@@ -178,11 +178,17 @@ enum InstallRow : NSInteger {
         return NSLocalizedString(@"Quit the game to install the system software.",
                                  @"system software view controller: footer");
       }
-      return NSLocalizedString(
-          @"Get the USB system update on Microsoft's page, here in XeniOS, and it installs once "
-          @"it has downloaded. Or install one you have in Files: the zip, or the folder Files "
-          @"expands it to.",
-          @"system software view controller: footer");
+      return info_.installed
+                 ? NSLocalizedString(
+                       @"Reinstall downloads the system update from Microsoft and installs it "
+                       @"again. To use a different version, install its USB system update from "
+                       @"Files: the zip, or the folder Files expands it to.",
+                       @"system software view controller: footer")
+                 : NSLocalizedString(
+                       @"XeniOS downloads the system update from Microsoft and installs it. Or "
+                       @"install a USB system update you have in Files: the zip, or the folder "
+                       @"Files expands it to.",
+                       @"system software view controller: footer");
     default:
       return game_running_ ? NSLocalizedString(@"Quit the game to remove the system software.",
                                                 @"system software view controller: footer")
@@ -246,9 +252,15 @@ enum InstallRow : NSInteger {
   }
   if (indexPath.section == kSectionInstall) {
     if (indexPath.row == kRowGetUpdate) {
-      return [self actionCellWithTitle:NSLocalizedString(@"Download & Install",
-                                                         @"system software view controller: action")
-                            symbolName:@"arrow.down"
+      return [self actionCellWithTitle:info_.installed
+                                           ? NSLocalizedString(
+                                                 @"Reinstall",
+                                                 @"system software view controller: action; "
+                                                 @"downloads and installs again")
+                                           : NSLocalizedString(
+                                                 @"Download & Install",
+                                                 @"system software view controller: action")
+                            symbolName:info_.installed ? @"arrow.clockwise" : @"arrow.down"
                                   hint:NSLocalizedString(
                                            @"Downloads the system update from Microsoft and "
                                            @"installs it.",
@@ -258,7 +270,7 @@ enum InstallRow : NSInteger {
     }
     return [self
         actionCellWithTitle:info_.installed
-                                ? NSLocalizedString(@"Reinstall from Files",
+                                ? NSLocalizedString(@"Install a Different Version from Files",
                                                     @"system software view controller: action")
                                 : NSLocalizedString(@"Install from Files",
                                                     @"system software view controller: action")
