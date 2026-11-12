@@ -693,6 +693,30 @@ bool XEZarAddConversionRequest(const std::filesystem::path& source_path,
   return true;
 }
 
+// The archive's name for one disc of a game. Discs that share a number are
+// different discs of the title (Halo 3 and its Mythic disc are both disc 1):
+// an image keeps its own file's name, which is all that tells them apart.
+std::string XEZarDiscBaseName(const IOSDiscoveredGame& game, const IOSDiscoveredGame::Disc& disc,
+                              const std::string& display_name) {
+  const bool multi_disc = game.discs.size() > 1 || disc.disc_count > 1;
+  if (multi_disc && disc.disc_number) {
+    const bool number_shared =
+        std::any_of(game.discs.begin(), game.discs.end(),
+                    [&](const IOSDiscoveredGame::Disc& other) {
+                      return other.disc_number == disc.disc_number &&
+                             other.media_id != disc.media_id;
+                    });
+    if (number_shared && xe::ui::IsISOPath(disc.path)) {
+      return disc.path.stem().string();
+    }
+    return display_name + " Disc " + std::to_string(disc.disc_number);
+  }
+  if (multi_disc && !disc.label.empty()) {
+    return display_name + " " + disc.label;
+  }
+  return display_name;
+}
+
 std::vector<XeniaIOSZarConversionRequest> XEZarSingleConversionRequest(
     const IOSDiscoveredGame& game, bool output_in_place = false) {
   XELOGI("iOS ZAR: planning single conversion title='{}' title_id={:08X} "
@@ -710,13 +734,7 @@ std::vector<XeniaIOSZarConversionRequest> XEZarSingleConversionRequest(
   }
 
   for (const IOSDiscoveredGame::Disc& disc : game.discs) {
-    std::string base_name = display_name;
-    const bool multi_disc = game.discs.size() > 1 || disc.disc_count > 1;
-    if (multi_disc && disc.disc_number) {
-      base_name += " Disc " + std::to_string(disc.disc_number);
-    } else if (multi_disc && !disc.label.empty()) {
-      base_name += " " + disc.label;
-    }
+    const std::string base_name = XEZarDiscBaseName(game, disc, display_name);
     XEZarAddConversionRequest(disc.path, base_name, base_name, disc.is_external, output_in_place,
                               &reserved_paths, &requests);
   }
@@ -746,13 +764,7 @@ std::vector<XeniaIOSZarConversionRequest> XEZarBulkConversionRequests(
       if (external_only && !disc.is_external) {
         continue;
       }
-      std::string base_name = display_name;
-      const bool multi_disc = game.discs.size() > 1 || disc.disc_count > 1;
-      if (multi_disc && disc.disc_number) {
-        base_name += " Disc " + std::to_string(disc.disc_number);
-      } else if (multi_disc && !disc.label.empty()) {
-        base_name += " " + disc.label;
-      }
+      const std::string base_name = XEZarDiscBaseName(game, disc, display_name);
       XEZarAddConversionRequest(disc.path, base_name, base_name, disc.is_external, output_in_place,
                                 &reserved_paths, &requests);
     }

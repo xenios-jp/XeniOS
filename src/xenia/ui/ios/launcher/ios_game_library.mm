@@ -252,15 +252,15 @@ std::string DiscFormatTag(const std::filesystem::path& path) {
   return "";
 }
 
-std::string DiscLabelForGame(const IOSDiscoveredGame& game) {
+std::string DiscLabel(const std::filesystem::path& path, uint8_t disc_number, uint8_t disc_count) {
   // Surface the format (ISO/ZAR/GOD/Folder) so that when several copies of the
   // same title are listed under "Discs" the user can tell them apart and pick
   // which one to boot.
-  const std::string format = DiscFormatTag(game.path);
-  if (game.disc_number > 0) {
-    std::string label = game.disc_count > 1 ? "Disc " + std::to_string(game.disc_number) + " of " +
-                                                  std::to_string(game.disc_count)
-                                            : "Disc " + std::to_string(game.disc_number);
+  const std::string format = DiscFormatTag(path);
+  if (disc_number > 0) {
+    std::string label = disc_count > 1 ? "Disc " + std::to_string(disc_number) + " of " +
+                                             std::to_string(disc_count)
+                                       : "Disc " + std::to_string(disc_number);
     if (!format.empty()) {
       label += " - " + format;
     }
@@ -269,8 +269,38 @@ std::string DiscLabelForGame(const IOSDiscoveredGame& game) {
   if (!format.empty()) {
     return format;
   }
-  std::string filename = game.path.filename().string();
+  std::string filename = path.filename().string();
   return filename.empty() ? "Launch Item" : filename;
+}
+
+std::string DiscLabelForGame(const IOSDiscoveredGame& game) {
+  return DiscLabel(game.path, game.disc_number, game.disc_count);
+}
+
+// Two discs of a title that carry the same number are different discs of it:
+// Halo 3 and its Mythic disc are both "disc 1 of 1". The number can't tell
+// them apart, so each goes by its file's name, or by its media ID when the
+// file's name says nothing (a GOD package's is a hash).
+void LabelDiscs(IOSDiscoveredGame* game) {
+  for (IOSDiscoveredGame::Disc& disc : game->discs) {
+    const bool number_shared =
+        disc.disc_number &&
+        std::any_of(game->discs.begin(), game->discs.end(),
+                    [&](const IOSDiscoveredGame::Disc& other) {
+                      return other.disc_number == disc.disc_number &&
+                             other.media_id != disc.media_id;
+                    });
+    if (!number_shared) {
+      disc.label = DiscLabel(disc.path, disc.disc_number, disc.disc_count);
+      continue;
+    }
+    const std::string format = DiscFormatTag(disc.path);
+    if (IsISOPath(disc.path) || IsZarPath(disc.path)) {
+      disc.label = disc.path.stem().string() + " - " + format;
+    } else {
+      disc.label = fmt::format("{} ({:08X})", format.empty() ? "Disc" : format, disc.media_id);
+    }
+  }
 }
 
 std::string DiscSourceLabel(bool has_imported_source, bool has_external_source) {
@@ -390,6 +420,7 @@ void EnsureDiscoveredGameDiscList(IOSDiscoveredGame* game) {
     game->discs.push_back(DiscFromGame(*game));
   }
   std::sort(game->discs.begin(), game->discs.end(), DiscSortLess);
+  LabelDiscs(game);
   ApplyPreferredLaunchDiscToGame(game);
 }
 
@@ -416,6 +447,7 @@ void MergeDiscoveredGameDisc(IOSDiscoveredGame* game, const IOSDiscoveredGame& d
     }
   }
   std::sort(game->discs.begin(), game->discs.end(), DiscSortLess);
+  LabelDiscs(game);
   ApplyPreferredLaunchDiscToGame(game);
 }
 
@@ -450,6 +482,7 @@ bool BuildDiscoveredGameFromPath(const std::filesystem::path& path, IOSDiscovere
     // An original Xbox disc has no default.xex: its title ID is in default.xbe.
     // With it the game gets its cover, compatibility and saved data like the rest.
     if (auto xbe = xe::vfs::ExtractXbeMetadata(path); xbe.has_value() && xbe->title_id) {
+      game.original_xbox = true;
       game.title_id = xbe->title_id;
       game.disc_number = xbe->disc_number;
     }
@@ -476,6 +509,7 @@ bool BuildDiscoveredGameFromPath(const std::filesystem::path& path, IOSDiscovere
     game.title = NormalizeGameTitleForUI(LibraryFallbackTitleFromPath(path));
     // An archive of an original Xbox disc, as for a disc image above.
     if (auto xbe = xe::vfs::ExtractXbeMetadata(path); xbe.has_value() && xbe->title_id) {
+      game.original_xbox = true;
       game.title_id = xbe->title_id;
       game.disc_number = xbe->disc_number;
     }
@@ -502,6 +536,7 @@ bool BuildDiscoveredGameFromPath(const std::filesystem::path& path, IOSDiscovere
   // An original Xbox game copied out of its disc: a folder with default.xbe.
   if (IsDefaultXbePath(path)) {
     game.system = IOSGameSystem::kXbox360;
+    game.original_xbox = true;
     auto xbe = xe::vfs::ExtractXbeMetadata(path);
     if (xbe.has_value()) {
       game.title_id = xbe->title_id;
