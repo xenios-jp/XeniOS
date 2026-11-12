@@ -25,6 +25,9 @@ struct IOSDiscoveredGame {
   std::filesystem::path path;
   std::string title;
   IOSGameSystem system = IOSGameSystem::kXbox360;
+  // An original Xbox game, which the console's own Xbox emulator runs: found by
+  // its default.xbe.
+  bool original_xbox = false;
   XContentType content_type = XContentType::kInvalid;
   std::string content_type_name;
   uint32_t title_id = 0;

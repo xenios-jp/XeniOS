@@ -1053,7 +1053,8 @@ namespace {
 
 NSString* const kScanCacheVersionKey = @"version";
 NSString* const kScanCacheGamesKey = @"games";
-constexpr int kScanCacheVersion = 1;
+// 2: games carry original_xbox, and same-numbered discs their own labels.
+constexpr int kScanCacheVersion = 2;
 
 NSString* ScanCachePath() {
   NSString* caches =
@@ -1086,6 +1087,7 @@ NSDictionary* CacheDictionaryForGame(const IOSDiscoveredGame& game) {
     @"path" : StringOrEmpty(game.path.string()),
     @"title" : StringOrEmpty(game.title),
     @"system" : @(static_cast<uint8_t>(game.system)),
+    @"xb" : @(game.original_xbox),
     @"ct" : @(static_cast<uint32_t>(game.content_type)),
     @"ctn" : StringOrEmpty(game.content_type_name),
     @"tid" : @(game.title_id),
@@ -1118,6 +1120,7 @@ bool GameFromCacheDictionary(NSDictionary* dictionary, IOSDiscoveredGame* game) 
   }
   game->title = StdString(dictionary[@"title"]);
   game->system = static_cast<IOSGameSystem>(UInt8FromObject(dictionary[@"system"]));
+  game->original_xbox = [dictionary[@"xb"] boolValue];
   game->content_type = static_cast<XContentType>(UInt32FromObject(dictionary[@"ct"]));
   game->content_type_name = StdString(dictionary[@"ctn"]);
   game->title_id = UInt32FromObject(dictionary[@"tid"]);
