@@ -51,15 +51,33 @@ struct IOSXeFuInfo {
 };
 // Walks the folder, so keep it off the main thread.
 IOSXeFuInfo ReadIOSXeFuInfo();
+// The same without the size: only the folder's own files are read, so it is quick enough for the
+// main thread.
+IOSXeFuInfo ReadIOSXeFuLaunchers();
 
-// The file xefu_launcher names, when it is installed. When it isn't (after a
-// reinstall or a removal), xbox.xex when installed, else the first of
-// |info|'s launchers: that becomes the setting, and is saved.
+// What a game can start through, in the order a list shows them: xbox.xex (as "Automatic") when
+// installed, then the builds.
+std::vector<std::string> IOSXeFuLauncherNames(const IOSXeFuInfo& info);
+
+// The file the xefu_launcher setting names, when it is installed: the default for every game,
+// not what a game's own settings say. When it isn't installed (after a reinstall or a removal),
+// xbox.xex when installed, else the first of |info|'s launchers: that becomes the setting, and
+// is saved.
 std::string ResolveIOSXeFuLauncher(const IOSXeFuInfo& info);
 void SetIOSXeFuLauncher(const std::string& launcher);
-// Whether an original Xbox game can start: the launcher it would use is
-// installed. Quick enough for the main thread.
-bool IsIOSXeFuReady();
+
+// The build one game's own settings name: the xefu_launcher key of its config. Empty when it
+// has none, and the game starts through the default.
+std::string IOSXeFuGameLauncher(uint32_t title_id);
+// Removes the key, so the game goes back to the default.
+void ClearIOSXeFuGameLauncher(uint32_t title_id);
+// Whether |launcher| is xbox.xex, or a build, that is installed.
+bool IsIOSXeFuLauncherInstalled(const IOSXeFuInfo& info, const std::string& launcher);
+
+// Whether an original Xbox game can start: the launcher it would use is installed. With its
+// |title_id|, that is the build its own settings name; one that is gone is removed from them,
+// and the default is used. Quick enough for the main thread.
+bool IsIOSXeFuReady(uint32_t title_id = 0);
 
 enum class IOSXeFuResult {
   kSuccess,
@@ -73,6 +91,11 @@ enum class IOSXeFuResult {
 bool RemoveIOSXeFu();
 
 #ifdef __OBJC__
+// How a launcher reads in a list: xbox.xex is "Automatic", a build is its file name.
+NSString* IOSXeFuLauncherDisplayName(const std::string& launcher);
+// What "Automatic" means, as a choice's subtitle.
+NSString* IOSXeFuAutomaticDescription();
+
 // What an install that didn't succeed says. Nil for a finished or cancelled
 // one.
 NSString* IOSXeFuInstallFailureMessage(IOSXeFuResult result);

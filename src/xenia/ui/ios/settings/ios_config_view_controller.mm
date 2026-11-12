@@ -35,6 +35,7 @@
 #import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/settings/ios_debug_settings_view_controller.h"
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
+#import "xenia/ui/ios/settings/ios_system_software_view_controller.h"
 #import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_microphone.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
@@ -273,6 +274,7 @@ static bool IsSliderItem(const IOSConfigItem* item) {
   xe::ui::IOSWindowedAppContext* app_context_;
   uint32_t game_title_id_;
   NSString* game_title_;
+  BOOL original_xbox_;
   BOOL save_scheduled_;
   BOOL game_running_;
   void (^dismissal_handler_)(void);
@@ -291,6 +293,7 @@ static bool IsSliderItem(const IOSConfigItem* item) {
 @synthesize liveOverride = live_override_;
 @synthesize gameRunning = game_running_;
 @synthesize appContext = app_context_;
+@synthesize originalXbox = original_xbox_;
 
 - (NSString*)focusKey {
   return focus_key_;
@@ -341,6 +344,9 @@ static bool IsSliderItem(const IOSConfigItem* item) {
 
 - (std::vector<IOSConfigSection>)buildSections {
   std::vector<IOSConfigSection> sections = BuildIOSConfigSectionsForKind(catalog_kind_);
+  if (catalog_kind_ == IOSConfigCatalogKind::kPerGame && original_xbox_ && game_title_id_) {
+    sections.insert(sections.begin(), BuildIOSXboxEmulatorBuildSection());
+  }
   if (game_title_id_) {
     // The first build uses the file read off the main thread; later ones (after a reset) read
     // it again.
@@ -1810,6 +1816,13 @@ static bool IsSliderItem(const IOSConfigItem* item) {
             [[XeniaIOSMicrophoneViewController alloc] init];
         [self.navigationController pushViewController:microphone_vc animated:YES];
         [microphone_vc release];
+      } break;
+      case IOSConfigAction::kOpenXboxEmulator: {
+        XeniaSystemSoftwareViewController* system_software_vc =
+            [[XeniaSystemSoftwareViewController alloc] initWithGameRunning:game_running_];
+        system_software_vc.showsOriginalXboxGames = YES;
+        [self.navigationController pushViewController:system_software_vc animated:YES];
+        [system_software_vc release];
       } break;
       case IOSConfigAction::kManageExternalFolders: {
         XeniaIOSExternalFoldersViewController* folders_vc =

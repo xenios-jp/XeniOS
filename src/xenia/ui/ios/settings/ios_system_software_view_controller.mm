@@ -473,10 +473,7 @@ enum InstallRow : NSInteger {
 
 // How the file original Xbox games start through reads: xbox.xex is "Automatic".
 - (NSString*)nameOfXeFuLauncher {
-  if (xefu_launcher_.empty() || xefu_launcher_ == xe::ui::kIOSXeFuAutomaticLauncher) {
-    return NSLocalizedString(@"Automatic", @"system software view controller: build choice");
-  }
-  return [NSString stringWithUTF8String:xefu_launcher_.c_str()];
+  return xe::ui::IOSXeFuLauncherDisplayName(xefu_launcher_);
 }
 
 // "Installed" over how many builds it has and their size.
@@ -1111,25 +1108,15 @@ enum InstallRow : NSInteger {
 // Automatic, which lets xbox.xex pick a build for each game, then every build there is.
 - (void)presentXeFuLauncherChoices {
   std::vector<IOSConfigChoice> choices;
-  std::vector<std::string> names;
-  if (xefu_info_.has_automatic) {
-    IOSConfigChoice automatic;
-    automatic.title = NSLocalizedString(@"Automatic", @"system software view controller: build choice")
-                          .UTF8String;
-    automatic.subtitle =
-        NSLocalizedString(@"xbox.xex picks a build for each game, as the console does.",
-                          @"system software view controller: build choice")
-            .UTF8String;
-    automatic.value = static_cast<int64_t>(names.size());
-    choices.push_back(automatic);
-    names.push_back(xe::ui::kIOSXeFuAutomaticLauncher);
-  }
-  for (const std::string& launcher : xefu_info_.launchers) {
+  const std::vector<std::string> names = xe::ui::IOSXeFuLauncherNames(xefu_info_);
+  for (size_t i = 0; i < names.size(); ++i) {
     IOSConfigChoice choice;
-    choice.title = launcher;
-    choice.value = static_cast<int64_t>(names.size());
+    choice.title = xe::ui::IOSXeFuLauncherDisplayName(names[i]).UTF8String;
+    if (names[i] == xe::ui::kIOSXeFuAutomaticLauncher) {
+      choice.subtitle = xe::ui::IOSXeFuAutomaticDescription().UTF8String;
+    }
+    choice.value = static_cast<int64_t>(i);
     choices.push_back(choice);
-    names.push_back(launcher);
   }
   int64_t selected = -1;
   for (size_t i = 0; i < names.size(); ++i) {

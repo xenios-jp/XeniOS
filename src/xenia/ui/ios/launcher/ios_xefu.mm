@@ -67,6 +67,23 @@ fs::path SiblingPath(const char* suffix) {
   return path.parent_path() / (path.filename().string() + suffix);
 }
 
+cvar::IConfigVar* FindLauncherVar() {
+  if (!cvar::ConfigVars) {
+    return nullptr;
+  }
+  const auto it = cvar::ConfigVars->find("xefu_launcher");
+  return it != cvar::ConfigVars->end() ? it->second : nullptr;
+}
+
+// The setting every game starts through: the saved value, not what the game that ran last put
+// in its place.
+std::string DefaultLauncher() {
+  if (auto* var = dynamic_cast<cvar::ConfigVar<std::string>*>(FindLauncherVar())) {
+    return var->GetTypedConfigValue();
+  }
+  return cvars::xefu_launcher;
+}
+
 // Held by an install from its first copied file to the end of its swap.
 std::mutex install_mutex;
 
@@ -290,13 +307,18 @@ fs::path IOSXeFuPath() {
   return fs::absolute(storage_root) / "xefu";
 }
 
-IOSXeFuInfo ReadIOSXeFuInfo() {
+IOSXeFuInfo ReadIOSXeFuLaunchers() {
   SettleInstall();
   IOSXeFuInfo info = ScanLaunchers();
   std::sort(info.launchers.begin(), info.launchers.end(),
             [](const std::string& a, const std::string& b) {
               return [@(a.c_str()) localizedStandardCompare:@(b.c_str())] == NSOrderedAscending;
             });
+  return info;
+}
+
+IOSXeFuInfo ReadIOSXeFuInfo() {
+  IOSXeFuInfo info = ReadIOSXeFuLaunchers();
   if (info.installed) {
     std::error_code ec;
     fs::recursive_directory_iterator it(IOSXeFuPath(), ec), end;
@@ -308,6 +330,15 @@ IOSXeFuInfo ReadIOSXeFuInfo() {
     }
   }
   return info;
+}
+
+std::vector<std::string> IOSXeFuLauncherNames(const IOSXeFuInfo& info) {
+  std::vector<std::string> names;
+  if (info.has_automatic) {
+    names.push_back(kIOSXeFuAutomaticLauncher);
+  }
+  names.insert(names.end(), info.launchers.begin(), info.launchers.end());
+  return names;
 }
 
 void SetIOSXeFuLauncher(const std::string& launcher) {
@@ -324,14 +355,11 @@ void SetIOSXeFuLauncher(const std::string& launcher) {
 }
 
 std::string ResolveIOSXeFuLauncher(const IOSXeFuInfo& info) {
-  const std::string chosen = cvars::xefu_launcher;
+  const std::string chosen = DefaultLauncher();
   if (!info.installed) {
     return chosen;
   }
-  if (info.has_automatic && IsAutomaticName(chosen)) {
-    return chosen;
-  }
-  if (std::find(info.launchers.begin(), info.launchers.end(), chosen) != info.launchers.end()) {
+  if (IsIOSXeFuLauncherInstalled(info, chosen)) {
     return chosen;
   }
   const std::string fallback =
@@ -340,13 +368,68 @@ std::string ResolveIOSXeFuLauncher(const IOSXeFuInfo& info) {
   return fallback;
 }
 
-bool IsIOSXeFuReady() {
+bool IsIOSXeFuLauncherInstalled(const IOSXeFuInfo& info, const std::string& launcher) {
+  if (info.has_automatic && IsAutomaticName(launcher)) {
+    return true;
+  }
+  return std::find(info.launchers.begin(), info.launchers.end(), launcher) != info.launchers.end();
+}
+
+std::string IOSXeFuGameLauncher(uint32_t title_id) {
+  cvar::IConfigVar* var = FindLauncherVar();
+  if (!var || !title_id) {
+    return std::string();
+  }
+  const toml::table game_config = config::LoadGameConfig(title_id);
+  if (const toml::node* node = config::FindConfigNode(game_config, *var)) {
+    return node->value_or(std::string());
+  }
+  return std::string();
+}
+
+void ClearIOSXeFuGameLauncher(uint32_t title_id) {
+  cvar::IConfigVar* var = FindLauncherVar();
+  if (!var || !title_id) {
+    return;
+  }
+  toml::table game_config = config::LoadGameConfig(title_id);
+  if (!config::FindConfigNode(game_config, *var)) {
+    return;
+  }
+  if (toml::table* section = config::ResolveSectionTable(game_config, var->category())) {
+    section->erase(var->name());
+  }
+  config::SaveGameConfig(title_id, game_config);
+  XELOGI("iOS: removed the Xbox emulator build from the settings of title {:08X}", title_id);
+}
+
+bool IsIOSXeFuReady(uint32_t title_id) {
   const IOSXeFuInfo info = ScanLaunchers();
   if (!info.installed) {
     return false;
   }
+  const std::string game_launcher = IOSXeFuGameLauncher(title_id);
+  if (!game_launcher.empty()) {
+    if (IsIOSXeFuLauncherInstalled(info, game_launcher)) {
+      return true;
+    }
+    // The build is gone (a reinstall without it): the game goes back to the default.
+    ClearIOSXeFuGameLauncher(title_id);
+  }
   std::error_code ec;
   return fs::is_regular_file(IOSXeFuPath() / ResolveIOSXeFuLauncher(info), ec);
+}
+
+NSString* IOSXeFuLauncherDisplayName(const std::string& launcher) {
+  if (launcher.empty() || IsAutomaticName(launcher)) {
+    return NSLocalizedString(@"Automatic", @"system software view controller: build choice");
+  }
+  return [NSString stringWithUTF8String:launcher.c_str()];
+}
+
+NSString* IOSXeFuAutomaticDescription() {
+  return NSLocalizedString(@"xbox.xex picks a build for each game, as the console does.",
+                           @"system software view controller: build choice");
 }
 
 bool RemoveIOSXeFu() {

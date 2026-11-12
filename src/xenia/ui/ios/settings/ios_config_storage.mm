@@ -365,6 +365,11 @@ bool InsertGameConfigValue(toml::table* config_table, const IOSConfigItem& item)
   }
   if (dynamic_cast<cvar::ConfigVar<std::string>*>(var) ||
       dynamic_cast<cvar::ConfigVar<std::filesystem::path>*>(var)) {
+    // The Xbox emulator build's "Default" names none, so the game follows the global one.
+    if (name == "xefu_launcher" && StringValueForConfigItem(item).empty()) {
+      category_table->erase(name);
+      return true;
+    }
     category_table->insert_or_assign(name, StringValueForConfigItem(item));
     return true;
   }

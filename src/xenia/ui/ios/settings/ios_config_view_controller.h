@@ -26,6 +26,9 @@
 @property(nonatomic, readonly) IOSConfigCatalogKind catalogKind;
 @property(nonatomic, readonly) uint32_t gameTitleID;
 @property(nonatomic, copy, readonly) NSString* gameTitle;
+// The game is an original Xbox game, which starts through the Xbox emulator: its settings offer
+// the build to use. Set before the page is shown.
+@property(nonatomic, assign) BOOL originalXbox;
 @property(nonatomic, assign) BOOL liveOverride;
 // A game is running, so saved changes take effect only after a relaunch. Pushed pages inherit it.
 @property(nonatomic, assign) BOOL gameRunning;

@@ -73,6 +73,8 @@ enum class IOSConfigAction {
   kManageExternalFolders,
   // Settings → Audio → Microphone, the voice chat choice.
   kOpenMicrophone,
+  // Settings → System Software → Original Xbox Games, where the Xbox emulator is installed.
+  kOpenXboxEmulator,
 };
 
 struct IOSConfigChoice {

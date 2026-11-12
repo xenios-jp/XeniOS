@@ -26,6 +26,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/ui/config_helpers.h"
 #include "xenia/ui/ios/launcher/ios_dashboard.h"
+#include "xenia/ui/ios/launcher/ios_xefu.h"
 
 #import "xenia/ui/ios/settings/ios_config_storage.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
@@ -215,6 +216,42 @@ static void AddActionSetting(std::vector<IOSConfigItem>& items, IOSConfigAction 
   item.control_type = IOSConfigControlType::kAction;
   item.action = action;
   items.push_back(std::move(item));
+}
+
+IOSConfigSection BuildIOSXboxEmulatorBuildSection(void) {
+  IOSConfigSection section;
+  section.title = "Original Xbox";
+  const xe::ui::IOSXeFuInfo info = xe::ui::ReadIOSXeFuLaunchers();
+  if (!info.installed) {
+    AddActionSetting(section.items, IOSConfigAction::kOpenXboxEmulator, "Xbox Emulator Build",
+                     "Install the Xbox emulator in System Software to choose a build.");
+    return section;
+  }
+  IOSConfigItem item;
+  item.key = "xefu_launcher";
+  item.title = "Xbox Emulator Build";
+  item.subtitle = "The build this game starts through.";
+  item.control_type = IOSConfigControlType::kChoiceString;
+  // An empty value is the default: the game's config doesn't name a build.
+  item.has_default = true;
+  IOSConfigChoice standard;
+  standard.title = "Default";
+  standard.subtitle = xe::ui::IOSXeFuLauncherDisplayName(xe::ui::ResolveIOSXeFuLauncher(info))
+                          .UTF8String;
+  item.choices.push_back(standard);
+  item.choice_string_values.push_back(std::string());
+  for (const std::string& launcher : xe::ui::IOSXeFuLauncherNames(info)) {
+    IOSConfigChoice choice;
+    choice.title = xe::ui::IOSXeFuLauncherDisplayName(launcher).UTF8String;
+    if (launcher == xe::ui::kIOSXeFuAutomaticLauncher) {
+      choice.subtitle = xe::ui::IOSXeFuAutomaticDescription().UTF8String;
+    }
+    choice.value = static_cast<int64_t>(item.choices.size());
+    item.choices.push_back(choice);
+    item.choice_string_values.push_back(launcher);
+  }
+  section.items.push_back(std::move(item));
+  return section;
 }
 
 // Fills the choices of an enum row from |options| and selects the stored value. A stored value
