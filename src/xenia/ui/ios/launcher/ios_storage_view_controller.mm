@@ -163,6 +163,24 @@ NSString* TitleName(const IOSStorageTitle& title) {
                                     XEFormatTitleIDHexUpper(title.title_id)];
 }
 
+// The name a disc's file goes by: a folder game is the folder its executable is in.
+NSString* DiscFileName(const IOSStorageDisc& disc) {
+  NSString* path = [NSString stringWithUTF8String:disc.path.c_str()];
+  NSString* name = path.lastPathComponent;
+  if ([name caseInsensitiveCompare:@"default.xex"] == NSOrderedSame ||
+      [name caseInsensitiveCompare:@"default.xbe"] == NSOrderedSame) {
+    name = path.stringByDeletingLastPathComponent.lastPathComponent;
+  }
+  return name.length ? name : @"";
+}
+
+// What the launcher says when asked to delete a game while one runs.
+void PresentCloseGameFirst(UIViewController* presenter) {
+  XEPresentOKAlert(presenter,
+                   NSLocalizedString(@"Couldn’t Delete Game", @"Delete game: alert title"),
+                   NSLocalizedString(@"Close the game first.", @"Delete game: alert message"));
+}
+
 // A small rounded square in a kind's colour, as a row's leading image.
 UIImage* SwatchImage(UIColor* color) {
   UIGraphicsImageRenderer* renderer =
@@ -260,6 +278,7 @@ struct Measurement {
 @end
 
 namespace {
+enum class TitleSection { kKinds, kDiscs, kActions };
 enum class TitleAction {
   kClearShaders,
   kDeleteContent,
@@ -273,6 +292,7 @@ enum class TitleAction {
   IOSStorageTitle title_;
   XeniaStorageViewController* owner_;  // Not retained: it owns this page's stack.
   XEStatusHeaderView* header_;
+  std::vector<TitleSection> sections_;
   std::vector<IOSStorageKind> kinds_;
   std::vector<TitleAction> actions_;
 }
@@ -295,6 +315,9 @@ enum class TitleAction {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+  // A disc's row is two lines, and a long file name wraps.
+  self.tableView.rowHeight = UITableViewAutomaticDimension;
+  self.tableView.estimatedRowHeight = 52.0;
   header_ = [[XEStatusHeaderView alloc] init];
   [self refreshHeader];
 }
@@ -347,6 +370,13 @@ enum class TitleAction {
   } else {
     actions_.push_back(TitleAction::kDeleteAllData);
   }
+  sections_.clear();
+  sections_.push_back(TitleSection::kKinds);
+  // One disc of several can go by itself; the only one goes with Delete Game.
+  if (title_.in_library && title_.discs.size() > 1) {
+    sections_.push_back(TitleSection::kDiscs);
+  }
+  sections_.push_back(TitleSection::kActions);
 }
 
 - (void)refreshHeader {
@@ -380,16 +410,37 @@ enum class TitleAction {
 #pragma mark Table
 
 - (NSInteger)numberOfSectionsInTableView:(__unused UITableView*)tableView {
-  return 2;
+  return NSInteger(sections_.size());
 }
 
 - (NSInteger)tableView:(__unused UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
-  return section == 0 ? NSInteger(kinds_.size()) : NSInteger(actions_.size());
+  switch (sections_[size_t(section)]) {
+    case TitleSection::kKinds:
+      return NSInteger(kinds_.size());
+    case TitleSection::kDiscs:
+      return NSInteger(title_.discs.size());
+    case TitleSection::kActions:
+      return NSInteger(actions_.size());
+  }
+  return 0;
+}
+
+- (NSString*)tableView:(__unused UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
+  return sections_[size_t(section)] == TitleSection::kDiscs
+             ? NSLocalizedString(@"Discs", @"storage: game page section")
+             : nil;
 }
 
 - (NSString*)tableView:(__unused UITableView*)tableView titleForFooterInSection:(NSInteger)section {
-  if (section != 1) {
-    return nil;
+  switch (sections_[size_t(section)]) {
+    case TitleSection::kKinds:
+      return nil;
+    case TitleSection::kDiscs:
+      return NSLocalizedString(@"Tap or swipe a disc to delete only that file. The game’s "
+                               @"other discs, updates, add-ons and saves stay.",
+                               @"storage: game page footer");
+    case TitleSection::kActions:
+      break;
   }
   if (title_.in_library && IsLinkedOnly(title_)) {
     return NSLocalizedString(@"Shaders rebuild as you play. You can take the game out of the "
@@ -406,8 +457,144 @@ enum class TitleAction {
                                  @"storage: game page footer");
 }
 
+// A disc's label over its file name (two files can carry one label), with what deleting it
+// frees.
+- (UITableViewCell*)tableView:(UITableView*)tableView discCellForRow:(NSInteger)row {
+  static NSString* const kDiscCellId = @"XeniaStorageDiscCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kDiscCellId];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                   reuseIdentifier:kDiscCellId] autorelease];
+    cell.textLabel.numberOfLines = 0;
+    cell.detailTextLabel.numberOfLines = 0;
+  }
+  const IOSStorageDisc& disc = title_.discs[size_t(row)];
+  xe_apply_label_font(cell.textLabel, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  xe_apply_label_font(cell.detailTextLabel, UIFontTextStyleFootnote, 13.0, UIFontWeightRegular);
+  cell.textLabel.textColor = [XeniaTheme textPrimary];
+  cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+  NSString* label = [NSString stringWithUTF8String:disc.label.c_str()];
+  if (!label.length) {
+    label = NSLocalizedString(@"Disc", @"storage: game page row; a disc without a label");
+  }
+  NSString* file = DiscFileName(disc);
+  if (disc.linked) {
+    file = [NSString stringWithFormat:NSLocalizedString(@"Linked folder · %@",
+                                                        @"storage: disc row detail; %@ is a "
+                                                        @"file name"),
+                                      file];
+  }
+  cell.textLabel.text = label;
+  cell.detailTextLabel.text = file;
+  cell.imageView.image = XERowSymbolImage(@"opticaldisc", nil);
+  NSString* size = disc.bytes ? ByteText(disc.bytes) : nil;
+  cell.accessoryView = size ? ValueAccessory(size, NO) : nil;
+  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+  XEApplyAccessibility(cell, [NSString stringWithFormat:@"%@, %@", label, file], size,
+                       NSLocalizedString(@"Deletes this disc after asking.",
+                                         @"storage: disc row accessibility hint"),
+                       UIAccessibilityTraitButton);
+  return cell;
+}
+
+// Asks, then has the launcher delete the one file: it holds the linked folders' access and
+// scans the library again.
+- (void)confirmDeleteDiscAtPath:(const std::string&)disc_path {
+  if (owner_.gameRunning) {
+    PresentCloseGameFirst(self);
+    return;
+  }
+  const auto disc =
+      std::find_if(title_.discs.begin(), title_.discs.end(),
+                   [&disc_path](const IOSStorageDisc& other) { return other.path == disc_path; });
+  // Never the last one this way: that is Delete Game.
+  if (disc == title_.discs.end() || title_.discs.size() < 2) {
+    return;
+  }
+  NSString* path = [NSString stringWithUTF8String:disc->path.c_str()];
+  if (!path.length) {
+    return;
+  }
+  NSString* label = [NSString stringWithUTF8String:disc->label.c_str()];
+  NSString* game = TitleName(title_);
+  NSString* what = label.length ? [NSString stringWithFormat:NSLocalizedString(
+                                                                 @"%1$@ of %2$@",
+                                                                 @"storage: alert message; a "
+                                                                 @"disc's label, its game"),
+                                                             label, game]
+                                : game;
+  if (disc->bytes) {
+    what = [NSString stringWithFormat:@"%@, %@", what, ByteText(disc->bytes)];
+  }
+  NSString* where =
+      disc->linked
+          ? NSLocalizedString(@"The file is deleted from its linked folder.",
+                              @"storage: alert message")
+          : [NSString stringWithFormat:NSLocalizedString(@"The file is deleted from this %@.",
+                                                         @"storage: alert message; %@ is the "
+                                                         @"device's kind"),
+                                       UIDevice.currentDevice.model];
+  NSString* message =
+      [NSString stringWithFormat:@"%@. %@ %@", what, where,
+                                 NSLocalizedString(@"The game’s other discs, updates, add-ons "
+                                                   @"and saves stay. This can’t be undone.",
+                                                   @"storage: alert message")];
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:[NSString
+                                   stringWithFormat:NSLocalizedString(@"Delete “%@”?",
+                                                                      @"storage: alert title; "
+                                                                      @"%@ is a disc's file name"),
+                                                    DiscFileName(*disc)]
+                       message:message
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Cancel", @"storage: alert button")
+                                 style:UIAlertActionStyleCancel
+                               handler:nil]];
+  // The game and the disc by ID and path: the page can change under the alert.
+  NSDictionary* request = @{
+    XeniaStorageTitleIdKey : @(title_.title_id),
+    XeniaStorageGamePathKey : [NSString stringWithUTF8String:title_.game_path.c_str()] ?: @"",
+    XeniaStorageDiscPathKey : path,
+  };
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Delete Disc", @"storage: alert button")
+                                 style:UIAlertActionStyleDestructive
+                               handler:^(UIAlertAction* __unused action) {
+                                 [[NSNotificationCenter defaultCenter]
+                                     postNotificationName:XeniaStorageDeleteDiscRequestNotification
+                                                   object:nil
+                                                 userInfo:request];
+                               }]];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (UISwipeActionsConfiguration*)tableView:(__unused UITableView*)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (sections_[size_t(indexPath.section)] != TitleSection::kDiscs) {
+    return nil;
+  }
+  const std::string disc_path = title_.discs[size_t(indexPath.row)].path;
+  UIContextualAction* remove = [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleDestructive
+                          title:NSLocalizedString(@"Delete", @"storage: swipe action")
+                        handler:^(__unused UIContextualAction* action, __unused UIView* view,
+                                  void (^done)(BOOL)) {
+                          [self confirmDeleteDiscAtPath:disc_path];
+                          done(NO);
+                        }];
+  remove.image = [UIImage systemImageNamed:@"trash"];
+  UISwipeActionsConfiguration* actions =
+      [UISwipeActionsConfiguration configurationWithActions:@[ remove ]];
+  actions.performsFirstActionWithFullSwipe = NO;
+  return actions;
+}
+
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  if (sections_[size_t(indexPath.section)] == TitleSection::kDiscs) {
+    return [self tableView:tableView discCellForRow:indexPath.row];
+  }
   static NSString* const kCellId = @"XeniaStorageTitleCell";
   UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kCellId];
   if (!cell) {
@@ -417,7 +604,7 @@ enum class TitleAction {
   xe_apply_label_font(cell.textLabel, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
   xe_apply_label_font(cell.detailTextLabel, UIFontTextStyleBody, 17.0, UIFontWeightRegular);
   cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  if (indexPath.section == 0) {
+  if (sections_[size_t(indexPath.section)] == TitleSection::kKinds) {
     const IOSStorageKind kind = kinds_[size_t(indexPath.row)];
     cell.textLabel.text = [self titleForKind:kind];
     cell.textLabel.textColor = [XeniaTheme textPrimary];
@@ -479,8 +666,17 @@ enum class TitleAction {
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
-  if (indexPath.section != 1) {
-    return;
+  switch (sections_[size_t(indexPath.section)]) {
+    case TitleSection::kKinds:
+      return;
+    case TitleSection::kDiscs: {
+      // A copy: asking can refresh the page.
+      const std::string disc_path = title_.discs[size_t(indexPath.row)].path;
+      [self confirmDeleteDiscAtPath:disc_path];
+      return;
+    }
+    case TitleSection::kActions:
+      break;
   }
   const uint32_t title_id = title_.title_id;
   NSString* name = TitleName(title_);

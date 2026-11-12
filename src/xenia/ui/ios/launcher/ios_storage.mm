@@ -34,6 +34,9 @@ NSNotificationName const XeniaStorageDeleteGameRequestNotification =
     @"XeniaStorageDeleteGameRequestNotification";
 NSString* const XeniaStorageTitleIdKey = @"titleId";
 NSString* const XeniaStorageGamePathKey = @"gamePath";
+NSNotificationName const XeniaStorageDeleteDiscRequestNotification =
+    @"XeniaStorageDeleteDiscRequestNotification";
+NSString* const XeniaStorageDiscPathKey = @"discPath";
 
 namespace {
 
@@ -101,6 +104,17 @@ uint64_t TreeBytes(const fs::path& path) {
     total += EntryBytes(it->path());
   }
   return total;
+}
+
+// TreeBytes of a path that may be gone.
+uint64_t ExistingTreeBytes(const fs::path& path) {
+  struct stat st;
+  return ::lstat(path.c_str(), &st) ? 0 : TreeBytes(path);
+}
+
+// A game kept as loose files: deleting it takes the folder its executable is in.
+bool IsFolderGame(const fs::path& path) {
+  return xe::ui::IsDefaultXexPath(path) || xe::ui::IsDefaultXbePath(path);
 }
 
 // The newest change in a tree, in seconds since the epoch.
@@ -229,19 +243,32 @@ class StorageWalk {
       if (!game.title.empty()) {
         title.name = game.title;
       }
-      auto add_copy = [&](const fs::path& path) {
+      auto add_copy = [&](const fs::path& path,
+                          const xe::ui::IOSDiscoveredGame::Disc* disc = nullptr) {
         if (path.empty()) {
           return;
         }
         const fs::path normal = Spelled(path);
+        size_t disc_index = kNoDisc;
+        if (disc) {
+          disc_index = title.discs.size();
+          IOSStorageDisc listed;
+          listed.path = path.string();
+          listed.label = disc->label;
+          listed.linked = disc->is_external;
+          title.discs.push_back(std::move(listed));
+        }
         // Decided by where the file is, not the entry's linked flag: a folder
         // linked from inside the app's own storage still takes the app's space.
         if (!IsUnder(normal, home_)) {
           title.has_linked_copy = true;
-          linked_paths_.emplace_back(normal, key);
+          linked_paths_.push_back({normal, key, disc_index});
           return;
         }
         title.has_imported_copy = true;
+        if (disc) {
+          imported_discs_.push_back({normal, key, disc_index});
+        }
         game_paths_[normal.string()] = key;
         fs::path sidecar = normal;
         sidecar += ".data";
@@ -251,7 +278,7 @@ class StorageWalk {
         add_copy(game.path);
       }
       for (const auto& disc : game.discs) {
-        add_copy(disc.path);
+        add_copy(disc.path, &disc);
       }
     }
   }
@@ -261,6 +288,7 @@ class StorageWalk {
     Walk(documents_);
     Walk(home_ / "Library");
     MeasureLinked();
+    MeasureImportedDiscs();
     AdoptUntitledGames();
     IOSStorageReport report;
     report.bytes = bytes_;
@@ -291,6 +319,15 @@ class StorageWalk {
  private:
   // Titles are keyed by title ID; games without one by kUntitledKeyBase + n.
   static constexpr uint64_t kUntitledKeyBase = uint64_t(1) << 32;
+  static constexpr size_t kNoDisc = ~size_t(0);
+
+  // A copy of a library game: its path as the walk spells it, its title's key
+  // and its place in the title's discs (kNoDisc for a game without a disc list).
+  struct GameCopy {
+    fs::path path;
+    uint64_t key;
+    size_t disc;
+  };
 
   // A library game whose title ID the scan couldn't read (an original Xbox
   // disc) still saves under its title ID. Data whose title has the game's name
@@ -335,6 +372,7 @@ class StorageWalk {
       data->has_linked_copy = game.has_linked_copy;
       data->linked_bytes = game.linked_bytes;
       data->game_path = game.game_path;
+      data->discs = game.discs;
       for (size_t kind = 0; kind < data->bytes.size(); ++kind) {
         data->bytes[kind] += game.bytes[kind];
       }
@@ -377,7 +415,9 @@ class StorageWalk {
       }
       return uint64_t(info.st_blocks) * 512;
     };
-    for (const auto& [path, key] : linked_paths_) {
+    for (const GameCopy& copy : linked_paths_) {
+      const fs::path& path = copy.path;
+      const uint64_t key = copy.key;
       dev_t device = 0;
       uint64_t bytes = file_bytes(path, &device);
       if (!bytes) {
@@ -389,7 +429,12 @@ class StorageWalk {
       for (const auto& entry : fs::directory_iterator(sidecar, ec)) {
         bytes += file_bytes(entry.path());
       }
-      titles_[key].linked_bytes += bytes;
+      IOSStorageTitle& title = titles_[key];
+      title.linked_bytes += bytes;
+      // Deleting a folder game takes its whole folder, which isn't sized here.
+      if (copy.disc < title.discs.size() && !IsFolderGame(path)) {
+        title.discs[copy.disc].bytes = bytes;
+      }
       // A linked folder on the device's own storage (On My iPhone, say) takes
       // its space as the app's folder does; one on another drive doesn't.
       if (home_known && device == home_info.st_dev) {
@@ -397,6 +442,26 @@ class StorageWalk {
       }
     }
     (void)accesses;  // Released with the caller's autorelease pool.
+  }
+
+  // What deleting each disc in the app's storage frees: the file with its
+  // ".data" folder, or a folder game's folder.
+  void MeasureImportedDiscs() {
+    for (const GameCopy& copy : imported_discs_) {
+      IOSStorageTitle& title = titles_[copy.key];
+      if (copy.disc >= title.discs.size()) {
+        continue;
+      }
+      uint64_t bytes;
+      if (IsFolderGame(copy.path)) {
+        bytes = ExistingTreeBytes(copy.path.parent_path());
+      } else {
+        fs::path sidecar = copy.path;
+        sidecar += ".data";
+        bytes = ExistingTreeBytes(copy.path) + ExistingTreeBytes(sidecar);
+      }
+      title.discs[copy.disc].bytes = bytes;
+    }
   }
 
   void WalkTemporary() {
@@ -497,7 +562,8 @@ class StorageWalk {
   std::string bundle_;
   std::vector<fs::path> leftover_dirs_;
   std::unordered_map<std::string, uint64_t> game_paths_;
-  std::vector<std::pair<fs::path, uint64_t>> linked_paths_;
+  std::vector<GameCopy> linked_paths_;
+  std::vector<GameCopy> imported_discs_;
   std::unordered_map<uint64_t, IOSStorageTitle> titles_;
   IOSStorageBytes bytes_ = {};
 };

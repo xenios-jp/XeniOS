@@ -34,6 +34,20 @@ enum class IOSStorageKind : int {
 
 using IOSStorageBytes = std::array<uint64_t, size_t(IOSStorageKind::kCount)>;
 
+// One disc file of a library game.
+struct IOSStorageDisc {
+  // As the library spells it, to find the disc again for Delete Disc.
+  std::string path;
+  std::string label;
+  // The library plays it from a linked folder: deleting it deletes the file
+  // there.
+  bool linked = false;
+  // What deleting it frees: the file with its ".data" folder, or a folder
+  // game's folder. 0 when it couldn't be sized (a linked folder that can't be
+  // reached, a folder game in a linked folder).
+  uint64_t bytes = 0;
+};
+
 struct IOSStorageTitle {
   // 0 for a library game whose title ID couldn't be read; game_path names it.
   uint32_t title_id = 0;
@@ -49,6 +63,8 @@ struct IOSStorageTitle {
   uint64_t linked_bytes = 0;
   // The library entry's path, to find the game again for Delete Game.
   std::string game_path;
+  // A library game's disc files, in the library's order.
+  std::vector<IOSStorageDisc> discs;
   IOSStorageBytes bytes = {};
   uint64_t Total() const;
 };
@@ -105,6 +121,11 @@ extern NSNotificationName const XeniaStorageDidChangeNotification;
 extern NSNotificationName const XeniaStorageDeleteGameRequestNotification;
 extern NSString* const XeniaStorageTitleIdKey;
 extern NSString* const XeniaStorageGamePathKey;
+// Posted by the Storage screen, once the user confirmed, to have the launcher
+// delete one disc file of a library game that has several: the game as above,
+// and the disc's library path (NSString) under XeniaStorageDiscPathKey.
+extern NSNotificationName const XeniaStorageDeleteDiscRequestNotification;
+extern NSString* const XeniaStorageDiscPathKey;
 #endif  // __OBJC__
 
 #endif  // XENIA_UI_IOS_LAUNCHER_IOS_STORAGE_H_
