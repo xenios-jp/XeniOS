@@ -11,12 +11,15 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <memory>
 #include <vector>
 
 #include "xenia/ui/ios/launcher/ios_dashboard.h"
+#include "xenia/ui/ios/launcher/ios_xefu.h"
+#import "xenia/ui/ios/settings/ios_choice_list_view_controller.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 
 namespace {
@@ -28,6 +31,15 @@ enum SystemSoftwareSection : NSInteger {
   kSectionInstall,
   // The one version there is, as a whole.
   kSectionRemove,
+  // The Xbox emulator original Xbox games run through.
+  kSectionXeFu,
+};
+
+enum XeFuRow : NSInteger {
+  kXeFuRowStatus,
+  kXeFuRowLauncher,
+  kXeFuRowInstall,
+  kXeFuRowRemove,
 };
 
 enum InstallRow : NSInteger {
@@ -49,6 +61,12 @@ enum InstallRow : NSInteger {
   std::filesystem::path home_dashboard_path_;
   // The sections shown, in order.
   std::vector<SystemSoftwareSection> sections_;
+  xe::ui::IOSXeFuInfo xefu_info_;
+  // The file original Xbox games start through.
+  std::string xefu_launcher_;
+  std::vector<XeFuRow> xefu_rows_;
+  // The picker that is open is for the Xbox emulator.
+  BOOL picking_xefu_;
   UIAlertController* progress_alert_;
   XEStatusHeaderView* header_;
 }
@@ -112,6 +130,15 @@ enum InstallRow : NSInteger {
   if (info_.installed ? !shows_versions : info_.has_unrestored_files) {
     sections_.push_back(kSectionRemove);
   }
+  sections_.push_back(kSectionXeFu);
+  xefu_rows_ = {kXeFuRowStatus};
+  if (xefu_info_.installed) {
+    xefu_rows_.push_back(kXeFuRowLauncher);
+  }
+  xefu_rows_.push_back(kXeFuRowInstall);
+  if (xefu_info_.installed) {
+    xefu_rows_.push_back(kXeFuRowRemove);
+  }
 }
 
 - (SystemSoftwareSection)sectionAt:(NSInteger)section {
@@ -123,6 +150,22 @@ enum InstallRow : NSInteger {
              ? NSLocalizedString(@"Unknown Version",
                                  @"system software view controller: a version that can't be read")
              : [NSString stringWithUTF8String:version.version.c_str()];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  if (self.showsOriginalXboxGames) {
+    self.showsOriginalXboxGames = NO;
+    const auto it = std::find(sections_.begin(), sections_.end(), kSectionXeFu);
+    if (it != sections_.end()) {
+      [self.tableView
+          scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0
+                                                    inSection:static_cast<NSInteger>(
+                                                                  it - sections_.begin())]
+                atScrollPosition:UITableViewScrollPositionTop
+                        animated:NO];
+    }
+  }
 }
 
 - (void)viewDidLayoutSubviews {
@@ -207,8 +250,12 @@ enum InstallRow : NSInteger {
 - (void)reloadInfo {
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     auto info = std::make_shared<xe::ui::IOSSystemSoftwareInfo>(xe::ui::ReadIOSSystemSoftwareInfo());
+    auto xefu = std::make_shared<xe::ui::IOSXeFuInfo>(xe::ui::ReadIOSXeFuInfo());
     dispatch_async(dispatch_get_main_queue(), ^{
       info_ = *info;
+      xefu_info_ = *xefu;
+      // After a reinstall or a removal the saved file may be gone: this falls back to one there.
+      xefu_launcher_ = xe::ui::ResolveIOSXeFuLauncher(xefu_info_);
       loaded_ = YES;
       xe::ui::ForgetRemovedIOSHomeDashboardVersion();
       [self readHomeDashboard];
@@ -250,14 +297,22 @@ enum InstallRow : NSInteger {
       return 2;
     case kSectionRemove:
       return 1;
+    case kSectionXeFu:
+      return static_cast<NSInteger>(xefu_rows_.size());
   }
   return 0;
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
-  return [self sectionAt:section] == kSectionVersions
-             ? NSLocalizedString(@"Versions", @"system software view controller: section title")
-             : nil;
+  switch ([self sectionAt:section]) {
+    case kSectionVersions:
+      return NSLocalizedString(@"Versions", @"system software view controller: section title");
+    case kSectionXeFu:
+      return NSLocalizedString(@"Original Xbox Games",
+                               @"system software view controller: section title");
+    default:
+      return nil;
+  }
 }
 
 - (NSString*)tableView:(UITableView* __unused)tableView
@@ -316,6 +371,18 @@ enum InstallRow : NSInteger {
       return game_running_ ? NSLocalizedString(@"Quit the game to remove the system software.",
                                                 @"system software view controller: footer")
                            : nil;
+    case kSectionXeFu: {
+      NSString* about = NSLocalizedString(
+          @"Original Xbox games run through the Xbox 360's own Xbox emulator. XeniOS doesn't "
+          @"include it. Install the Compatibility folder from an Xbox 360's hard drive: xbox.xex "
+          @"and the xefu*.xex files.",
+          @"system software view controller: footer");
+      return game_running_
+                 ? [NSLocalizedString(@"Quit the game to install or remove the Xbox emulator. ",
+                                      @"system software view controller: footer")
+                       stringByAppendingString:about]
+                 : about;
+    }
   }
   return nil;
 }
@@ -404,9 +471,104 @@ enum InstallRow : NSInteger {
   return cell;
 }
 
+// How the file original Xbox games start through reads: xbox.xex is "Automatic".
+- (NSString*)nameOfXeFuLauncher {
+  if (xefu_launcher_.empty() || xefu_launcher_ == xe::ui::kIOSXeFuAutomaticLauncher) {
+    return NSLocalizedString(@"Automatic", @"system software view controller: build choice");
+  }
+  return [NSString stringWithUTF8String:xefu_launcher_.c_str()];
+}
+
+// "Installed" over how many builds it has and their size.
+- (UITableViewCell*)xefuCellForRow:(XeFuRow)row {
+  const BOOL can_change = [self canChangeSystemSoftware];
+  switch (row) {
+    case kXeFuRowStatus: {
+      UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                                      reuseIdentifier:nil] autorelease];
+      cell.selectionStyle = UITableViewCellSelectionStyleNone;
+      cell.textLabel.textColor = [XeniaTheme textPrimary];
+      cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+      cell.accessibilityTraits = UIAccessibilityTraitStaticText;
+      if (!loaded_) {
+        cell.textLabel.text =
+            NSLocalizedString(@"Checking…", @"system software view controller: status");
+      } else if (!xefu_info_.installed) {
+        cell.textLabel.text =
+            NSLocalizedString(@"Not Installed", @"system software view controller: status");
+      } else {
+        const size_t builds = xefu_info_.launchers.size();
+        NSString* builds_text =
+            builds == 0 ? NSLocalizedString(@"No builds",
+                                            @"system software view controller: the Xbox emulator "
+                                            @"has no builds to start games with")
+            : builds == 1
+                ? NSLocalizedString(@"1 build", @"system software view controller: one build")
+                : [NSString stringWithFormat:NSLocalizedString(
+                                                 @"%lu builds",
+                                                 @"system software view controller: the number of "
+                                                 @"Xbox emulator builds installed"),
+                                             static_cast<unsigned long>(builds)];
+        cell.textLabel.text =
+            NSLocalizedString(@"Installed", @"system software view controller: status");
+        cell.detailTextLabel.text = [NSString
+            stringWithFormat:@"%@ · %@", builds_text,
+                             [NSByteCountFormatter
+                                 stringFromByteCount:static_cast<long long>(xefu_info_.size)
+                                          countStyle:NSByteCountFormatterCountStyleFile]];
+      }
+      return cell;
+    }
+    case kXeFuRowLauncher: {
+      UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                                      reuseIdentifier:nil] autorelease];
+      cell.textLabel.text =
+          NSLocalizedString(@"Start Games With", @"system software view controller: row; the "
+                                                 @"build original Xbox games start through");
+      const BOOL enabled = loaded_ && !busy_;
+      cell.textLabel.textColor = enabled ? [XeniaTheme textPrimary] : [XeniaTheme textMuted];
+      cell.detailTextLabel.text = [self nameOfXeFuLauncher];
+      cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+      cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+      cell.userInteractionEnabled = enabled;
+      cell.accessibilityTraits =
+          UIAccessibilityTraitButton | (enabled ? UIAccessibilityTraitNone : UIAccessibilityTraitNotEnabled);
+      cell.accessibilityHint = NSLocalizedString(
+          @"Opens the list of builds original Xbox games can start with.",
+          @"system software view controller: accessibility hint");
+      return cell;
+    }
+    case kXeFuRowInstall:
+      return [self
+          actionCellWithTitle:NSLocalizedString(@"Install from Files",
+                                                @"system software view controller: action")
+                   symbolName:@"square.and.arrow.down"
+                         hint:NSLocalizedString(
+                                  @"Opens Files to pick the Compatibility folder from an Xbox "
+                                  @"360's hard drive. Asks first when it is installed already.",
+                                  @"system software view controller: accessibility hint")
+                      enabled:can_change
+                  destructive:NO];
+    case kXeFuRowRemove:
+      return [self
+          actionCellWithTitle:NSLocalizedString(@"Remove Xbox Emulator",
+                                                @"system software view controller: action")
+                   symbolName:@"trash.fill"
+                         hint:NSLocalizedString(@"Removes the Xbox emulator. Asks first.",
+                                                @"system software view controller: accessibility "
+                                                @"hint")
+                      enabled:can_change
+                  destructive:YES];
+  }
+  return nil;
+}
+
 - (UITableViewCell*)tableView:(UITableView* __unused)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   const SystemSoftwareSection section = [self sectionAt:indexPath.section];
+  if (section == kSectionXeFu) {
+    return [self xefuCellForRow:xefu_rows_[static_cast<size_t>(indexPath.row)]];
+  }
   if (section == kSectionStatus) {
     return [self statusCellForRow:indexPath.row];
   }
@@ -461,6 +623,10 @@ enum InstallRow : NSInteger {
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if ([self sectionAt:indexPath.section] == kSectionXeFu) {
+    [self selectXeFuRow:xefu_rows_[static_cast<size_t>(indexPath.row)]];
+    return;
+  }
   if (![self canChangeSystemSoftware]) {
     return;
   }
@@ -479,6 +645,8 @@ enum InstallRow : NSInteger {
       break;
     case kSectionRemove:
       [self confirmRemove];
+      break;
+    case kSectionXeFu:
       break;
   }
 }
@@ -545,9 +713,19 @@ enum InstallRow : NSInteger {
   [self presentViewController:xe::ui::NewIOSSystemSoftwarePicker(self) animated:YES completion:nil];
 }
 
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController* __unused)controller {
+  picking_xefu_ = NO;
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController* __unused)controller
     didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+  const BOOL for_xefu = picking_xefu_;
+  picking_xefu_ = NO;
   if (!urls.count) {
+    return;
+  }
+  if (for_xefu) {
+    [self installXeFuFromURLs:urls];
     return;
   }
   if (NSURL* url = xe::ui::IOSSystemSoftwareSourceForPickedURLs(urls)) {
@@ -899,6 +1077,229 @@ enum InstallRow : NSInteger {
                          NSLocalizedString(@"Couldn't Remove the System Software",
                                            @"system software view controller: title"),
                          NSLocalizedString(@"Delete XeniOS's system folder in Files instead.",
+                                           @"system software view controller: message"));
+      }
+    });
+  });
+}
+
+#pragma mark - Original Xbox games
+
+- (void)selectXeFuRow:(XeFuRow)row {
+  switch (row) {
+    case kXeFuRowStatus:
+      break;
+    case kXeFuRowLauncher:
+      if (loaded_ && !busy_) {
+        [self presentXeFuLauncherChoices];
+      }
+      break;
+    case kXeFuRowInstall:
+      if ([self canChangeSystemSoftware]) {
+        picking_xefu_ = YES;
+        [self presentViewController:xe::ui::NewIOSXeFuPicker(self) animated:YES completion:nil];
+      }
+      break;
+    case kXeFuRowRemove:
+      if ([self canChangeSystemSoftware]) {
+        [self confirmRemoveXeFu];
+      }
+      break;
+  }
+}
+
+// Automatic, which lets xbox.xex pick a build for each game, then every build there is.
+- (void)presentXeFuLauncherChoices {
+  std::vector<IOSConfigChoice> choices;
+  std::vector<std::string> names;
+  if (xefu_info_.has_automatic) {
+    IOSConfigChoice automatic;
+    automatic.title = NSLocalizedString(@"Automatic", @"system software view controller: build choice")
+                          .UTF8String;
+    automatic.subtitle =
+        NSLocalizedString(@"xbox.xex picks a build for each game, as the console does.",
+                          @"system software view controller: build choice")
+            .UTF8String;
+    automatic.value = static_cast<int64_t>(names.size());
+    choices.push_back(automatic);
+    names.push_back(xe::ui::kIOSXeFuAutomaticLauncher);
+  }
+  for (const std::string& launcher : xefu_info_.launchers) {
+    IOSConfigChoice choice;
+    choice.title = launcher;
+    choice.value = static_cast<int64_t>(names.size());
+    choices.push_back(choice);
+    names.push_back(launcher);
+  }
+  int64_t selected = -1;
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (names[i] == xefu_launcher_) {
+      selected = static_cast<int64_t>(i);
+    }
+  }
+  XeniaChoiceListViewController* list = [[[XeniaChoiceListViewController alloc]
+      initWithTitle:NSLocalizedString(@"Start Games With",
+                                      @"system software view controller: title")
+           subtitle:NSLocalizedString(@"The build original Xbox games start through.",
+                                      @"system software view controller: build choices")
+            choices:choices
+      selectedValue:selected
+        onSelection:^(int64_t value) {
+          if (value < 0 || value >= static_cast<int64_t>(names.size())) {
+            return;
+          }
+          xefu_launcher_ = names[static_cast<size_t>(value)];
+          xe::ui::SetIOSXeFuLauncher(xefu_launcher_);
+          [self.tableView reloadData];
+        }] autorelease];
+  [self.navigationController pushViewController:list animated:YES];
+}
+
+- (void)presentXeFuProgressWithCancel:(std::shared_ptr<std::atomic<bool>>)cancel {
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Installing the Xbox Emulator",
+                                                 @"system software view controller: title")
+                       message:@" "
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                            style:UIAlertActionStyleCancel
+                                          handler:^(UIAlertAction* __unused action) {
+                                            cancel->store(true);
+                                          }]];
+  [progress_alert_ release];
+  progress_alert_ = [alert retain];
+  [self setProgressPercent:0];
+  [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)installXeFuFromURLs:(NSArray<NSURL*>*)urls {
+  busy_ = YES;
+  [self.tableView reloadData];
+
+  auto cancel = std::make_shared<std::atomic<bool>>(false);
+  [self presentXeFuProgressWithCancel:cancel];
+  xe::ui::InstallIOSXeFuAsync(
+      urls, cancel,
+      ^(int percent) {
+        [self setProgressPercent:percent];
+      },
+      ^(void (^answer)(BOOL replace)) {
+        // Cancel reached the alert after the files were checked.
+        if (cancel->load()) {
+          answer(NO);
+          return;
+        }
+        [self confirmReplacingXeFuWithCancel:cancel answer:answer];
+      },
+      ^(xe::ui::IOSXeFuResult result) {
+        [self finishXeFuInstallWithResult:result];
+      });
+}
+
+// It is installed already: the picked files only replace it once the user says so. Until then
+// nothing installed has changed.
+- (void)confirmReplacingXeFuWithCancel:(std::shared_ptr<std::atomic<bool>>)cancel
+                                answer:(void (^)(BOOL replace))answer {
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Replace the Xbox Emulator?",
+                                                 @"system software view controller: title")
+                       message:NSLocalizedString(
+                                   @"It is installed already. Installing it again replaces it.",
+                                   @"system software view controller: message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:^(UIAlertAction* __unused action) {
+                                         answer(NO);
+                                       }]];
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(
+                                             @"Replace", @"system software view controller: action")
+                                   style:UIAlertActionStyleDefault
+                                 handler:^(UIAlertAction* __unused action) {
+                                   [self presentXeFuProgressWithCancel:cancel];
+                                   answer(YES);
+                                 }]];
+  // In place of the progress.
+  UIAlertController* progress = [progress_alert_ autorelease];
+  progress_alert_ = nil;
+  if (progress.presentingViewController) {
+    [progress dismissViewControllerAnimated:YES
+                                 completion:^{
+                                   [self presentViewController:confirm animated:YES completion:nil];
+                                 }];
+  } else {
+    [self presentViewController:confirm animated:YES completion:nil];
+  }
+}
+
+- (void)finishXeFuInstallWithResult:(xe::ui::IOSXeFuResult)result {
+  busy_ = NO;
+  [self reloadInfo];
+  void (^report)(void) = ^{
+    if (result == xe::ui::IOSXeFuResult::kSuccess) {
+      XEPresentOKAlert(self,
+                       NSLocalizedString(@"Xbox Emulator Installed",
+                                         @"system software view controller: title"),
+                       NSLocalizedString(@"Original Xbox games can start now.",
+                                         @"system software view controller: message"));
+    } else if (NSString* message = xe::ui::IOSXeFuInstallFailureMessage(result)) {
+      XEPresentOKAlert(self,
+                       NSLocalizedString(@"Couldn't Install the Xbox Emulator",
+                                         @"system software view controller: title"),
+                       message);
+    }
+  };
+  UIAlertController* alert = [progress_alert_ autorelease];
+  progress_alert_ = nil;
+  if (alert.presentingViewController) {
+    [alert dismissViewControllerAnimated:YES completion:report];
+  } else {
+    report();
+  }
+}
+
+- (void)confirmRemoveXeFu {
+  UIAlertController* confirm = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Remove the Xbox Emulator?",
+                                                 @"system software view controller: title")
+                       message:NSLocalizedString(
+                                   @"Original Xbox games won't start until you install it "
+                                   @"again. Your games and saves stay.",
+                                   @"system software view controller: message")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [confirm
+      addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
+  [confirm addAction:[UIAlertAction
+                         actionWithTitle:NSLocalizedString(
+                                             @"Remove", @"system software view controller: action")
+                                   style:UIAlertActionStyleDestructive
+                                 handler:^(UIAlertAction* __unused action) {
+                                   [self removeXeFu];
+                                 }]];
+  [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)removeXeFu {
+  if (![self canChangeSystemSoftware]) {
+    return;
+  }
+  busy_ = YES;
+  [self.tableView reloadData];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    const bool removed = xe::ui::RemoveIOSXeFu();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      busy_ = NO;
+      [self reloadInfo];
+      if (!removed) {
+        XEPresentOKAlert(self,
+                         NSLocalizedString(@"Couldn't Remove the Xbox Emulator",
+                                           @"system software view controller: title"),
+                         NSLocalizedString(@"Delete the xefu folder in XeniOS's folder in Files "
+                                           @"instead.",
                                            @"system software view controller: message"));
       }
     });

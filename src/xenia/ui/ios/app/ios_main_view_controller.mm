@@ -62,6 +62,7 @@
 #import "xenia/ui/ios/launcher/ios_content_management.h"
 #import "xenia/ui/ios/launcher/ios_dashboard.h"
 #import "xenia/ui/ios/launcher/ios_dashboard_setup_view_controller.h"
+#include "xenia/ui/ios/launcher/ios_xefu.h"
 #import "xenia/ui/ios/launcher/ios_document_import_coordinator.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_external_url.h"
@@ -282,6 +283,8 @@ struct LaunchPreparation {
   NSString* problem = nil;  // retained; the launch can't go ahead
   bool refresh_library = false;
   bool missing_god_data = false;
+  // An original Xbox game, which needs the Xbox emulator.
+  bool original_xbox = false;
   uint32_t title_id = 0;
   NSMutableArray<XeniaIOSExternalLibraryAccess*>* accesses = [[NSMutableArray alloc] init];
   ~LaunchPreparation() {
@@ -405,6 +408,8 @@ struct LaunchPreparation {
 - (void)saveTouchLayoutModelForTitleID:(uint32_t)title_id;
 - (uint32_t)titleIDForGamePath:(const std::filesystem::path&)game_path;
 - (uint32_t)knownTitleIDForGamePath:(const std::filesystem::path&)game_path;
+- (BOOL)isKnownOriginalXboxGamePath:(const std::filesystem::path&)game_path;
+- (void)presentMissingXboxEmulatorAlert;
 - (BOOL)handleExternalTouchLayoutFileURL:(NSURL*)url;
 - (void)presentURLConfirmation:(UIAlertController*)alert;
 - (void)clearURLConfirmation;
@@ -839,9 +844,19 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
 // The System Software page from Settings, on its own: the Dashboard tile's
 // menu opens it.
 - (void)openSystemSoftware {
+  [self openSystemSoftwareAtOriginalXboxGames:NO];
+}
+
+// The same, scrolled to where the Xbox emulator original Xbox games need is installed.
+- (void)openSystemSoftwareAtOriginalXboxGames {
+  [self openSystemSoftwareAtOriginalXboxGames:YES];
+}
+
+- (void)openSystemSoftwareAtOriginalXboxGames:(BOOL)scrolls {
   XeniaSystemSoftwareViewController* page = [[[XeniaSystemSoftwareViewController alloc]
       initWithGameRunning:self.gameRunning] autorelease];
   page.showsDoneButton = YES;
+  page.showsOriginalXboxGames = scrolls;
   [self presentLauncherSheetWithRoot:page];
 }
 
@@ -4100,6 +4115,7 @@ static bool XeJITUsable() {
   const std::filesystem::path launch_path = game_path;
   const uint32_t known_title_id = [self knownTitleIDForGamePath:launch_path];
   auto preparation = std::make_shared<LaunchPreparation>();
+  preparation->original_xbox = [self isKnownOriginalXboxGamePath:launch_path];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
       [self prepareLaunchAtPath:launch_path
@@ -4162,6 +4178,7 @@ static bool XeJITUsable() {
     IOSDiscoveredGame discovered_game;
     if (BuildDiscoveredGameFromPath(launch_path, &discovered_game)) {
       title_id = discovered_game.title_id;
+      preparation->original_xbox = preparation->original_xbox || discovered_game.original_xbox;
     }
   }
   preparation->title_id = title_id;
@@ -4204,6 +4221,12 @@ static bool XeJITUsable() {
     if (preparation.refresh_library) {
       [self refreshImportedGamesAsync];
     }
+    return;
+  }
+  // An original Xbox game runs through the Xbox emulator, which the user brings. Said here,
+  // before the game starts, so the launch doesn't fail for it later.
+  if (preparation.original_xbox && !xe::ui::IsIOSXeFuReady()) {
+    [self presentMissingXboxEmulatorAlert];
     return;
   }
 
@@ -6348,6 +6371,52 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     }
   }
   return 0;
+}
+
+// Whether the library lists the game at |game_path| as an original Xbox game.
+- (BOOL)isKnownOriginalXboxGamePath:(const std::filesystem::path&)game_path {
+  for (const IOSDiscoveredGame& game : discovered_games_) {
+    if (game.original_xbox) {
+      if (game.path == game_path) {
+        return YES;
+      }
+      for (const auto& disc : game.discs) {
+        if (disc.path == game_path) {
+          return YES;
+        }
+      }
+    }
+  }
+  return NO;
+}
+
+// Original Xbox games need the Xbox 360's Xbox emulator, which XeniOS doesn't include: the
+// System Software page installs it.
+- (void)presentMissingXboxEmulatorAlert {
+  UIAlertController* alert = [UIAlertController
+      alertControllerWithTitle:NSLocalizedString(@"Xbox Emulator Needed",
+                                                 @"Alert title: original Xbox games need the "
+                                                 @"Xbox 360's Xbox emulator")
+                       message:NSLocalizedString(
+                                   @"Original Xbox games need the Xbox 360's Xbox emulator. XeniOS "
+                                   @"doesn't include it. Install it from Files in System "
+                                   @"Software.",
+                                   @"Alert message: original Xbox games need the Xbox emulator")
+                preferredStyle:UIAlertControllerStyleAlert];
+  [alert addAction:[UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"Alert button: cancel")
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  [alert addAction:[UIAlertAction
+                       actionWithTitle:NSLocalizedString(@"Open System Software",
+                                                         @"Alert button: opens the System "
+                                                         @"Software page")
+                                 style:UIAlertActionStyleDefault
+                               handler:^(UIAlertAction* __unused action) {
+                                 [unsafe_self openSystemSoftwareAtOriginalXboxGames];
+                               }]];
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 - (uint32_t)titleIDForGamePath:(const std::filesystem::path&)game_path {

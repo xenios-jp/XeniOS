@@ -538,8 +538,9 @@ class StorageWalk {
       if (top == "games") {
         return IOSStorageKind::kGames;
       }
-      // The version games use, and the versions beside it.
-      if (top == "system" || top == "system-versions") {
+      // The version games use, and the versions beside it, and the Xbox emulator original Xbox
+      // games run through.
+      if (top == "system" || top == "system-versions" || top == "xefu") {
         return IOSStorageKind::kSystem;
       }
       if (std::find(std::begin(kGameDataDrives), std::end(kGameDataDrives), top) !=

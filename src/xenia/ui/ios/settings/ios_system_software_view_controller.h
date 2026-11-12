@@ -16,11 +16,15 @@
 
 // Settings > Xbox 360 System Software: what is installed, downloading the
 // system update from Microsoft, installing one from Files (any version), and
-// removing it. Installing and removing wait for the running game to end.
+// removing it; and the Xbox emulator original Xbox games run through, brought
+// from Files, with the build to start games with. Installing and removing wait
+// for the running game to end.
 @interface XeniaSystemSoftwareViewController : XESheetTableViewController
 - (instancetype)initWithGameRunning:(BOOL)game_running;
 // Shown on its own, from the launcher, rather than inside Settings.
 @property(nonatomic) BOOL showsDoneButton;
+// Scrolls to the Original Xbox Games section when the page appears.
+@property(nonatomic) BOOL showsOriginalXboxGames;
 @end
 
 #endif  // XENIA_UI_IOS_SETTINGS_IOS_SYSTEM_SOFTWARE_VIEW_CONTROLLER_H_

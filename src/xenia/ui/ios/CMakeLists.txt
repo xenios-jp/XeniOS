@@ -117,6 +117,8 @@ target_sources(xenia-ui-ios PRIVATE
   launcher/ios_storage_view_controller.mm
   launcher/ios_system_versions.mm
   launcher/ios_system_versions.h
+  launcher/ios_xefu.mm
+  launcher/ios_xefu.h
   launcher/ios_system_link_view_controller.h
   launcher/ios_system_link_view_controller.mm
   launcher/zar_converter.h
