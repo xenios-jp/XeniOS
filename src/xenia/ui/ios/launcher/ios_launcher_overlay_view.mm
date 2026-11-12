@@ -43,6 +43,16 @@ static void XEPrefetchBackgroundArt(NSArray<NSNumber*>* title_ids, NSUInteger in
   });
 }
 
+@implementation XeniaIOSDashboardTile
+
+- (void)dealloc {
+  [_dashboardPath release];
+  [_version release];
+  [super dealloc];
+}
+
+@end
+
 @implementation XeniaIOSLauncherGameSnapshot
 
 - (void)dealloc {
@@ -157,12 +167,62 @@ constexpr CGFloat kCoverAspect = 300.0 / 219.0;
 constexpr CGFloat kLibraryHeaderTop = 12.0;
 constexpr CGFloat kLibraryHeaderGap = 12.0;
 
-// The Xbox 360 Dashboard tile's art, at a cover's size: Xbox green with a soft
-// highlight behind a grid of tiles. Drawn once.
-UIImage* xe_dashboard_tile_art(UITraitCollection* __unused traits) {
-  static UIImage* cached = nil;
-  if (cached) {
+// What a Dashboard tile's art is drawn with.
+struct DashboardTileLook {
+  // The gradient's colours as 0xRRGGBB, light at the top left to deep at the bottom right.
+  uint32_t top;
+  uint32_t bottom;
+  NSString* symbol;
+};
+
+// The look of the dashboard a build has, so the versions tell apart at a glance: the blades of
+// 2005 in the orange of their Xbox Live blade, the New Xbox Experience of 2008 (from 2.0.7357) in
+// its lime, the Kinect dashboard of 2010 (from 2.0.12611) in Kinect's purple, and the tiles of
+// 2011 on (from 2.0.14699) in Xbox green, which is also the tile before there is a dashboard.
+DashboardTileLook xe_dashboard_tile_look(XeniaIOSDashboardTile* tile) {
+  const uint32_t build = tile.build;
+  if (tile && !build) {
+    // A version that can't be read: no era's colour.
+    return {0x8a939c, 0x3c434b, @"square.grid.2x2.fill"};
+  }
+  if (!tile || build >= 14699) {
+    return {0x3fbf5a, 0x0f5f2a, @"square.grid.2x2.fill"};
+  }
+  if (build >= 12611) {
+    return {0xa45cd6, 0x4b1f7a, @"figure.wave"};
+  }
+  if (build >= 7357) {
+    return {0x8fc024, 0x4a7a0c, @"rectangle.stack.fill"};
+  }
+  return {0xf2952e, 0xb04a08, @"rectangle.split.3x1.fill"};
+}
+
+UIColor* xe_dashboard_tile_color(uint32_t rgb) {
+  return [UIColor colorWithRed:((rgb >> 16) & 0xff) / 255.0
+                         green:((rgb >> 8) & 0xff) / 255.0
+                          blue:(rgb & 0xff) / 255.0
+                         alpha:1.0];
+}
+
+// A Dashboard tile's art, at a cover's size: its dashboard's colour with a soft highlight behind
+// a symbol, and its version along the bottom. Nil is the tile before there is a dashboard, with no
+// version. Drawn once for each.
+UIImage* xe_dashboard_tile_art(XeniaIOSDashboardTile* tile) {
+  static NSMutableDictionary<NSString*, UIImage*>* cache = nil;
+  if (!cache) {
+    cache = [[NSMutableDictionary alloc] init];
+  }
+  NSString* key =
+      tile ? [NSString stringWithFormat:@"%u/%@", tile.build, tile.version ?: @""] : @"";
+  if (UIImage* cached = cache[key]) {
     return cached;
+  }
+  const DashboardTileLook look = xe_dashboard_tile_look(tile);
+  NSString* label = tile.version;
+  if (tile && !label) {
+    label = NSLocalizedString(@"Unknown Version",
+                              @"launcher overlay view: on a Dashboard tile's art, a system "
+                              @"software version that can't be read");
   }
   const CGSize size = CGSizeMake(219.0, 300.0);
   UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat preferredFormat];
@@ -170,31 +230,30 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* __unused traits) {
   format.opaque = YES;
   UIGraphicsImageRenderer* renderer =
       [[[UIGraphicsImageRenderer alloc] initWithSize:size format:format] autorelease];
-  UIImage* symbol =
-      [[UIImage systemImageNamed:@"square.grid.2x2.fill"
-               withConfiguration:[UIImageSymbolConfiguration
-                                     configurationWithPointSize:52.0
-                                                         weight:UIImageSymbolWeightMedium]]
-          imageWithTintColor:UIColor.whiteColor
-               renderingMode:UIImageRenderingModeAlwaysOriginal];
-  cached = [[renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
+  UIImageSymbolConfiguration* symbol_configuration =
+      [UIImageSymbolConfiguration configurationWithPointSize:52.0 weight:UIImageSymbolWeightMedium];
+  // A symbol this iOS doesn't have falls back to the tiles.
+  UIImage* glyph = [UIImage systemImageNamed:look.symbol withConfiguration:symbol_configuration]
+                       ?: [UIImage systemImageNamed:@"square.grid.2x2.fill"
+                                  withConfiguration:symbol_configuration];
+  UIImage* symbol = [glyph imageWithTintColor:UIColor.whiteColor
+                                renderingMode:UIImageRenderingModeAlwaysOriginal];
+  UIImage* art = [renderer imageWithActions:^(UIGraphicsImageRendererContext* context) {
     CGContextRef cg = context.CGContext;
     CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-    // 160°: from the top left to the bottom right, light to deep green.
-    CGGradientRef green = CGGradientCreateWithColors(
-        space,
-        (CFArrayRef) @[
-          (id)[UIColor colorWithRed:0x3f / 255.0 green:0xbf / 255.0 blue:0x5a / 255.0 alpha:1.0]
-              .CGColor,
-          (id)[UIColor colorWithRed:0x0f / 255.0 green:0x5f / 255.0 blue:0x2a / 255.0 alpha:1.0]
-              .CGColor
-        ],
-        nullptr);
-    CGContextDrawLinearGradient(cg, green, CGPointMake(size.width * 0.33, 0.0),
-                                CGPointMake(size.width * 0.67, size.height),
-                                kCGGradientDrawsBeforeStartLocation |
-                                    kCGGradientDrawsAfterEndLocation);
-    CGGradientRelease(green);
+    // 160°: from the top left to the bottom right, light to deep.
+    CGGradientRef colour =
+        CGGradientCreateWithColors(space,
+                                   (CFArrayRef) @[
+                                     (id)xe_dashboard_tile_color(look.top).CGColor,
+                                     (id)xe_dashboard_tile_color(look.bottom).CGColor
+                                   ],
+                                   nullptr);
+    CGContextDrawLinearGradient(
+        cg, colour, CGPointMake(size.width * 0.33, 0.0),
+        CGPointMake(size.width * 0.67, size.height),
+        kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+    CGGradientRelease(colour);
     // The highlight, an ellipse above the middle.
     CGGradientRef glow = CGGradientCreateWithColors(
         space,
@@ -210,13 +269,47 @@ UIImage* xe_dashboard_tile_art(UITraitCollection* __unused traits) {
                                 0);
     CGContextRestoreGState(cg);
     CGGradientRelease(glow);
+    if (label) {
+      // A shade under the version, which keeps it readable on the lighter colours.
+      CGGradientRef shade =
+          CGGradientCreateWithColors(space,
+                                     (CFArrayRef) @[
+                                       (id)[UIColor colorWithWhite:0.0 alpha:0.0].CGColor,
+                                       (id)[UIColor colorWithWhite:0.0 alpha:0.34].CGColor
+                                     ],
+                                     nullptr);
+      CGContextDrawLinearGradient(cg, shade, CGPointMake(0.0, size.height * 0.64),
+                                  CGPointMake(0.0, size.height), 0);
+      CGGradientRelease(shade);
+    }
     CGColorSpaceRelease(space);
     const CGSize symbol_size = symbol.size;
     [symbol drawInRect:CGRectMake((size.width - symbol_size.width) * 0.5,
                                   (size.height - symbol_size.height) * 0.5, symbol_size.width,
                                   symbol_size.height)];
-  }] retain];
-  return cached;
+    if (label) {
+      // As large as the width takes: a tile is about half this size on an iPhone.
+      const CGFloat fitting_width = size.width - 28.0;
+      NSDictionary* attributes = nil;
+      CGSize label_size = CGSizeZero;
+      for (CGFloat point_size = 25.0; point_size >= 12.0; point_size -= 1.0) {
+        attributes = @{
+          NSFontAttributeName : [UIFont monospacedDigitSystemFontOfSize:point_size
+                                                                 weight:UIFontWeightBold],
+          NSForegroundColorAttributeName : UIColor.whiteColor,
+        };
+        label_size = [label sizeWithAttributes:attributes];
+        if (label_size.width <= fitting_width) {
+          break;
+        }
+      }
+      [label drawAtPoint:CGPointMake((size.width - label_size.width) * 0.5,
+                                     size.height - 22.0 - label_size.height)
+          withAttributes:attributes];
+    }
+  }];
+  cache[key] = art;
+  return art;
 }
 
 // A cover for a game with no art and no icon: its name, set large on the surface
@@ -516,7 +609,8 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   UIButton* _settingsButton;
   UIButton* _profileButton;
   UIButton* _openGameButton;
-  BOOL _dashboardInstalled;
+  // The installed dashboards, the one games use first. None: one tile that sets it up.
+  NSArray<XeniaIOSDashboardTile*>* _dashboardTiles;
   UIView* _jitWarningCard;
   UIImageView* _jitStatusIcon;
   UILabel* _jitTitleLabel;
@@ -2234,6 +2328,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   [_profileButton release];
   [_openGameButton release];
   [_dashboardHandler release];
+  [_dashboardTiles release];
   [_dashboardSystemSoftwareHandler release];
   [_jitWarningCard release];
   [_jitStatusIcon release];
@@ -2275,34 +2370,57 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
 }
 
+// The empty library's button: the dashboard games use, which is the first, or its setup.
 - (void)dashboardTapped:(UIButton*)__unused sender {
+  [self openDashboardTile:_dashboardTiles.firstObject];
+}
+
+- (void)openDashboardTile:(XeniaIOSDashboardTile*)tile {
   if (_dashboardHandler) {
-    _dashboardHandler();
+    _dashboardHandler(tile.dashboardPath);
   }
 }
 
-- (void)setDashboardInstalled:(BOOL)installed {
-  if (_dashboardInstalled == installed) {
+- (void)setDashboardTiles:(NSArray<XeniaIOSDashboardTile*>*)tiles {
+  const NSInteger oldOffset = [self gameItemOffset];
+  const BOOL wasInstalled = _dashboardTiles.count > 0;
+  [_dashboardTiles release];
+  _dashboardTiles = [tiles copy];
+  const NSInteger newOffset = [self gameItemOffset];
+  if (!newOffset) {
+    if (wasInstalled != (_dashboardTiles.count > 0)) {
+      _gamesCollectionView.backgroundView = nil;
+      [self updateEmptyState];
+    }
     return;
   }
-  _dashboardInstalled = installed;
-  if ([self gameItemOffset]) {
-    [_gamesCollectionView reconfigureItemsAtIndexPaths:@[ [NSIndexPath indexPathForItem:0
-                                                                              inSection:0] ]];
-  } else {
-    _gamesCollectionView.backgroundView = nil;
-    [self updateEmptyState];
+  if (oldOffset != newOffset) {
+    // A tile came or went, and the games' items moved with it: the focus stays on its game.
+    if (_focusedGameIndex >= oldOffset) {
+      _focusedGameIndex += newOffset - oldOffset;
+    } else if (_focusedGameIndex >= newOffset) {
+      _focusedGameIndex = newOffset - 1;
+    }
+    [_gamesCollectionView reloadData];
+    return;
   }
+  NSMutableArray<NSIndexPath*>* tilePaths = [NSMutableArray array];
+  for (NSInteger item = 0; item < newOffset; ++item) {
+    [tilePaths addObject:[NSIndexPath indexPathForItem:item inSection:0]];
+  }
+  [_gamesCollectionView reconfigureItemsAtIndexPaths:tilePaths];
 }
 
 #pragma mark - Library items
 
-// The Dashboard tile leads the grid while the library has games, so the
-// games' items come after it.
-// The Dashboard tile leads the grid while the library has games and no
-// search is narrowing it.
+// The Dashboard tiles lead the grid while the library has games and no search
+// is narrowing it, so the games' items come after them: one tile for each
+// installed dashboard, or one that sets the dashboard up.
 - (NSInteger)gameItemOffsetFor:(NSArray<XeniaIOSLauncherGameSnapshot*>*)games {
-  return games.count > 0 && _query.length == 0 ? 1 : 0;
+  if (games.count == 0 || _query.length != 0) {
+    return 0;
+  }
+  return std::max<NSInteger>(1, static_cast<NSInteger>(_dashboardTiles.count));
 }
 
 - (NSInteger)gameItemOffset {
@@ -2314,10 +2432,22 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
 }
 
 - (BOOL)isDashboardItem:(NSInteger)item {
-  return [self gameItemOffset] && item == 0;
+  return item >= 0 && item < [self gameItemOffset];
 }
 
-// The game an item shows: nil for the Dashboard tile and past the end.
+// The dashboard a Dashboard tile's item shows: nil for the tile that sets it up.
+- (XeniaIOSDashboardTile*)dashboardTileAtItem:(NSInteger)item {
+  if (item < 0 || item >= static_cast<NSInteger>(_dashboardTiles.count)) {
+    return nil;
+  }
+  return _dashboardTiles[static_cast<NSUInteger>(item)];
+}
+
+- (NSString*)dashboardPathForItem:(NSInteger)item {
+  return [self isDashboardItem:item] ? [self dashboardTileAtItem:item].dashboardPath : nil;
+}
+
+// The game an item shows: nil for a Dashboard tile and past the end.
 - (XeniaIOSLauncherGameSnapshot*)gameAtItem:(NSInteger)item {
   const NSInteger index = item - [self gameItemOffset];
   if (index < 0 || index >= static_cast<NSInteger>(_shownGames.count)) {
@@ -2341,35 +2471,44 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   return shown == NSNotFound ? -1 : static_cast<NSInteger>(shown) + [self gameItemOffset];
 }
 
-- (void)configureDashboardCell:(XeniaGameTileCell*)cell {
+- (void)configureDashboardCell:(XeniaGameTileCell*)cell item:(NSInteger)item {
+  XeniaIOSDashboardTile* tile = [self dashboardTileAtItem:item];
+  const BOOL installed = _dashboardTiles.count > 0;
   NSString* title =
       NSLocalizedString(@"Xbox 360 Dashboard", @"launcher overlay view: user-visible text");
+  if (tile.version) {
+    // Several dashboards are told apart by their version, which the art shows.
+    title = [NSString
+        stringWithFormat:NSLocalizedString(@"Xbox 360 Dashboard, version %@",
+                                           @"launcher overlay view: accessibility label of a "
+                                           @"Dashboard tile; %@ is like 2.0.17559.0"),
+                         tile.version];
+  }
   cell.representedTitleId = 0;
   // The full name doesn't fit under a cover; the art already says Xbox.
   cell.titleLabel.text =
       NSLocalizedString(@"Dashboard", @"launcher overlay view: the Xbox 360 Dashboard tile");
-  cell.iconView.image = xe_dashboard_tile_art(cell.traitCollection);
+  cell.iconView.image = xe_dashboard_tile_art(tile);
   cell.contentTypePill.text = @"";
   cell.contentTypePill.hidden = YES;
   // Same form as a game's status: the dot says whether it's ready.
   cell.compatPill.attributedText = xe_status_text(
-      _dashboardInstalled
+      installed
           ? NSLocalizedString(@"Ready", @"launcher overlay view: Dashboard tile status, once the "
                                         @"system software is installed")
           : NSLocalizedString(@"Not Set Up", @"launcher overlay view: Dashboard tile status, "
                                              @"before the system software is installed"),
-      _dashboardInstalled ? [XeniaTheme accent] : [XeniaTheme statusWarning]);
+      installed ? [XeniaTheme accent] : [XeniaTheme statusWarning]);
   cell.contentTypePill.backgroundColor = [UIColor clearColor];
   cell.contentTypePill.layer.borderColor = [UIColor clearColor].CGColor;
   cell.compatPill.hidden = NO;
   cell.controllerFocused =
-      _controllerNavigationEnabled && _libraryFocusActive && _focusedGameIndex == 0;
+      _controllerNavigationEnabled && _libraryFocusActive && _focusedGameIndex == item;
   cell.accessibilityLabel = title;
   cell.accessibilityValue =
-      _dashboardInstalled
-          ? nil
-          : NSLocalizedString(@"Not set up", @"launcher overlay view: accessibility value");
-  cell.accessibilityHint = _dashboardInstalled
+      installed ? nil
+                : NSLocalizedString(@"Not set up", @"launcher overlay view: accessibility value");
+  cell.accessibilityHint = installed
                                ? NSLocalizedString(@"Starts the Xbox 360 Dashboard.",
                                                    @"launcher overlay view: user-visible text")
                                : NSLocalizedString(@"Sets up the Xbox 360 Dashboard.",
@@ -2712,7 +2851,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
         [proxy importGames];
       }];
   UIButtonConfiguration* dashboardCfg = [UIButtonConfiguration plainButtonConfiguration];
-  dashboardCfg.title = _dashboardInstalled
+  dashboardCfg.title = _dashboardTiles.count > 0
                            ? NSLocalizedString(@"Start the Xbox 360 Dashboard",
                                                @"launcher overlay view: button title")
                            : NSLocalizedString(@"Set Up the Xbox 360 Dashboard",
@@ -3089,7 +3228,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
       [collectionView dequeueReusableCellWithReuseIdentifier:@"ImportedGameCell"
                                                 forIndexPath:indexPath];
   if ([self isDashboardItem:indexPath.item]) {
-    [self configureDashboardCell:cell];
+    [self configureDashboardCell:cell item:indexPath.item];
     xe_ios_system_link_show_online_label(cell.compatPill.superview, 0);
     return cell;
   }
@@ -3359,7 +3498,7 @@ bool xe_snapshot_same_content(XeniaIOSLauncherGameSnapshot* a, XeniaIOSLauncherG
   }
   [self setFocusedGameIndex:indexPath.item scroll:NO];
   if ([self isDashboardItem:indexPath.item]) {
-    [self dashboardTapped:nil];
+    [self openDashboardTile:[self dashboardTileAtItem:indexPath.item]];
     return;
   }
   if (_gameLaunchedHandler) {
