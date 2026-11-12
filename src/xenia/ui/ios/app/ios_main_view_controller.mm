@@ -208,6 +208,19 @@ static bool XeniaRemoveGameCopy(const std::filesystem::path& path, bool is_exter
   return false;
 }
 
+// Whether two paths name one file: the library saves /private/var/... where
+// Foundation says /var/...
+static bool XeniaSameFilePath(const std::filesystem::path& a, const std::filesystem::path& b) {
+  auto spelled = [](const std::filesystem::path& path) {
+    std::string text = path.lexically_normal().string();
+    if (text.rfind("/private/var/", 0) == 0) {
+      text.erase(0, sizeof("/private") - 1);
+    }
+    return text;
+  };
+  return spelled(a) == spelled(b);
+}
+
 // What a launch needs from the file system and linked folders, gathered off the
 // main thread: resolving a folder's bookmark can block on a slow or unreachable
 // share.
@@ -657,6 +670,10 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(onStorageDeleteGameRequest:)
                                                name:XeniaStorageDeleteGameRequestNotification
+                                             object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(onStorageDeleteDiscRequest:)
+                                               name:XeniaStorageDeleteDiscRequestNotification
                                              object:nil];
   // Show the last scan's result at once (read from disk, no folder walk), then
   // rescan in the background.
@@ -4353,24 +4370,100 @@ static bool XeJITUsable() {
   }
 }
 
-- (void)onStorageDeleteGameRequest:(NSNotification*)notification {
-  const uint32_t title_id = [notification.userInfo[XeniaStorageTitleIdKey] unsignedIntValue];
+// The library game a Storage request names (XeniaStorageTitleIdKey,
+// XeniaStorageGamePathKey). NO when it is no longer in the library.
+- (BOOL)findStorageGame:(NSDictionary*)request index:(size_t*)index_out {
+  const uint32_t title_id = [request[XeniaStorageTitleIdKey] unsignedIntValue];
   // A game without a title ID is found by its library path.
-  NSString* game_path = notification.userInfo[XeniaStorageGamePathKey];
+  NSString* game_path = request[XeniaStorageGamePathKey];
   // By title ID first; by path for a game the scan read no title ID from, also
   // when the Storage screen knows its ID from the data it saved.
   for (int by_path = 0; by_path < 2; ++by_path) {
     for (size_t i = 0; i < discovered_games_.size(); ++i) {
       const IOSDiscoveredGame& game = discovered_games_[i];
       if (by_path ? game_path.length && !game.title_id &&
-                        game.path == std::filesystem::path(game_path.UTF8String)
+                        XeniaSameFilePath(game.path,
+                                          std::filesystem::path(game_path.UTF8String))
                   : title_id && game.title_id == title_id) {
-        delete_from_storage_ = YES;
-        [self confirmDeleteGameAtIndex:i];
-        return;
+        *index_out = i;
+        return YES;
       }
     }
   }
+  return NO;
+}
+
+- (void)onStorageDeleteGameRequest:(NSNotification*)notification {
+  size_t game_index = 0;
+  if ([self findStorageGame:notification.userInfo index:&game_index]) {
+    delete_from_storage_ = YES;
+    [self confirmDeleteGameAtIndex:game_index];
+  }
+}
+
+// Deletes one disc file of a game that has several. The Storage screen has
+// asked; the game's other discs, updates, add-ons and saves stay.
+- (void)onStorageDeleteDiscRequest:(NSNotification*)notification {
+  UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
+  if (self.gameRunning) {
+    XEPresentOKAlert(presenter,
+                     NSLocalizedString(@"Couldn’t Delete Game", @"Delete game: alert title"),
+                     NSLocalizedString(@"Close the game first.", @"Delete game: alert message"));
+    return;
+  }
+  NSString* failure_title =
+      NSLocalizedString(@"Couldn’t Delete Disc", @"Delete disc: alert title");
+  NSString* requested_path = notification.userInfo[XeniaStorageDiscPathKey];
+  size_t game_index = 0;
+  const IOSDiscoveredGame::Disc* found = nullptr;
+  if (requested_path.length && [self findStorageGame:notification.userInfo index:&game_index]) {
+    const std::filesystem::path requested(requested_path.UTF8String);
+    for (const IOSDiscoveredGame::Disc& disc : discovered_games_[game_index].discs) {
+      if (XeniaSameFilePath(disc.path, requested)) {
+        found = &disc;
+        break;
+      }
+    }
+  }
+  if (!found || discovered_games_[game_index].discs.size() < 2) {
+    // The library changed since the Storage screen measured: nothing is
+    // deleted, and the scan has it measure again.
+    XEPresentOKAlert(presenter, failure_title,
+                     found ? NSLocalizedString(@"It is the game’s only disc. Delete the game to "
+                                               @"remove it.",
+                                               @"Delete disc: alert message")
+                           : NSLocalizedString(@"The disc is no longer in the library.",
+                                               @"Delete disc: alert message"));
+    [self refreshImportedGamesAsync];
+    return;
+  }
+  const std::filesystem::path disc_path = found->path;
+  const bool is_external = found->is_external;
+  UIAlertController* busy =
+      [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Deleting…",
+                                                                    @"Delete game: progress")
+                                          message:nil
+                                   preferredStyle:UIAlertControllerStyleAlert];
+  [presenter presentViewController:busy animated:YES completion:nil];
+  __unsafe_unretained XeniaViewController* unsafe_self = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    std::string error;
+    // A disc in a linked folder is deleted there, with the folder's access held.
+    const bool ok = XeniaRemoveGameCopy(disc_path, is_external, true, &error);
+    NSString* failure = nil;
+    if (!ok) {
+      failure = error.empty() ? NSLocalizedString(@"The disc couldn’t be deleted.",
+                                                  @"Delete disc: alert message")
+                              : ToNSString(error);
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [unsafe_self finishDeleteGameWithBusy:busy
+                               failureTitle:failure_title
+                                    failure:failure
+                                       from:presenter
+                              keepPresenter:YES];
+    });
+  });
 }
 
 // Offers what can go with the game. Add-ons and saves stay unless asked for.
@@ -4510,6 +4603,8 @@ static bool XeJITUsable() {
     }
     dispatch_async(dispatch_get_main_queue(), ^{
       [unsafe_self finishDeleteGameWithBusy:busy
+                               failureTitle:NSLocalizedString(@"Couldn’t Delete Game",
+                                                              @"Delete game: alert title")
                                     failure:failure
                                        from:presenter
                               keepPresenter:keep_presenter];
@@ -4518,6 +4613,7 @@ static bool XeJITUsable() {
 }
 
 - (void)finishDeleteGameWithBusy:(UIAlertController*)busy
+                    failureTitle:(NSString*)failure_title
                          failure:(NSString*)failure
                             from:(UIViewController*)presenter
                    keepPresenter:(BOOL)keep_presenter {
@@ -4525,10 +4621,7 @@ static bool XeJITUsable() {
   [busy dismissViewControllerAnimated:YES
                            completion:^{
                              if (failure) {
-                               XEPresentOKAlert(presenter,
-                                                NSLocalizedString(@"Couldn’t Delete Game",
-                                                                  @"Delete game: alert title"),
-                                                failure);
+                               XEPresentOKAlert(presenter, failure_title, failure);
                              } else if (keep_presenter) {
                                // The Storage screen measures again once the
                                // library is refreshed.
