@@ -48,9 +48,23 @@ std::filesystem::path IOSSystemFilesPath();
 // The dashboard in it, which the library starts.
 std::filesystem::path IOSInstalledDashboardPath();
 bool IsIOSDashboardInstalled();
-// boot_to_dashboard, as on edge: the installed dashboard is the home screen.
-// XeniOS opens on it, and every title exits back to it.
+// boot_to_dashboard, as on edge: a dashboard is the home screen. XeniOS opens
+// on it, and every title exits back to it.
 bool IsIOSDashboardHome();
+// The home dashboard: the one of the version boot_dashboard_version names, or
+// of the version games use when it names none, or one that isn't installed
+// (any more) or has no dashboard.
+std::filesystem::path IOSHomeDashboardPath();
+// The version boot_dashboard_version names when its dashboard is installed.
+// Empty when the home dashboard follows the version games use.
+std::string IOSHomeDashboardVersion();
+// Sets both settings and saves them: whether XeniOS starts with a dashboard,
+// and of which version (as IOSSystemVersion::version; empty for the one games
+// use).
+void SetIOSHomeDashboard(bool start_with_dashboard, const std::string& version);
+// After a version was removed: when it was the one boot_dashboard_version
+// names, the home dashboard follows the version games use again.
+void ForgetRemovedIOSHomeDashboardVersion();
 // Whether |path| is the dashboard of an installed version, the one games use
 // or another.
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path);

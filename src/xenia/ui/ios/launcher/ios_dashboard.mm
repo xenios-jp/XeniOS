@@ -25,6 +25,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/config.h"
 #include "xenia/kernel/title_id_utils.h"
 #import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
 #import "xenia/ui/ios/launcher/ios_dashboard_disc_tray_view_controller.h"
@@ -43,6 +44,12 @@ DEFINE_bool(boot_to_dashboard, false,
             "showing the game list, and go back to the dashboard when a title "
             "exits.",
             "General");
+// By version rather than by folder: the folders trade places when another
+// version becomes the one games use.
+DEFINE_string(boot_dashboard_version, "",
+              "The system software version whose dashboard boot_to_dashboard "
+              "starts, like 2.0.17559.0. Empty for the version games use.",
+              "General");
 
 NSNotificationName const XeniaIOSSystemSoftwareDidChangeNotification =
     @"XeniaIOSSystemSoftwareDidChangeNotification";
@@ -289,7 +296,66 @@ bool IsIOSDashboardInstalled() {
   return std::filesystem::is_regular_file(IOSInstalledDashboardPath(), ec);
 }
 
-bool IsIOSDashboardHome() { return cvars::boot_to_dashboard && IsIOSDashboardInstalled(); }
+std::string IOSHomeDashboardVersion() {
+  const std::string& chosen = cvars::boot_dashboard_version;
+  if (chosen.empty()) {
+    return {};
+  }
+  for (const auto& version : ListIOSSystemVersions()) {
+    if (version.has_dashboard && version.version == chosen) {
+      return chosen;
+    }
+  }
+  return {};
+}
+
+std::filesystem::path IOSHomeDashboardPath() {
+  const std::string& chosen = cvars::boot_dashboard_version;
+  if (!chosen.empty()) {
+    // The one games use is listed first, so it wins over a second copy of its
+    // version.
+    for (const auto& version : ListIOSSystemVersions()) {
+      if (version.has_dashboard && version.version == chosen) {
+        return version.dashboard_path();
+      }
+    }
+  }
+  return IOSInstalledDashboardPath();
+}
+
+namespace {
+
+template <typename T>
+void SetChosenValue(cvar::IConfigVar* var, const T& value) {
+  if (auto* typed = dynamic_cast<cvar::ConfigVar<T>*>(var)) {
+    typed->OverrideConfigValue(value);
+  }
+}
+
+}  // namespace
+
+void SetIOSHomeDashboard(bool start_with_dashboard, const std::string& version) {
+  SetChosenValue(cv::cv_boot_to_dashboard, start_with_dashboard);
+  SetChosenValue(cv::cv_boot_dashboard_version, version);
+  config::SaveConfigValues({"boot_to_dashboard", "boot_dashboard_version"});
+  XELOGI("iOS: start with the dashboard {}, of {}", start_with_dashboard ? "on" : "off",
+         version.empty() ? "the version games use" : version);
+}
+
+void ForgetRemovedIOSHomeDashboardVersion() {
+  if (!cvars::boot_dashboard_version.empty() && IOSHomeDashboardVersion().empty()) {
+    SetChosenValue(cv::cv_boot_dashboard_version, std::string());
+    config::SaveConfigValues({"boot_dashboard_version"});
+  }
+}
+
+bool IsIOSDashboardHome() {
+  if (!cvars::boot_to_dashboard) {
+    return false;
+  }
+  std::error_code ec;
+  return std::filesystem::is_regular_file(IOSHomeDashboardPath(), ec);
+}
 
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path) {
   return FindIOSSystemVersionForDashboard(path).has_value();

@@ -2179,7 +2179,7 @@ static bool XeJITUsable() {
   if (!xe::ui::IsIOSDashboardHome() || self.gameRunning || self.gameStopInProgress) {
     return;
   }
-  [self launchDashboard];
+  [self launchDashboardAtPath:xe::ui::IOSHomeDashboardPath()];
 }
 
 // A game the dashboard started goes back to it, as the game's own exit does.
@@ -2188,11 +2188,11 @@ static bool XeJITUsable() {
   if (self.gameStopInProgress) {
     return;
   }
-  // The one the session started on; with the dashboard as home, the one games use.
+  // The one the session started on, or else the home dashboard.
   if (dashboard_session_ && !dashboard_session_path_.empty()) {
     [self launchDashboardAtPath:dashboard_session_path_];
   } else {
-    [self launchDashboard];
+    [self launchDashboardAtPath:xe::ui::IOSHomeDashboardPath()];
   }
 }
 

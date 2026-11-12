@@ -45,6 +45,8 @@ enum InstallRow : NSInteger {
   BOOL loaded_;
   BOOL busy_;
   xe::ui::IOSSystemSoftwareInfo info_;
+  // The dashboard XeniOS starts with. Empty when it starts with the library.
+  std::filesystem::path home_dashboard_path_;
   // The sections shown, in order.
   std::vector<SystemSoftwareSection> sections_;
   UIAlertController* progress_alert_;
@@ -208,11 +210,24 @@ enum InstallRow : NSInteger {
     dispatch_async(dispatch_get_main_queue(), ^{
       info_ = *info;
       loaded_ = YES;
+      xe::ui::ForgetRemovedIOSHomeDashboardVersion();
+      [self readHomeDashboard];
       [self rebuildSections];
       [self refreshHeader];
       [self.tableView reloadData];
     });
   });
+}
+
+- (void)readHomeDashboard {
+  home_dashboard_path_ = xe::ui::IsIOSDashboardHome() ? xe::ui::IOSHomeDashboardPath()
+                                                      : std::filesystem::path();
+}
+
+// Whether XeniOS starts with this version's dashboard.
+- (BOOL)opensAtStartup:(const xe::ui::IOSSystemVersion&)version {
+  return version.has_dashboard && !home_dashboard_path_.empty() &&
+         version.dashboard_path() == home_dashboard_path_;
 }
 
 - (BOOL)canChangeSystemSoftware {
@@ -257,7 +272,7 @@ enum InstallRow : NSInteger {
       return info_.installed
                  ? NSLocalizedString(
                        @"Games use the checked version. Each version has its own Dashboard in the "
-                       @"Library.",
+                       @"Library, and any one of them can open when XeniOS starts.",
                        @"system software view controller: footer")
                  : NSLocalizedString(
                        @"Games use none of these yet. Tap a version to use it for games. Each "
@@ -305,6 +320,7 @@ enum InstallRow : NSInteger {
 }
 
 // A version: its number over what it is used for and its size, checked when games use it.
+// The one XeniOS starts with the dashboard of says so.
 - (UITableViewCell*)versionCellForRow:(NSInteger)row {
   UITableViewCell* cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                                   reuseIdentifier:nil] autorelease];
@@ -317,6 +333,11 @@ enum InstallRow : NSInteger {
     [parts addObject:NSLocalizedString(@"Used for Games",
                                        @"system software view controller: the version games use")];
   }
+  if ([self opensAtStartup:version]) {
+    [parts addObject:NSLocalizedString(@"Opens at Startup",
+                                       @"system software view controller: the version whose "
+                                       @"Dashboard XeniOS starts with")];
+  }
   [parts addObject:[NSByteCountFormatter stringFromByteCount:static_cast<long long>(version.size)
                                                   countStyle:NSByteCountFormatterCountStyleFile]];
   cell.detailTextLabel.text = [parts componentsJoinedByString:@" · "];
@@ -327,7 +348,8 @@ enum InstallRow : NSInteger {
   cell.accessibilityTraits = UIAccessibilityTraitButton |
                              (enabled ? UIAccessibilityTraitNone : UIAccessibilityTraitNotEnabled);
   cell.accessibilityHint =
-      NSLocalizedString(@"Offers to use this version for games, or to remove it.",
+      NSLocalizedString(@"Offers to use this version for games, to open its Dashboard when "
+                        @"XeniOS starts, or to remove it.",
                         @"system software view controller: accessibility hint");
   return cell;
 }
@@ -661,7 +683,8 @@ enum InstallRow : NSInteger {
 
 #pragma mark - Versions
 
-// What can be done with one version: use it for games, or remove it.
+// What can be done with one version: use it for games, start XeniOS with its dashboard, or
+// remove it.
 - (void)presentActionsForVersionAtRow:(NSInteger)row {
   if (row < 0 || row >= static_cast<NSInteger>(info_.versions.size())) {
     return;
@@ -684,6 +707,34 @@ enum InstallRow : NSInteger {
                                    handler:^(UIAlertAction* __unused action) {
                                      [self useVersionForGames:version];
                                    }]];
+  }
+  // By its number, so the choice stays with this version when another becomes the one games
+  // use. One whose number can't be read can only be the home dashboard as the one games use.
+  if (version.has_dashboard && (!version.version.empty() || version.is_default)) {
+    const BOOL opens_at_startup = [self opensAtStartup:version];
+    const std::string home_version = version.version;
+    [actions
+        addAction:[UIAlertAction
+                      actionWithTitle:opens_at_startup
+                                          ? NSLocalizedString(
+                                                @"Don't Open at Startup",
+                                                @"system software view controller: action; XeniOS "
+                                                @"starts with the library again")
+                                          : NSLocalizedString(
+                                                @"Open at Startup",
+                                                @"system software view controller: action; XeniOS "
+                                                @"starts with this version's Dashboard")
+                                style:UIAlertActionStyleDefault
+                              handler:^(UIAlertAction* __unused action) {
+                                if (opens_at_startup) {
+                                  xe::ui::SetIOSHomeDashboard(false,
+                                                              xe::ui::IOSHomeDashboardVersion());
+                                } else {
+                                  xe::ui::SetIOSHomeDashboard(true, home_version);
+                                }
+                                [self readHomeDashboard];
+                                [self.tableView reloadData];
+                              }]];
   }
   [actions addAction:[UIAlertAction
                          actionWithTitle:NSLocalizedString(
