@@ -25,6 +25,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/gpu/shader_storage.h"
 #include "xenia/ui/ios/launcher/ios_game_library_store.h"
+#include "xenia/ui/ios/launcher/ios_system_versions.h"
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 
 DECLARE_path(cache_root);
@@ -309,6 +310,7 @@ class StorageWalk {
     AdoptUntitledGames();
     IOSStorageReport report;
     report.bytes = bytes_;
+    report.system_versions = xe::ui::ListIOSSystemVersions().size();
     for (auto& [key, title] : titles_) {
       if (key == kProfileTitleId || (!title.Total() && !title.in_library)) {
         continue;
@@ -535,6 +537,10 @@ class StorageWalk {
       const std::string& top = parts[0];
       if (top == "games") {
         return IOSStorageKind::kGames;
+      }
+      // The version games use, and the versions beside it.
+      if (top == "system" || top == "system-versions") {
+        return IOSStorageKind::kSystem;
       }
       if (std::find(std::begin(kGameDataDrives), std::end(kGameDataDrives), top) !=
           std::end(kGameDataDrives)) {
