@@ -116,6 +116,18 @@ KernelState::KernelState(Emulator* emulator)
   StartInvocationCapture(this);
 }
 
+void KernelState::UpdateKernelVersion() {
+  kernel_version_ = KernelVersion(cvars::kernel_build_version);
+  // XboxKrnlVersion, the copy titles read.
+  const auto* version_export =
+      processor_->export_resolver()->GetExportByOrdinal(
+          "xboxkrnl.exe", ordinals::XboxKrnlVersion);
+  if (version_export && version_export->variable_ptr) {
+    std::memcpy(memory_->TranslateVirtual(version_export->variable_ptr),
+                &kernel_version_, sizeof(kernel_version_));
+  }
+}
+
 KernelState::~KernelState() {
   // The online accounts' events use the kernel: stop them first.
   xam::LiveSocialShutdown();

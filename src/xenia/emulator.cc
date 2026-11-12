@@ -2843,6 +2843,9 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
   // Per-title config has been applied by now and no guest code has been
   // translated yet, which is the only window where this can be picked up.
   processor_->RefreshTraceCountsEnabled();
+  // The same goes for the kernel version: the kernel was created before the
+  // title's config was read.
+  kernel_state_->UpdateKernelVersion();
 
   if (input_system_) {
     input_system_->ResetKeystrokes();

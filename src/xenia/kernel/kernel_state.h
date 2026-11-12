@@ -222,6 +222,9 @@ class KernelState {
   util::ObjectTable* object_table() { return &object_table_; }
 
   const KernelVersion* GetKernelVersion() const { return &kernel_version_; }
+  // Takes kernel_build_version again, which a title's config can set after
+  // the kernel is created. For before the title's modules are loaded.
+  void UpdateKernelVersion();
 
   uint32_t GetSystemProcess() const {
     return kernel_guest_globals_ + offsetof(KernelGuestGlobals, system_process);
