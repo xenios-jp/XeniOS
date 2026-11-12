@@ -34,7 +34,6 @@
 #include "xenia/ui/ios/shared/ios_system_utils.h"
 #include "xenia/ui/ios/shared/ios_view_helpers.h"
 #include "xenia/vfs/devices/stfs_xbox.h"
-#include "xenia/vfs/xex_metadata.h"
 
 DECLARE_path(storage_root);
 
@@ -299,26 +298,16 @@ bool IsIOSInstalledDashboardPath(const std::filesystem::path& path) {
 
 IOSSystemSoftwareInfo ReadIOSSystemSoftwareInfo() {
   IOSSystemSoftwareInfo info;
-  const auto system_path = IOSSystemFilesPath();
   std::error_code ec;
   info.has_unrestored_files =
-      std::filesystem::exists(GetUnrestoredSystemFilesPath(system_path), ec);
-  info.installed = IsIOSDashboardInstalled();
-  if (!info.installed) {
-    return info;
-  }
-  if (auto metadata = vfs::ExtractXexMetadata(IOSInstalledDashboardPath())) {
-    info.version = metadata->version.ToString();
-  }
-  for (auto it = std::filesystem::recursive_directory_iterator(
-           system_path, std::filesystem::directory_options::skip_permission_denied, ec);
-       !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
-    std::error_code size_ec;
-    if (it->is_regular_file(size_ec)) {
-      const auto size = it->file_size(size_ec);
-      if (!size_ec) {
-        info.size += size;
-      }
+      std::filesystem::exists(GetUnrestoredSystemFilesPath(IOSSystemFilesPath()), ec);
+  info.versions = ListIOSSystemVersions();
+  for (auto& version : info.versions) {
+    version.size = MeasureIOSSystemVersion(version.path);
+    if (version.is_default) {
+      info.installed = true;
+      info.version = version.version;
+      info.size = version.size;
     }
   }
   return info;
@@ -327,7 +316,11 @@ IOSSystemSoftwareInfo ReadIOSSystemSoftwareInfo() {
 SystemFilesResult InstallIOSSystemSoftware(
     const std::filesystem::path& source_path,
     const std::function<bool(size_t done, size_t total)>& progress) {
-  const auto result = InstallSystemFiles(source_path, IOSSystemFilesPath(), progress);
+  IOSStagedSystemSoftware staged;
+  auto result = StageIOSSystemSoftware(source_path, progress, &staged);
+  if (result == SystemFilesResult::kSuccess && staged.staged) {
+    result = CommitIOSStagedSystemSoftware();
+  }
   XELOGI("iOS: system software install finished with result {}", static_cast<int>(result));
   return result;
 }
@@ -371,6 +364,8 @@ NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result) {
 
 void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bool>> cancel,
                                    void (^progress)(int percent),
+                                   void (^confirm_replace)(NSString* version,
+                                                           void (^answer)(BOOL replace)),
                                    void (^completion)(SystemFilesResult result)) {
   const std::filesystem::path source_path([source fileSystemRepresentation]);
   [source retain];
@@ -379,8 +374,10 @@ void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bo
     // a scope that has to be open to read it. Harmless for a copy.
     const BOOL access_granted = [source startAccessingSecurityScopedResource];
     int last_percent = 0;
-    const auto result = InstallIOSSystemSoftware(
-        source_path, [&last_percent, &cancel, progress](size_t done, size_t total) {
+    IOSStagedSystemSoftware staged;
+    auto result = StageIOSSystemSoftware(
+        source_path,
+        [&last_percent, &cancel, progress](size_t done, size_t total) {
           const int percent = total ? static_cast<int>(done * 100 / total) : 0;
           if (percent != last_percent) {
             last_percent = percent;
@@ -389,11 +386,40 @@ void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bo
             });
           }
           return !cancel->load();
-        });
+        },
+        &staged);
     if (access_granted) {
       [source stopAccessingSecurityScopedResource];
     }
     [source release];
+    if (result == SystemFilesResult::kSuccess && staged.staged) {
+      if (staged.already_installed && confirm_replace) {
+        // Unpacked beside the installed versions, which stay as they are until
+        // the answer.
+        NSString* version = [NSString stringWithUTF8String:staged.version.c_str()];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          void (^answer)(BOOL) = ^(BOOL replace) {
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+              auto answered = SystemFilesResult::kCancelled;
+              if (replace) {
+                answered = CommitIOSStagedSystemSoftware();
+              } else {
+                DiscardIOSStagedSystemSoftware();
+              }
+              XELOGI("iOS: system software install finished with result {}",
+                     static_cast<int>(answered));
+              dispatch_async(dispatch_get_main_queue(), ^{
+                completion(answered);
+              });
+            });
+          };
+          confirm_replace(version, [[answer copy] autorelease]);
+        });
+        return;
+      }
+      result = CommitIOSStagedSystemSoftware();
+    }
+    XELOGI("iOS: system software install finished with result {}", static_cast<int>(result));
     dispatch_async(dispatch_get_main_queue(), ^{
       completion(result);
     });

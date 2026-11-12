@@ -21,6 +21,7 @@
 
 #include "xenia/emulator.h"
 #include "xenia/ui/ios/launcher/ios_game_library.h"
+#include "xenia/ui/ios/launcher/ios_system_versions.h"
 #include "xenia/ui/system_files_installer_wx.h"
 
 #ifdef __OBJC__
@@ -41,7 +42,8 @@ namespace xe {
 namespace ui {
 
 // The Xbox 360 system software is a USB system update installed in the system
-// folder of the storage root, which the emulator mounts on every launch.
+// folder of the storage root, which the emulator mounts on every launch. Other
+// versions can be installed beside it (ios_system_versions.h).
 std::filesystem::path IOSSystemFilesPath();
 // The dashboard in it, which the library starts.
 std::filesystem::path IOSInstalledDashboardPath();
@@ -51,6 +53,7 @@ bool IsIOSDashboardInstalled();
 bool IsIOSDashboardHome();
 bool IsIOSInstalledDashboardPath(const std::filesystem::path& path);
 
+// The version games use, in the system folder, and every installed version.
 struct IOSSystemSoftwareInfo {
   bool installed = false;
   // The dashboard's, like "2.0.17559.0". Empty when it can't be read.
@@ -58,15 +61,19 @@ struct IOSSystemSoftwareInfo {
   uint64_t size = 0;
   // An install that failed left the previous one in a folder of its own.
   bool has_unrestored_files = false;
+  // Every installed version with its size, the one games use first.
+  std::vector<IOSSystemVersion> versions;
 };
-// Walks the folder, so keep it off the main thread.
+// Walks the folders, so keep it off the main thread.
 IOSSystemSoftwareInfo ReadIOSSystemSoftwareInfo();
 
-// Installs the update from its zip or the folder Files expands it to. Blocks,
-// so keep it off the main thread.
+// Installs the update from its zip or the folder Files expands it to: as the
+// version games use when there is none, in place of the installed version it
+// is, or else as one more version. Blocks, so keep it off the main thread.
 SystemFilesResult InstallIOSSystemSoftware(
     const std::filesystem::path& source_path,
     const std::function<bool(size_t done, size_t total)>& progress);
+// Removes the version games use, with everything in the system folder.
 bool RemoveIOSSystemSoftware();
 
 // Keeps the library for the dashboard to list as its games, writing the icons
@@ -88,12 +95,20 @@ NSArray<XeniaIOSExternalLibraryAccess*>* StartIOSDashboardLibraryAccess();
 // one.
 NSString* IOSSystemSoftwareInstallFailureMessage(SystemFilesResult result);
 
-// Installs the update from |source| off the main thread. |progress| gets whole
-// percents and |completion| the result, both on the main thread. Setting
-// |cancel| stops the install early. Holds |source|'s security scope for the
-// install, so a picked folder that wasn't copied can be read.
+// Installs the update from |source| off the main thread, as
+// InstallIOSSystemSoftware does. |progress| gets whole percents and
+// |completion| the result, both on the main thread. Setting |cancel| stops the
+// install early. Holds |source|'s security scope for the install, so a picked
+// folder that wasn't copied can be read.
+//
+// When the update's version is already installed, |confirm_replace| is asked
+// on the main thread, once the update is unpacked, whether to replace it, and
+// answers through |answer|; declining finishes as cancelled and changes
+// nothing. Nil replaces without asking.
 void InstallIOSSystemSoftwareAsync(NSURL* source, std::shared_ptr<std::atomic<bool>> cancel,
                                    void (^progress)(int percent),
+                                   void (^confirm_replace)(NSString* version,
+                                                           void (^answer)(BOOL replace)),
                                    void (^completion)(SystemFilesResult result));
 
 // What a download that didn't succeed says. Nil for a finished or cancelled
