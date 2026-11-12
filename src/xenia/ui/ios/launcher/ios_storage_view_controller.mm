@@ -162,7 +162,15 @@ std::string SelectionKey(const IOSStorageTitle& title) {
   return key + "/" + title.game_path;
 }
 
+// What original Xbox games keep together, under the console's Xbox emulator: not a game.
+bool IsXboxShared(const IOSStorageTitle& title) {
+  return !title.in_library && title.title_id == kIOSStorageXboxEmulatorTitleId;
+}
+
 NSString* TitleName(const IOSStorageTitle& title) {
+  if (IsXboxShared(title)) {
+    return NSLocalizedString(@"Shared by Original Xbox Games", @"storage: row");
+  }
   if (!title.name.empty()) {
     if (NSString* name = [NSString stringWithUTF8String:title.name.c_str()]; name.length) {
       return name;
@@ -401,8 +409,18 @@ enum class TitleAction {
   header_.titleLabel.text = ByteText(title_.Total());
   header_.dot.backgroundColor = title_.in_library ? [XeniaTheme accent] : [XeniaTheme textMuted];
   header_.detailLabel.text =
-      title_.in_library
-          ? (IsLinkedOnly(title_)
+      IsXboxShared(title_)
+          ? NSLocalizedString(@"The console’s own Xbox emulator runs every original Xbox "
+                              @"game, so their shaders and saved data are kept together.",
+                              @"storage: game page header")
+      : title_.in_library
+          ? (title_.original_xbox
+                 ? (IsLinkedOnly(title_)
+                        ? NSLocalizedString(@"Original Xbox game, played from a linked folder",
+                                            @"storage: game page header")
+                        : NSLocalizedString(@"Original Xbox game, in your library",
+                                            @"storage: game page header"))
+             : IsLinkedOnly(title_)
                  ? NSLocalizedString(@"In your library, played from a linked folder",
                                      @"storage: game page header")
                  : NSLocalizedString(@"In your library", @"storage: game page header"))
@@ -456,6 +474,11 @@ enum class TitleAction {
                                @"storage: game page footer");
     case TitleSection::kActions:
       break;
+  }
+  if (IsXboxShared(title_)) {
+    return NSLocalizedString(@"Shaders rebuild as you play. Deleting the data removes the "
+                             @"saves of every original Xbox game.",
+                             @"storage: game page footer");
   }
   if (title_.in_library && IsLinkedOnly(title_)) {
     return NSLocalizedString(@"Shaders rebuild as you play. You can take the game out of the "
@@ -757,9 +780,14 @@ enum class TitleAction {
                                                           @"Delete the Data of %@?",
                                                           @"storage: alert title; %@ is a game"),
                                                       name]
-                   message:NSLocalizedString(@"Its updates, add-ons, saves and shaders are "
-                                             @"deleted. This can’t be undone.",
-                                             @"storage: alert message")
+                   message:IsXboxShared(title_)
+                               ? NSLocalizedString(@"The saves and shaders of every original "
+                                                   @"Xbox game are deleted. This can’t be "
+                                                   @"undone.",
+                                                   @"storage: alert message")
+                               : NSLocalizedString(@"Its updates, add-ons, saves and shaders "
+                                                   @"are deleted. This can’t be undone.",
+                                                   @"storage: alert message")
                     button:NSLocalizedString(@"Delete", @"storage: alert button")
                       from:self
                       work:^BOOL(std::string* error) {
@@ -774,7 +802,10 @@ enum class TitleAction {
 #pragma mark - Storage
 
 namespace {
-enum class Section { kKinds, kFree, kSort, kLibrary, kNotInLibrary };
+// kLibrary lists the library's Xbox 360 games and kXbox its original Xbox games, with what
+// those share.
+enum class Section { kKinds, kFree, kOptions, kLibrary, kXbox, kNotInLibrary };
+enum class Option { kSort, kSelect };
 enum class FreeAction { kLeftovers, kGameData, kShaders };
 }  // namespace
 
@@ -787,16 +818,17 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   XEStatusHeaderView* header_;
   std::vector<Section> sections_;
   std::vector<FreeAction> free_actions_;
+  std::vector<Option> options_;
   std::vector<size_t> library_titles_;
+  std::vector<size_t> xbox_titles_;
   std::vector<size_t> other_titles_;
   BOOL has_linked_games_;
   // What the library's games take in linked folders on other drives: not this
   // device's storage, so not in the total.
   uint64_t linked_bytes_;
-  // Select mode: rows of the two game lists are chosen, then deleted together.
+  // Select mode: rows of the game lists are chosen, then deleted together.
   BOOL selecting_;
   std::set<std::string> selected_;  // SelectionKey of each chosen row
-  UIBarButtonItem* select_item_;
   UIBarButtonItem* select_all_item_;
   UIBarButtonItem* select_done_item_;
   UIButton* delete_button_;  // Not retained: the page's commit button.
@@ -812,7 +844,6 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 - (void)dealloc {
   [[NSNotificationCenter defaultCenter] removeObserver:self];
   [header_ release];
-  [select_item_ release];
   [select_all_item_ release];
   [select_done_item_ release];
   [super dealloc];
@@ -830,11 +861,6 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   self.tableView.estimatedRowHeight = 52.0;
   header_ = [[XEStatusHeaderView alloc] init];
   [self refreshHeader];
-  select_item_ =
-      [[UIBarButtonItem alloc] initWithTitle:NSLocalizedString(@"Select", @"storage: header button")
-                                       style:UIBarButtonItemStylePlain
-                                      target:self
-                                      action:@selector(onSelectTapped:)];
   select_all_item_ = [[UIBarButtonItem alloc]
       initWithTitle:NSLocalizedString(@"Select All", @"storage: header button")
               style:UIBarButtonItemStylePlain
@@ -906,7 +932,9 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   const IOSStorageReport& report = measurement_.report;
   sections_.clear();
   free_actions_.clear();
+  options_.clear();
   library_titles_.clear();
+  xbox_titles_.clear();
   other_titles_.clear();
   has_linked_games_ = NO;
   linked_bytes_ = 0;
@@ -926,8 +954,18 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   if (!free_actions_.empty()) {
     sections_.push_back(Section::kFree);
   }
+  const bool has_xbox_games =
+      std::any_of(report.titles.begin(), report.titles.end(), [](const IOSStorageTitle& title) {
+        return title.in_library && title.original_xbox;
+      });
   for (size_t i = 0; i < report.titles.size(); ++i) {
-    (report.titles[i].in_library ? library_titles_ : other_titles_).push_back(i);
+    const IOSStorageTitle& title = report.titles[i];
+    // What original Xbox games share is listed with them while there are any.
+    (title.in_library                              ? (title.original_xbox ? xbox_titles_
+                                                                          : library_titles_)
+     : IsXboxShared(title) && has_xbox_games ? xbox_titles_
+                                                   : other_titles_)
+        .push_back(i);
     has_linked_games_ |= IsLinkedOnly(report.titles[i]);
     if (report.titles[i].in_library) {
       linked_bytes_ += report.titles[i].linked_bytes -
@@ -941,13 +979,18 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
              NSOrderedAscending;
     };
     std::stable_sort(library_titles_.begin(), library_titles_.end(), by_name);
+    std::stable_sort(xbox_titles_.begin(), xbox_titles_.end(), by_name);
     std::stable_sort(other_titles_.begin(), other_titles_.end(), by_name);
   }
-  if (library_titles_.size() + other_titles_.size() > 1) {
-    sections_.push_back(Section::kSort);
+  if ([self selectableCount] > 1) {
+    options_ = {Option::kSort, Option::kSelect};
+    sections_.push_back(Section::kOptions);
   }
   if (!library_titles_.empty()) {
     sections_.push_back(Section::kLibrary);
+  }
+  if (!xbox_titles_.empty()) {
+    sections_.push_back(Section::kXbox);
   }
   if (!other_titles_.empty()) {
     sections_.push_back(Section::kNotInLibrary);
@@ -961,7 +1004,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
     }
   }
   selected_.swap(still_listed);
-  if (library_titles_.empty() && other_titles_.empty()) {
+  if (![self selectableCount]) {
     selecting_ = NO;
   }
   [self refreshSelectChrome];
@@ -970,12 +1013,27 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 #pragma mark Select
 
 - (size_t)selectableCount {
-  return library_titles_.size() + other_titles_.size();
+  return library_titles_.size() + xbox_titles_.size() + other_titles_.size();
 }
 
-// Select in the header; while selecting, Select All and Done there and Delete at the bottom.
+// The rows of a section that lists games, or nullptr.
+- (const std::vector<size_t>*)titlesOfSection:(Section)section {
+  switch (section) {
+    case Section::kLibrary:
+      return &library_titles_;
+    case Section::kXbox:
+      return &xbox_titles_;
+    case Section::kNotInLibrary:
+      return &other_titles_;
+    default:
+      return nullptr;
+  }
+}
+
+// Select mode starts from its own row above the games; while selecting, Select All and Done
+// are in the header and Delete at the bottom.
 - (void)refreshSelectChrome {
-  if (!self.isViewLoaded || !select_item_) {
+  if (!self.isViewLoaded || !select_all_item_) {
     return;
   }
   const size_t selectable = [self selectableCount];
@@ -984,9 +1042,7 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
                                : NSLocalizedString(@"Select All", @"storage: header button");
   // The same items each time, so the header is laid out again only when they change. Done is
   // last, next to ✕.
-  XESetSheetActions(self, selecting_   ? @[ select_all_item_, select_done_item_ ]
-                          : selectable ? @[ select_item_ ]
-                                       : @[]);
+  XESetSheetActions(self, selecting_ ? @[ select_all_item_, select_done_item_ ] : @[]);
   // The header's buttons take the title's room on a phone.
   self.navigationItem.title = selecting_ ? @"" : self.title;
   if (selecting_ && !delete_button_) {
@@ -1025,10 +1081,6 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   selected_.clear();
   [self refreshSelectChrome];
   [self.tableView reloadData];
-}
-
-- (void)onSelectTapped:(id)__unused sender {
-  [self setSelecting:YES];
 }
 
 - (void)onSelectDoneTapped:(id)__unused sender {
@@ -1319,12 +1371,12 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       return 1 + [self listedKindCount] + (linked_bytes_ ? 1 : 0);
     case Section::kFree:
       return NSInteger(free_actions_.size());
-    case Section::kSort:
-      return 1;
+    case Section::kOptions:
+      return NSInteger(options_.size());
     case Section::kLibrary:
-      return NSInteger(library_titles_.size());
+    case Section::kXbox:
     case Section::kNotInLibrary:
-      return NSInteger(other_titles_.size());
+      return NSInteger([self titlesOfSection:sections_[size_t(section)]]->size());
   }
   return 0;
 }
@@ -1332,12 +1384,16 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 - (NSString*)tableView:(__unused UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
   switch (sections_[size_t(section)]) {
     case Section::kKinds:
-    case Section::kSort:
+    case Section::kOptions:
       return nil;
     case Section::kFree:
       return NSLocalizedString(@"Free Up Space", @"storage: section");
     case Section::kLibrary:
-      return NSLocalizedString(@"Games", @"storage: section");
+      // Named for the console only when there are games of both.
+      return xbox_titles_.empty() ? NSLocalizedString(@"Games", @"storage: section")
+                                  : NSLocalizedString(@"Xbox 360 Games", @"storage: section");
+    case Section::kXbox:
+      return NSLocalizedString(@"Original Xbox Games", @"storage: section");
     case Section::kNotInLibrary:
       return NSLocalizedString(@"Not in Your Library", @"storage: section");
   }
@@ -1352,15 +1408,18 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
                                @"rebuild as you play.",
                                @"storage: footer");
     case Section::kLibrary:
+      // One footer for the games, under the last of their sections.
+      if (!xbox_titles_.empty()) {
+        return nil;
+      }
+      [[fallthrough]];
+    case Section::kXbox:
       return has_linked_games_
                  ? NSLocalizedString(@"A game in a linked folder shows its size there. "
                                      @"Linked folders on this device count in the total "
-                                     @"above. Swipe a game to delete it, or tap Select to "
-                                     @"delete several.",
+                                     @"above. Swipe a game to delete it.",
                                      @"storage: footer")
-                 : NSLocalizedString(@"Swipe a game to delete it, or tap Select to delete "
-                                     @"several.",
-                                     @"storage: footer");
+                 : NSLocalizedString(@"Swipe a game to delete it.", @"storage: footer");
     case Section::kNotInLibrary:
       return NSLocalizedString(@"Updates, saves and shaders of games that aren’t in your "
                                @"library.",
@@ -1436,7 +1495,22 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   cell.accessibilityTraits = UIAccessibilityTraitButton;
   const IOSStorageReport& report = measurement_.report;
   switch (section) {
-    case Section::kSort: {
+    case Section::kOptions: {
+      if (options_[size_t(indexPath.row)] == Option::kSelect) {
+        // Says what selecting is for; while selecting, what to do next.
+        UIColor* color = selecting_ ? [XeniaTheme textSecondary] : [XeniaTheme accent];
+        cell.textLabel.text =
+            selecting_ ? NSLocalizedString(@"Tap the items to delete, then Delete",
+                                           @"storage: row while selecting")
+                       : NSLocalizedString(@"Select Items to Delete", @"storage: action");
+        cell.textLabel.textColor = color;
+        cell.imageView.image = XERowSymbolImage(@"checkmark.circle", color);
+        if (selecting_) {
+          cell.selectionStyle = UITableViewCellSelectionStyleNone;
+          cell.accessibilityTraits = UIAccessibilityTraitStaticText;
+        }
+        break;
+      }
       cell.textLabel.text = NSLocalizedString(@"Sort By", @"storage: row");
       cell.imageView.image = XERowSymbolImage(@"arrow.up.arrow.down", nil);
       cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -1502,9 +1576,9 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
       break;
     }
     case Section::kLibrary:
+    case Section::kXbox:
     case Section::kNotInLibrary: {
-      const std::vector<size_t>& rows =
-          section == Section::kLibrary ? library_titles_ : other_titles_;
+      const std::vector<size_t>& rows = *[self titlesOfSection:section];
       const IOSStorageTitle& title = report.titles[rows[size_t(indexPath.row)]];
       cell.textLabel.text = TitleName(title);
       cell.detailTextLabel.text =
@@ -1515,7 +1589,8 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
         [self applySelected:selected_.count(SelectionKey(title)) != 0 toCell:cell];
         break;
       }
-      cell.imageView.image = XERowSymbolImage(!title.in_library     ? @"questionmark.folder"
+      cell.imageView.image = XERowSymbolImage(IsXboxShared(title)   ? @"square.stack.3d.up"
+                                              : !title.in_library   ? @"questionmark.folder"
                                               : IsLinkedOnly(title) ? @"link"
                                                                     : @"gamecontroller",
                                               nil);
@@ -1537,11 +1612,14 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
 // A library game's row swipes to the launcher's delete sheet, as its page's Delete Game does.
 - (UISwipeActionsConfiguration*)tableView:(__unused UITableView*)tableView
     trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
-  if (selecting_ || sections_[size_t(indexPath.section)] != Section::kLibrary) {
+  const std::vector<size_t>* rows = [self titlesOfSection:sections_[size_t(indexPath.section)]];
+  if (selecting_ || !rows) {
     return nil;
   }
-  const IOSStorageTitle& title =
-      measurement_.report.titles[library_titles_[size_t(indexPath.row)]];
+  const IOSStorageTitle& title = measurement_.report.titles[(*rows)[size_t(indexPath.row)]];
+  if (!title.in_library) {
+    return nil;
+  }
   NSDictionary* request = @{
     XeniaStorageTitleIdKey : @(title.title_id),
     XeniaStorageGamePathKey : [NSString stringWithUTF8String:title.game_path.c_str()] ?: @"",
@@ -1568,12 +1646,11 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
   const Section section = sections_[size_t(indexPath.section)];
   const IOSStorageReport& report = measurement_.report;
+  const std::vector<size_t>* titles = [self titlesOfSection:section];
   if (selecting_) {
-    // Only the two game lists select; a tap ticks or clears the row.
-    if (section == Section::kLibrary || section == Section::kNotInLibrary) {
-      const std::vector<size_t>& rows =
-          section == Section::kLibrary ? library_titles_ : other_titles_;
-      const std::string key = SelectionKey(report.titles[rows[size_t(indexPath.row)]]);
+    // Only the game lists select; a tap ticks or clears the row.
+    if (titles) {
+      const std::string key = SelectionKey(report.titles[(*titles)[size_t(indexPath.row)]]);
       const BOOL selected = selected_.erase(key) == 0;
       if (selected) {
         selected_.insert(key);
@@ -1585,13 +1662,15 @@ enum class FreeAction { kLeftovers, kGameData, kShaders };
     }
     return;
   }
-  if (section == Section::kLibrary || section == Section::kNotInLibrary) {
-    const std::vector<size_t>& rows =
-        section == Section::kLibrary ? library_titles_ : other_titles_;
+  if (titles) {
     XeniaStorageTitleViewController* page = [[[XeniaStorageTitleViewController alloc]
-        initWithTitle:report.titles[rows[size_t(indexPath.row)]]
+        initWithTitle:report.titles[(*titles)[size_t(indexPath.row)]]
                 owner:self] autorelease];
     [self.navigationController pushViewController:page animated:YES];
+    return;
+  }
+  if (section == Section::kOptions && options_[size_t(indexPath.row)] == Option::kSelect) {
+    [self setSelecting:YES];
     return;
   }
   if (section != Section::kFree) {

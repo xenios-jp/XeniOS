@@ -100,7 +100,7 @@ uint64_t EntryBytes(const fs::path& path, struct stat* st_out = nullptr) {
 }
 
 uint64_t TreeBytes(const fs::path& path) {
-  struct stat st;
+  struct stat st = {};
   uint64_t total = EntryBytes(path, &st);
   if (!S_ISDIR(st.st_mode)) {
     return total;
@@ -245,6 +245,7 @@ class StorageWalk {
       const uint64_t key = game.title_id ? game.title_id : untitled_key++;
       IOSStorageTitle& title = Title(key, game.title_id);
       title.in_library = true;
+      title.original_xbox |= game.original_xbox;
       if (title.game_path.empty()) {
         title.game_path = game.path.string();
       }
@@ -277,6 +278,14 @@ class StorageWalk {
         if (disc) {
           imported_discs_.push_back({normal, key, disc_index});
         }
+        // A game kept as loose files is its whole folder, not the executable
+        // alone.
+        const fs::path folder = normal.parent_path();
+        if (IsFolderGame(normal) && IsUnder(folder, documents_) && folder != documents_ &&
+            folder != documents_ / "games") {
+          game_paths_[folder.string()] = key;
+          return;
+        }
         game_paths_[normal.string()] = key;
         fs::path sidecar = normal;
         sidecar += ".data";
@@ -304,7 +313,11 @@ class StorageWalk {
       if (key == kProfileTitleId || (!title.Total() && !title.in_library)) {
         continue;
       }
-      if (title.name.empty() && title.title_id) {
+      if (key == kIOSStorageXboxEmulatorTitleId) {
+        // Named by the screen: it is no game.
+        title.original_xbox = true;
+        title.name.clear();
+      } else if (title.name.empty() && title.title_id) {
         if (const xe::app::GameTitleInfo* info = xe::app::GetGameTitleInfo(title.title_id)) {
           title.name = info->name;
         }
@@ -376,6 +389,7 @@ class StorageWalk {
       }
       data->name = game.name;
       data->in_library = true;
+      data->original_xbox = game.original_xbox;
       data->has_imported_copy = game.has_imported_copy;
       data->has_linked_copy = game.has_linked_copy;
       data->linked_bytes = game.linked_bytes;
@@ -402,10 +416,11 @@ class StorageWalk {
     }
   }
 
-  // Sizes the linked copies that are single files (ISO, ZAR, a GOD package's
-  // header with the files directly in its ".data" folder), with the linked
-  // folders' security scopes held. A folder game is left unsized: on a network
-  // share, walking it could take minutes.
+  // Sizes the linked copies, with the linked folders' security scopes held: a
+  // single file (ISO, ZAR, a GOD package's header with the files directly in
+  // its ".data" folder), or a folder game's folder when it is on this device.
+  // A folder game on another drive is left at its executable's size: on a
+  // network share, walking it could take minutes.
   void MeasureLinked() {
     if (linked_paths_.empty()) {
       return;
@@ -431,21 +446,28 @@ class StorageWalk {
       if (!bytes) {
         continue;
       }
-      fs::path sidecar = path;
-      sidecar += ".data";
-      std::error_code ec;
-      for (const auto& entry : fs::directory_iterator(sidecar, ec)) {
-        bytes += file_bytes(entry.path());
+      // A linked folder on the device's own storage (On My iPhone, say) takes
+      // its space as the app's folder does; one on another drive doesn't.
+      const bool on_device = home_known && device == home_info.st_dev;
+      const bool folder_game = IsFolderGame(path);
+      if (folder_game && on_device) {
+        bytes = TreeBytes(path.parent_path());
+      } else {
+        fs::path sidecar = path;
+        sidecar += ".data";
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(sidecar, ec)) {
+          bytes += file_bytes(entry.path());
+        }
       }
       IOSStorageTitle& title = titles_[key];
       title.linked_bytes += bytes;
-      // Deleting a folder game takes its whole folder, which isn't sized here.
-      if (copy.disc < title.discs.size() && !IsFolderGame(path)) {
+      // Deleting a folder game takes its whole folder, which is sized only on
+      // this device.
+      if (copy.disc < title.discs.size() && (!folder_game || on_device)) {
         title.discs[copy.disc].bytes = bytes;
       }
-      // A linked folder on the device's own storage (On My iPhone, say) takes
-      // its space as the app's folder does; one on another drive doesn't.
-      if (home_known && device == home_info.st_dev) {
+      if (on_device) {
         Add(IOSStorageKind::kLinked, bytes, key);
       }
     }
