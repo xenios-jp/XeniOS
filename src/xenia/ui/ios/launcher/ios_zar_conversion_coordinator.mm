@@ -2921,8 +2921,10 @@ bool XeniaDeleteGameFiles(const std::filesystem::path& source_path, std::string*
       std::make_shared<std::vector<XeniaIOSZarConversionRequest>>(std::move(requests));
   __unsafe_unretained XeniaIOSZarConversionCoordinator* unsafe_self = self;
   XeniaIOSZarConversionPreflightViewController* preflight_controller = [self
-      presentZarConversionPreflightWithTitle:NSLocalizedString(@"Convert Library to ZAR",
-                                                               @"zar conversion coordinator: title")
+      presentZarConversionPreflightWithTitle:NSLocalizedString(
+                                                 @"Convert to ZAR",
+                                                 @"zar conversion coordinator: title; large title, "
+                                                 @"keep short to fit an iPhone")
                                 requestCount:requests_holder->size()
                                cancelHandler:^{
                                  [unsafe_self dismissZarConversionPreflightWithCompletion:nil];
@@ -3113,6 +3115,14 @@ bool XeniaDeleteGameFiles(const std::filesystem::path& source_path, std::string*
         results.push_back(std::move(item));
         [external_access release];
         continue;
+      }
+
+      // Converting the whole library skips the estimate. Measure the original
+      // here (a stat walk, with its folder's access open) so the result can
+      // say how much space each game saved.
+      if (!request.source_bytes) {
+        request.source_bytes = XEZarSourceStorageBytes(request.source_path);
+        item.request.source_bytes = request.source_bytes;
       }
 
       {
