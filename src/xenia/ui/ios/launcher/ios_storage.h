@@ -28,6 +28,7 @@ enum class IOSStorageKind : int {
   kShaders,    // Saved shaders and pipelines, the system's Metal cache
   kOther,      // System software, art, logs, small caches
   kLeftovers,  // Nothing uses them: archiver copies, old temporary files
+  kLinked,     // Games in linked folders that are on this device's own storage
   kCount,
 };
 
@@ -43,7 +44,8 @@ struct IOSStorageTitle {
   // A copy of the game is in a linked folder (outside the app's storage).
   bool has_linked_copy = false;
   // What the linked copies take where they are, when the folder is reachable.
-  // Not part of bytes or Total(): it isn't the app's storage.
+  // The part on this device's own storage (On My iPhone) is also in
+  // bytes[kLinked] and Total(); a copy on another drive is only here.
   uint64_t linked_bytes = 0;
   // The library entry's path, to find the game again for Delete Game.
   std::string game_path;

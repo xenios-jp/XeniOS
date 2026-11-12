@@ -278,7 +278,12 @@ class StorageWalk {
     std::sort(
         report.titles.begin(), report.titles.end(),
         [](const IOSStorageTitle& a, const IOSStorageTitle& b) {
-          return a.Total() + a.linked_bytes > b.Total() + b.linked_bytes;
+          // With what a game takes on another drive.
+          auto size = [](const IOSStorageTitle& title) {
+            return title.Total() + title.linked_bytes -
+                   title.bytes[size_t(IOSStorageKind::kLinked)];
+          };
+          return size(a) > size(b);
         });
     return report;
   }
@@ -360,14 +365,21 @@ class StorageWalk {
       return;
     }
     NSArray* accesses = xe::ui::StartIOSExternalLibraryAccessForAllLocations();
-    auto file_bytes = [](const fs::path& path) -> uint64_t {
+    struct stat home_info;
+    const bool home_known = stat(home_.c_str(), &home_info) == 0;
+    auto file_bytes = [](const fs::path& path, dev_t* device_out = nullptr) -> uint64_t {
       struct stat info;
-      return lstat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode)
-                 ? uint64_t(info.st_blocks) * 512
-                 : 0;
+      if (lstat(path.c_str(), &info) != 0 || !S_ISREG(info.st_mode)) {
+        return 0;
+      }
+      if (device_out) {
+        *device_out = info.st_dev;
+      }
+      return uint64_t(info.st_blocks) * 512;
     };
     for (const auto& [path, key] : linked_paths_) {
-      uint64_t bytes = file_bytes(path);
+      dev_t device = 0;
+      uint64_t bytes = file_bytes(path, &device);
       if (!bytes) {
         continue;
       }
@@ -378,6 +390,11 @@ class StorageWalk {
         bytes += file_bytes(entry.path());
       }
       titles_[key].linked_bytes += bytes;
+      // A linked folder on the device's own storage (On My iPhone, say) takes
+      // its space as the app's folder does; one on another drive doesn't.
+      if (home_known && device == home_info.st_dev) {
+        Add(IOSStorageKind::kLinked, bytes, key);
+      }
     }
     (void)accesses;  // Released with the caller's autorelease pool.
   }
