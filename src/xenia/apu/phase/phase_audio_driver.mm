@@ -26,6 +26,7 @@
 #include <thread>
 #include <vector>
 
+#include "xenia/apu/apu_flags.h"
 #include "xenia/base/byte_order.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -733,7 +734,11 @@ void PHASEAudioDriver::SubmitFrame(float* samples) {
 
   const uint32_t ch_count = d->channels;
   const uint32_t n = d->channel_samples;
-  const float vol = d->volume.load(std::memory_order_relaxed);
+  // Scale by master (cvar) and per-driver volume, as the other drivers do:
+  // the window's volume slider and mute set the cvar.
+  const uint32_t master = cvars::volume > 100 ? 100 : cvars::volume;
+  const float vol =
+      d->volume.load(std::memory_order_relaxed) * (master / 100.0f);
   buf.frameLength = n;
   float* const* dst = buf.floatChannelData;
   for (uint32_t ch = 0; ch < ch_count; ++ch) {
