@@ -538,6 +538,9 @@ std::string LaunchFailureMessage(uint32_t status) {
          code + ")";
 }
 
+constexpr const char kXboxEmulatorMissingMessage[] =
+    "Original Xbox games need the Xbox 360's Xbox emulator. XeniOS doesn't include it. Install it "
+    "from Files in Settings > System Software.";
 constexpr const char kEmulatorSetupFailedMessage[] =
     "Xenia couldn't start the emulator. Close the app and open it again. If this keeps "
     "happening, share the log.";
@@ -2599,6 +2602,11 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
 #endif  // XE_PLATFORM_IOS
       XELOGE("iOS: Failed to launch game: {:08X}", launch_result);
       EndEmulationPauseSession();
+      // An original Xbox game that found no Xbox emulator to run through.
+      if (!emulator_->TakeMissingXeFuFile().empty()) {
+        notify_game_exited(kXboxEmulatorMissingMessage);
+        return;
+      }
       notify_game_exited(LaunchFailureMessage(launch_result).c_str());
       return;
     }

@@ -89,10 +89,16 @@
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
   static NSString* const kChoiceCellIdentifier = @"XeniaChoiceCell";
-  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kChoiceCellIdentifier];
+  static NSString* const kChoiceSubtitleCellIdentifier = @"XeniaChoiceSubtitleCell";
+  const BOOL has_subtitle =
+      indexPath.row >= 0 && indexPath.row < static_cast<NSInteger>(choices_.size()) &&
+      !choices_[indexPath.row].subtitle.empty();
+  NSString* identifier = has_subtitle ? kChoiceSubtitleCellIdentifier : kChoiceCellIdentifier;
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:identifier];
   if (!cell) {
-    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                   reuseIdentifier:kChoiceCellIdentifier] autorelease];
+    cell = [[[UITableViewCell alloc] initWithStyle:has_subtitle ? UITableViewCellStyleSubtitle
+                                                                : UITableViewCellStyleDefault
+                                   reuseIdentifier:identifier] autorelease];
   }
   if (indexPath.row < 0 || indexPath.row >= static_cast<NSInteger>(choices_.size())) {
     cell.textLabel.text = @"";
@@ -101,10 +107,17 @@
   }
   const IOSConfigChoice& choice = choices_[indexPath.row];
   cell.textLabel.text = ToNSString(choice.title);
+  if (has_subtitle) {
+    cell.detailTextLabel.text = ToNSString(choice.subtitle);
+    cell.detailTextLabel.numberOfLines = 0;
+    cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
+  }
   cell.accessoryType = (choice.value == selected_value_) ? UITableViewCellAccessoryCheckmark
                                                          : UITableViewCellAccessoryNone;
   cell.isAccessibilityElement = YES;
-  cell.accessibilityLabel = cell.textLabel.text;
+  cell.accessibilityLabel = has_subtitle ? [NSString stringWithFormat:@"%@, %@", cell.textLabel.text,
+                                                                       cell.detailTextLabel.text]
+                                         : cell.textLabel.text;
   cell.accessibilityValue =
       (choice.value == selected_value_)
           ? NSLocalizedString(@"Selected", @"choice list view controller: accessibility value")

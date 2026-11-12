@@ -81,6 +81,8 @@ struct IOSConfigChoice {
   // A value the list doesn't offer (hand-edited config, older build), kept so it shows as it is.
   // It marks the current value and can't be picked.
   bool is_custom = false;
+  // What the choice means, under its title. Empty for none.
+  std::string subtitle;
 };
 
 struct IOSConfigItem {
