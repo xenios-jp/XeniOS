@@ -85,21 +85,31 @@ enum A64DynamicCallCacheKind : uint32_t {
   // Cached by a direct call, which skips the return site checks a branch to
   // the same address needs.
   kA64DynamicCallDirectOnly = 1,
-  // The function entered at a return site. A branch takes it only when no
-  // live frame returns there and MayResolveLongjmp rules out a longjmp.
+  // The address follows a call. A branch returns into a live frame that
+  // returns there, and takes the function entered at the address only when
+  // there is none and MayResolveLongjmp rules out a longjmp.
   kA64DynamicCallReturnSite = 2,
 };
 // A resolved guest address that has no indirection slot.
 struct A64DynamicCallCacheEntry {
   uint32_t guest_address;
   uint32_t kind;
+  // The function entered at the address. 0 for a return site no function was
+  // resolved at yet.
   uint64_t host_address;
+  // For a return site, the code the address continues at in the function
+  // that called from it, once FindLiveReturn has matched the two, else 0.
+  // Code is never freed, so a frame whose host return address is this one
+  // returns to the guest address with no further lookup.
+  uint64_t return_host_address;
 };
 constexpr uint32_t kA64DynamicCallCacheSize = 16384;
-// EmitDynamicCallLookup indexes and loads these itself.
-static_assert(sizeof(A64DynamicCallCacheEntry) == 16);
+// EmitDynamicCallLookup and the dynamic return site helper index and load
+// these themselves.
+static_assert(sizeof(A64DynamicCallCacheEntry) == 24);
 static_assert(offsetof(A64DynamicCallCacheEntry, kind) == 4);
 static_assert(offsetof(A64DynamicCallCacheEntry, host_address) == 8);
+static_assert(offsetof(A64DynamicCallCacheEntry, return_host_address) == 16);
 static_assert((kA64DynamicCallCacheSize & (kA64DynamicCallCacheSize - 1)) == 0);
 
 uint32_t FindStackpointSyncDepth(const A64BackendStackpoint* stackpoints,
@@ -158,6 +168,9 @@ struct A64BackendContext {
   // null unless --a64_enable_host_guest_stack_synchronization, which also
   // gates every site that reads it.
   uint64_t synchronize_guest_and_host_stack_helper_address;
+  // Answers a branch to a cached return site without a host call. Null like
+  // the stack-repair entry.
+  uint64_t dynamic_return_site_helper_address;
   uint64_t vrsqrtefp_scalar_helper_address;
   uint64_t vrsqrtefp_vector_helper_address;
   uint64_t frsqrte_helper_address;
@@ -333,6 +346,7 @@ class A64Backend : public Backend {
   ResolveFunctionThunk resolve_function_thunk_ = nullptr;
   void* synchronize_guest_and_host_stack_helper_ = nullptr;
   void* return_to_host_helper_ = nullptr;
+  void* dynamic_return_site_helper_ = nullptr;
   void* vrsqrtefp_scalar_helper_ = nullptr;
   void* vrsqrtefp_vector_helper_ = nullptr;
   void* frsqrte_helper_ = nullptr;

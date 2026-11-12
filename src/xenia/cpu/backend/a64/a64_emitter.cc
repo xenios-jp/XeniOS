@@ -1208,7 +1208,9 @@ void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
   lsr(w15, w16, 2);
   eor(w15, w15, w16, LSR, 14);
   and_(w15, w15, kA64DynamicCallCacheSize - 1);
-  add(x14, x14, w15, UXTW, 4);
+  static_assert(sizeof(A64DynamicCallCacheEntry) == 24);
+  add(w15, w15, w15, LSL, 1);
+  add(x14, x14, w15, UXTW, 3);
   ldr(w15, ptr(x14, static_cast<uint32_t>(
                         offsetof(A64DynamicCallCacheEntry, guest_address))));
   cmp(w15, w16);
@@ -1228,6 +1230,15 @@ void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
     L(check_kind);
     cmp(w15, uint32_t(kA64DynamicCallReturnSite));
     b(NE, miss);
+    // The helper answers the usual cases itself and leaves the rest, and w16,
+    // to the host call.
+    if (cvars::a64_enable_host_guest_stack_synchronization) {
+      mov(w17, tail_pops_stackpoint ? 1 : 0);
+      ldr(x9, BackendCtxPtr(offsetof(A64BackendContext,
+                                     dynamic_return_site_helper_address)));
+      blr(x9);
+      cbnz(x9, done);
+    }
     mov(w1, w16);
     CallNativeSafe(reinterpret_cast<void*>(tail_pops_stackpoint
                                                ? ResolveCachedReturnSiteTail

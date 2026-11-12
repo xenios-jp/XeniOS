@@ -253,6 +253,7 @@ class A64HelperEmitter : public A64Emitter {
   ResolveFunctionThunk EmitResolveFunctionThunk();
   void* EmitGuestAndHostSynchronizeStackHelper();
   void* EmitReturnToHostHelper();
+  void* EmitDynamicReturnSiteHelper();
   void* EmitVRsqrtefpHelper(void** out_vector_entry);
   void* EmitFrsqrteHelper();
   void* EmitReservedStoreHelper(bool bit64, ReservedStoreFaultSite& fault_site);
@@ -817,6 +818,130 @@ void* A64HelperEmitter::EmitReturnToHostHelper() {
 // entry adds v0-v2 and x10. Both stay inside the scratch set the register
 // allocator never hands out (x0-x18, v0-v3), so guest values in v4-v31 survive
 // without EmitGuestToHostThunk's 28-register spill.
+// What ResolveCachedReturnSite answers for most branches to a return site, in
+// a few instructions rather than a host call with two searches of the code
+// cache: the innermost live frame returns to the target with nothing popped,
+// or no live frame returns there and the function entered at it is taken.
+// Anything else is left to ResolveCachedReturnSite.
+//
+// In: x14 = the target's dynamic call cache entry, of the return site kind;
+// w16 = the target; w17 = the stackpoints the branch still pops, as
+// FindLiveReturn's pending_pops. Out: x9 = where the branch continues, or 0
+// for ResolveCachedReturnSite to decide. Uses x10-x13 and x15.
+void* A64HelperEmitter::EmitDynamicReturnSiteHelper() {
+  using namespace Xbyak_aarch64;
+  struct {
+    size_t prolog;
+    size_t prolog_stack_alloc;
+    size_t body;
+    size_t epilog;
+    size_t tail;
+  } code_offsets = {};
+
+  code_offsets.prolog = getSize();
+  code_offsets.prolog_stack_alloc = getSize();
+  code_offsets.body = getSize();
+
+  static_assert(sizeof(A64BackendStackpoint) == 16);
+  const uint32_t guest_stack_offset =
+      static_cast<uint32_t>(offsetof(A64BackendStackpoint, guest_stack_));
+  const uint32_t guest_return_offset = static_cast<uint32_t>(
+      offsetof(A64BackendStackpoint, guest_return_address_));
+  Label scan;
+  Label scan_done;
+  Label slow;
+  Label take_function;
+
+  // w10 = the live frames, FindLiveReturn's live_frames.
+  ldr(w10, ptr(x19, static_cast<uint32_t>(offsetof(A64BackendContext,
+                                                   current_stackpoint_depth))));
+  subs(w10, w10, w17);
+  b(LS, take_function);
+  // Index 0 was entered from host code and is no frame to return into.
+  cmp(w10, 2);
+  b(LO, take_function);
+  ldr(x11, ptr(x19, static_cast<uint32_t>(
+                        offsetof(A64BackendContext, stackpoints))));
+  ldr(w12, ptr(x20, static_cast<uint32_t>(offsetof(ppc::PPCContext, r[1]))));
+  // x13 = the innermost live frame's stackpoint, the first FindLiveReturn
+  // looks at.
+  sub(w13, w10, 1);
+  add(x13, x11, w13, UXTW, 4);
+  ldr(w15, ptr(x13, guest_return_offset));
+  cmp(w15, w16);
+  b(NE, scan);
+  // It returns to the target. With the guest stack where its call left it,
+  // nothing was popped and FindLiveReturn stops at this frame, once the host
+  // return address is the code the target continues at.
+  ldr(w15, ptr(x13, guest_stack_offset));
+  cmp(w15, w12);
+  b(NE, slow);
+  ldr(x15, ptr(x13, static_cast<uint32_t>(
+                        offsetof(A64BackendStackpoint, host_stack_))));
+  ldr(x15, ptr(x15, static_cast<uint32_t>(StackLayout::HOST_RET_ADDR)));
+  ldr(x9, ptr(x14, static_cast<uint32_t>(offsetof(A64DynamicCallCacheEntry,
+                                                  return_host_address))));
+  cmp(x9, x15);
+  b(NE, slow);
+  // As FindLiveReturn and its caller leave them: the stack synchronization
+  // helper at the target restores the calling frame.
+  sub(w13, w10, 1);
+  str(w13, ptr(x19, static_cast<uint32_t>(offsetof(
+                        A64BackendContext, pending_stackpoint_sync_depth))));
+  mov(w13, 1);
+  str(w13, ptr(x19, static_cast<uint32_t>(
+                        offsetof(A64BackendContext, dynamic_target_in_body))));
+  ret();
+
+  // Any deeper frame that returns to the target takes the full search.
+  L(scan);
+  sub(x13, x13, static_cast<uint32_t>(sizeof(A64BackendStackpoint)));
+  cmp(x13, x11);
+  b(LS, scan_done);
+  ldr(w15, ptr(x13, guest_return_offset));
+  cmp(w15, w16);
+  b(NE, scan);
+  L(slow);
+  mov(x9, 0);
+  ret();
+
+  // No live frame returns to the target, so FindLiveReturn finds none. The
+  // function is taken unless MayResolveLongjmp: the top two live frames below
+  // the guest stack.
+  L(scan_done);
+  cmp(w10, 3);
+  b(LO, take_function);
+  sub(w13, w10, 2);
+  add(x13, x11, w13, UXTW, 4);
+  ldr(w15, ptr(x13, static_cast<uint32_t>(sizeof(A64BackendStackpoint)) +
+                        guest_stack_offset));
+  cmp(w12, w15);
+  b(LS, take_function);
+  ldr(w15, ptr(x13, guest_stack_offset));
+  cmp(w12, w15);
+  b(HI, slow);
+  // 0 while no function was resolved at the target.
+  L(take_function);
+  ldr(x9, ptr(x14, static_cast<uint32_t>(
+                       offsetof(A64DynamicCallCacheEntry, host_address))));
+  ret();
+
+  code_offsets.epilog = getSize();
+  code_offsets.tail = getSize();
+
+  EmitFunctionInfo func_info = {};
+  func_info.code_size.total = getSize();
+  func_info.code_size.prolog = code_offsets.body - code_offsets.prolog;
+  func_info.code_size.body = code_offsets.epilog - code_offsets.body;
+  func_info.code_size.epilog = code_offsets.tail - code_offsets.epilog;
+  func_info.code_size.tail = getSize() - code_offsets.tail;
+  func_info.prolog_stack_alloc_offset =
+      code_offsets.prolog_stack_alloc - code_offsets.prolog;
+  func_info.stack_size = 0;
+
+  return Emplace(func_info);
+}
+
 void* A64HelperEmitter::EmitVRsqrtefpHelper(void** out_vector_entry) {
   using namespace Xbyak_aarch64;
   struct {
@@ -1497,6 +1622,44 @@ static uint64_t ResolveHostReturn(ppc::PPCContext* guest_context) {
   return 0;
 }
 
+static uint32_t DynamicCallCacheIndex(uint32_t guest_address) {
+  return ((guest_address >> 2) ^ (guest_address >> 14)) &
+         (kA64DynamicCallCacheSize - 1);
+}
+
+// The thread's dynamic call cache, allocated by the first resolve that has
+// something to keep.
+static A64DynamicCallCacheEntry* EnsureDynamicCallCache(
+    A64BackendContext* backend_context) {
+  if (!backend_context->dynamic_call_cache) {
+    backend_context->dynamic_call_cache =
+        new A64DynamicCallCacheEntry[kA64DynamicCallCacheSize];
+    for (uint32_t i = 0; i < kA64DynamicCallCacheSize; ++i) {
+      backend_context->dynamic_call_cache[i] = {UINT32_MAX, kA64DynamicCallAny,
+                                                0, 0};
+    }
+  }
+  return backend_context->dynamic_call_cache;
+}
+
+// Keeps what FindLiveReturn matched for the dynamic return site helper:
+// |host_address| is the code |guest_address| continues at in the function
+// that called from it. A matched return address proves the address follows a
+// call, so an entry of another kind becomes a return site's.
+static void RecordLiveReturn(A64BackendContext* backend_context,
+                             uint32_t guest_address, uint64_t host_address) {
+  auto& entry = EnsureDynamicCallCache(
+      backend_context)[DynamicCallCacheIndex(guest_address)];
+  if (entry.guest_address != guest_address) {
+    // No function is known at the address yet. The lookups take a zero
+    // address as a miss.
+    entry.host_address = 0;
+    entry.guest_address = guest_address;
+  }
+  entry.kind = kA64DynamicCallReturnSite;
+  entry.return_host_address = host_address;
+}
+
 // The host address in a live frame that a dynamic code branch to the
 // instruction after its call returns to, or 0. The branch returns there however
 // many frames it skips or bytes the callee popped. The stack synchronization
@@ -1544,6 +1707,7 @@ static uint64_t FindLiveReturn(ppc::PPCContext* guest_context,
     // frame, whose record is the host stack it called with because a64 records
     // one after the prolog allocation.
     backend_context->pending_stackpoint_sync_depth = found_index;
+    RecordLiveReturn(backend_context, target_address, found_host_address);
   }
   return found_host_address;
 }
@@ -1593,11 +1757,6 @@ static uint64_t ResolveDynamicReturn(ppc::PPCContext* guest_context,
   return ResolveLongjmp(guest_context, target_address, pending_pops);
 }
 
-static uint32_t DynamicCallCacheIndex(uint32_t guest_address) {
-  return ((guest_address >> 2) ^ (guest_address >> 14)) &
-         (kA64DynamicCallCacheSize - 1);
-}
-
 // Resolves a target without an indirection slot and caches it per thread. A
 // direct bl is never a return and skips the return site checks.
 static uint64_t ResolveDynamicFunction(void* raw_context,
@@ -1634,18 +1793,14 @@ static uint64_t ResolveDynamicFunction(void* raw_context,
   }
   auto backend = static_cast<A64Backend*>(guest_context->processor->backend());
   auto bctx = backend->BackendContextForGuestContext(raw_context);
-  if (!bctx->dynamic_call_cache) {
-    bctx->dynamic_call_cache =
-        new A64DynamicCallCacheEntry[kA64DynamicCallCacheSize];
-    for (uint32_t i = 0; i < kA64DynamicCallCacheSize; ++i) {
-      bctx->dynamic_call_cache[i] = {UINT32_MAX, kA64DynamicCallAny, 0};
-    }
-  }
   // An unwind lands at an address only valid for the frame it found and is
-  // never cached. A return site's entry has a branch look for a live frame
-  // first.
-  auto& entry = bctx->dynamic_call_cache[DynamicCallCacheIndex(
+  // never cached as the target. A return site's entry has a branch look for a
+  // live frame first.
+  auto& entry = EnsureDynamicCallCache(bctx)[DynamicCallCacheIndex(
       static_cast<uint32_t>(target_address))];
+  if (entry.guest_address != static_cast<uint32_t>(target_address)) {
+    entry.return_host_address = 0;
+  }
   entry.host_address = host_address;
   entry.kind = direct           ? kA64DynamicCallDirectOnly
                : is_return_site ? kA64DynamicCallReturnSite
@@ -1902,6 +2057,7 @@ bool A64Backend::Initialize(Processor* processor) {
     synchronize_guest_and_host_stack_helper_ =
         thunk_emitter.EmitGuestAndHostSynchronizeStackHelper();
     return_to_host_helper_ = thunk_emitter.EmitReturnToHostHelper();
+    dynamic_return_site_helper_ = thunk_emitter.EmitDynamicReturnSiteHelper();
   }
 
   vrsqrtefp_scalar_helper_ =
@@ -1987,6 +2143,7 @@ bool A64Backend::DumpCodeMap(const std::filesystem::path& path) {
       {synchronize_guest_and_host_stack_helper_,
        "<synchronize_guest_and_host_stack_helper>"},
       {return_to_host_helper_, "<return_to_host_helper>"},
+      {dynamic_return_site_helper_, "<dynamic_return_site_helper>"},
       {vrsqrtefp_scalar_helper_, "<vrsqrtefp_scalar_helper>"},
       {vrsqrtefp_vector_helper_, "<vrsqrtefp_vector_helper>"},
       {frsqrte_helper_, "<frsqrte_helper>"},
@@ -2364,6 +2521,8 @@ void A64Backend::InitializeBackendContext(void* ctx) {
       reinterpret_cast<uint64_t>(guest_to_host_thunk_no_vec_);
   a64_ctx->synchronize_guest_and_host_stack_helper_address =
       reinterpret_cast<uint64_t>(synchronize_guest_and_host_stack_helper_);
+  a64_ctx->dynamic_return_site_helper_address =
+      reinterpret_cast<uint64_t>(dynamic_return_site_helper_);
   a64_ctx->vrsqrtefp_scalar_helper_address =
       reinterpret_cast<uint64_t>(vrsqrtefp_scalar_helper_);
   a64_ctx->vrsqrtefp_vector_helper_address =
