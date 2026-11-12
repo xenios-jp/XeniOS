@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <span>
 
+#include "third_party/zarchive/include/zarchive/zarchivereader.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/mapped_memory.h"
 #include "xenia/base/memory.h"
@@ -404,6 +406,24 @@ std::optional<XbeMetadata> ExtractFromPackage(
   return metadata;
 }
 
+// A ZAR archive of an original Xbox disc keeps default.xbe in its root.
+std::optional<XbeMetadata> ExtractFromArchive(
+    const std::filesystem::path& path) {
+  std::unique_ptr<ZArchiveReader> reader(ZArchiveReader::OpenFromFile(path));
+  if (!reader) {
+    return std::nullopt;
+  }
+  ZArchiveNodeHandle handle = reader->LookUp("default.xbe", true, false);
+  if (handle == ZARCHIVE_INVALID_NODE || !reader->IsFile(handle)) {
+    return std::nullopt;
+  }
+  auto* archive = reader.get();
+  return ParseXbe([archive, handle](size_t offset, std::span<uint8_t> buffer) {
+    return archive->ReadFromFile(handle, offset, buffer.size(),
+                                 buffer.data()) == buffer.size();
+  });
+}
+
 }  // namespace
 
 std::optional<GdfxFileLocation> FindXboxOriginalXbe(const uint8_t* data,
@@ -450,6 +470,9 @@ std::optional<XbeMetadata> ExtractXbeMetadata(
                read == buffer.size();
       });
     }
+  }
+  if (xe::utf8::lower_ascii(xe::path_to_utf8(path.extension())) == ".zar") {
+    return ExtractFromArchive(path);
   }
   if (auto metadata = ExtractFromPackage(path)) {
     return metadata;

@@ -34,7 +34,8 @@ struct XbeMetadata {
   std::vector<uint8_t> icon_png;
 };
 
-// An .xbe file, an original Xbox disc image or an Xbox Original package.
+// An .xbe file, an original Xbox disc image, a ZAR archive of one, or an Xbox
+// Original package.
 std::optional<XbeMetadata> ExtractXbeMetadata(
     const std::filesystem::path& path);
 std::optional<XbeMetadata> ExtractXbeMetadata(const uint8_t* data, size_t size);

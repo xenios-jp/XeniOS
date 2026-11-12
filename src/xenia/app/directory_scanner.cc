@@ -498,6 +498,11 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
                  m->title_id);
           RecordGame(MakeFromXex(path, "zar", *m));
           phase1_hits++;
+        } else if (auto xbe = vfs::ExtractXbeMetadata(path)) {
+          XELOGD("DirectoryScanner:     -> zar hit, original Xbox title_id={:08X}",
+                 xbe->title_id);
+          RecordGame(MakeFromXbe(path, "zar", *xbe));
+          phase1_hits++;
         } else {
           XELOGD("DirectoryScanner:     -> zar miss");
         }

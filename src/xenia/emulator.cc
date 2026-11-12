@@ -832,6 +832,10 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path,
       return LaunchXboxOriginal(path, xe::path_to_utf8(path.filename()));
     } break;
     case FileSignatureType::ZAR: {
+      // An archive of an original Xbox disc has default.xbe and no default.xex.
+      if (!vfs::ExtractZarMetadata(path) && vfs::ExtractXbeMetadata(path)) {
+        return LaunchXboxOriginal(path, "default.xbe");
+      }
       mount_result = MountPath(path, "\\Device\\Cdrom0");
       return mount_result ? mount_result : LaunchDiscArchive(path);
     } break;
@@ -1019,6 +1023,8 @@ bool Emulator::InsertDisc(const std::filesystem::path& path) {
     case FileSignatureType::ZAR:
       if (auto xex = vfs::ExtractZarMetadata(path)) {
         disc.title_id = xex->title_id;
+      } else {
+        xbe = vfs::ExtractXbeMetadata(path);
       }
       break;
     case FileSignatureType::LIVE:
