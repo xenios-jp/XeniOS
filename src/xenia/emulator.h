@@ -97,10 +97,9 @@ class Emulator {
   const std::filesystem::path& storage_root() const { return storage_root_; }
 
   // Folder Tools > Install System Files puts the console's flash and system
-  // partitions in.
-  std::filesystem::path system_files_path() const {
-    return storage_root_ / "system";
-  }
+  // partitions in: system_files_path, or the system folder of the storage
+  // root.
+  std::filesystem::path system_files_path() const;
 
   // Folder of the user's .patch.toml files, including saved copies of bundled
   // ones.
