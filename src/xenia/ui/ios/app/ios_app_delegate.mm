@@ -20,11 +20,12 @@
 #include "xenia/base/logging.h"
 #include "xenia/ui/windowed_app.h"
 
-#import "xenia/ui/ios/app/windowed_app_context_ios.h"
 #import "xenia/ui/ios/app/ios_lifecycle_observer.h"
-#import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/app/ios_main_view_controller.h"
+#import "xenia/ui/ios/app/windowed_app_context_ios.h"
+#import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
+#import "xenia/ui/ios/launcher/ios_storage.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_network_status.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
@@ -55,6 +56,7 @@ DECLARE_bool(log_to_stdout);
   // Before launching ends, as iOS requires: a closed app may be woken for it.
   xe_ios_background_refresh_register();
   xe_ios_network_status_start();
+  xe_ios_storage_launch_maintenance();
   NSURL* launch_url = nil;
   if (launchOptions) {
     launch_url = [launchOptions objectForKey:UIApplicationLaunchOptionsURLKey];

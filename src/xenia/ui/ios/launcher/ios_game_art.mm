@@ -400,19 +400,20 @@ void xe_prune_game_art_cache(NSSet<NSNumber*>* keep_title_ids) {
   NSSet* keep = [keep_title_ids copy];
   dispatch_async(xe_art_decode_queue(), ^{
     NSFileManager* fm = [NSFileManager defaultManager];
-    NSString* dir = xe_game_art_cache_dir();
     NSDate* cutoff = [NSDate dateWithTimeIntervalSinceNow:-kArtPruneAge];
-    for (NSString* name in [fm contentsOfDirectoryAtPath:dir error:nil]) {
-      NSString* stem = name.stringByDeletingPathExtension;
-      unsigned int value = 0;
-      if (![[NSScanner scannerWithString:stem] scanHexInt:&value] ||
-          [keep containsObject:@(value)]) {
-        continue;
-      }
-      NSString* path = [dir stringByAppendingPathComponent:name];
-      NSDate* modified = [fm attributesOfItemAtPath:path error:nil].fileModificationDate;
-      if (modified && [modified compare:cutoff] == NSOrderedAscending) {
-        [fm removeItemAtPath:path error:nil];
+    for (NSString* dir in @[ xe_game_art_cache_dir(), xe_game_background_cache_dir() ]) {
+      for (NSString* name in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+        NSString* stem = name.stringByDeletingPathExtension;
+        unsigned int value = 0;
+        if (![[NSScanner scannerWithString:stem] scanHexInt:&value] ||
+            [keep containsObject:@(value)]) {
+          continue;
+        }
+        NSString* path = [dir stringByAppendingPathComponent:name];
+        NSDate* modified = [fm attributesOfItemAtPath:path error:nil].fileModificationDate;
+        if (modified && [modified compare:cutoff] == NSOrderedAscending) {
+          [fm removeItemAtPath:path error:nil];
+        }
       }
     }
     [keep release];

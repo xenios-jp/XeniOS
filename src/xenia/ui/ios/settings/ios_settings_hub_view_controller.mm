@@ -18,6 +18,7 @@
 #import "xenia/ui/ios/launcher/ios_dashboard.h"
 #import "xenia/ui/ios/launcher/ios_external_folders_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_library_ambient_view.h"
+#import "xenia/ui/ios/launcher/ios_storage_view_controller.h"
 #import "xenia/ui/ios/settings/ios_acknowledgements_view_controller.h"
 #import "xenia/ui/ios/settings/ios_config_catalog.h"
 #import "xenia/ui/ios/settings/ios_config_storage.h"
@@ -27,8 +28,8 @@
 #import "xenia/ui/ios/settings/ios_system_software_view_controller.h"
 #import "xenia/ui/ios/shared/ios_art_wash.h"
 #import "xenia/ui/ios/shared/ios_diagnostics.h"
-#import "xenia/ui/ios/shared/ios_live_account.h"
 #import "xenia/ui/ios/shared/ios_diagnostics_outbox.h"
+#import "xenia/ui/ios/shared/ios_live_account.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
@@ -710,6 +711,8 @@ enum : NSInteger { kAppearanceBackground, kAppearanceMotion, kAppearanceIcon, kA
                      sections:(NSArray<NSArray*>*)sections
                 sectionTitles:(NSArray<NSString*>*)section_titles
                 actionHandler:(XeniaSettingsHubActionHandler)action_handler;
+// For the pages it opens itself (Storage): whether a game is running.
+@property(nonatomic, assign) BOOL gameRunning;
 @end
 
 @implementation XeniaSettingsActionListViewController {
@@ -811,6 +814,12 @@ enum : NSInteger { kAppearanceBackground, kAppearanceMotion, kAppearanceIcon, kA
     XeniaIOSExternalFoldersViewController* folders =
         [[[XeniaIOSExternalFoldersViewController alloc] init] autorelease];
     [self.navigationController pushViewController:folders animated:YES];
+    return;
+  }
+  if (item.selectable && item.action == XeniaSettingsHubActionManageStorage) {
+    XeniaStorageViewController* storage =
+        [[[XeniaStorageViewController alloc] initWithGameRunning:self.gameRunning] autorelease];
+    [self.navigationController pushViewController:storage animated:YES];
     return;
   }
   if (!item.selectable || !action_handler_) {
@@ -2090,10 +2099,8 @@ titleForFooterInSection:(NSInteger)section {
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindLibrary
                title:NSLocalizedString(@"Import Game", @"settings hub view controller: title")
-            subtitle:
-                NSLocalizedString(
-                    @"Games · Copy a game or add-on from Files.",
-                    @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Games · Copy a game or add-on from Files.",
+                                       @"settings hub view controller: title")
           symbolName:@"plus"
            tintColor:[XeniaTheme accent]],
     [XeniaSettingsHubItem
@@ -2107,27 +2114,30 @@ titleForFooterInSection:(NSInteger)section {
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindLibrary
                title:NSLocalizedString(@"Refresh Library", @"settings hub view controller: title")
-            subtitle:NSLocalizedString(
-                         @"Games · Look again for added or removed games.",
-                         @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Games · Look again for added or removed games.",
+                                       @"settings hub view controller: title")
           symbolName:@"arrow.clockwise"
+           tintColor:nil],
+    [XeniaSettingsHubItem
+        itemWithKind:XeniaSettingsHubCategoryKindLibrary
+               title:NSLocalizedString(@"Manage Storage", @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Storage · See what takes space and free it up.",
+                                       @"settings hub view controller: title")
+          symbolName:@"internaldrive.fill"
            tintColor:nil],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindLibrary
                title:NSLocalizedString(@"Clear This Game's Shaders",
                                        @"settings hub view controller: title")
-            subtitle:
-                NSLocalizedString(@"Storage · Removes the running game's saved shaders.",
-                    @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Storage · Removes the running game's saved shaders.",
+                                       @"settings hub view controller: title")
           symbolName:@"trash"
            tintColor:nil],
     [XeniaSettingsHubItem
         itemWithKind:XeniaSettingsHubCategoryKindLibrary
-               title:NSLocalizedString(@"Clear All Shaders",
+               title:NSLocalizedString(@"Clear All Shaders", @"settings hub view controller: title")
+            subtitle:NSLocalizedString(@"Storage · Removes saved shaders for every game.",
                                        @"settings hub view controller: title")
-            subtitle:
-                NSLocalizedString(@"Storage · Removes saved shaders for every game.",
-                    @"settings hub view controller: title")
           symbolName:@"trash.fill"
            tintColor:nil],
     [XeniaSettingsHubItem
@@ -2135,20 +2145,19 @@ titleForFooterInSection:(NSInteger)section {
                title:NSLocalizedString(@"Xbox 360 System Software",
                                        @"settings hub view controller: title")
             subtitle:NSLocalizedString(@"Games · Needed for the Xbox 360 Dashboard.",
-                         @"settings hub view controller: title")
+                                       @"settings hub view controller: title")
           symbolName:@"square.stack.3d.up.fill"
            tintColor:nil],
-    [XeniaSettingsHubItem
-        itemWithKind:XeniaSettingsHubCategoryKindLibrary
-               title:NSLocalizedString(@"Convert Library to ZAR",
-                                       @"settings hub view controller: title")
-            subtitle:NSLocalizedString(@"Storage · Makes disc images smaller.",
-                                       @"settings hub view controller: title")
-          symbolName:@"archivebox.fill"
-           tintColor:nil],
+    [XeniaSettingsHubItem itemWithKind:XeniaSettingsHubCategoryKindLibrary
+                                 title:NSLocalizedString(@"Convert Library to ZAR",
+                                                         @"settings hub view controller: title")
+                              subtitle:NSLocalizedString(@"Storage · Makes disc images smaller.",
+                                                         @"settings hub view controller: title")
+                            symbolName:@"archivebox.fill"
+                             tintColor:nil],
   ];
-  // Item 3, Clear This Game's Shaders, only shows while a game is running.
-  ((XeniaSettingsHubItem*)items[3]).needsRunningGame = YES;
+  // Item 4, Clear This Game's Shaders, only shows while a game is running.
+  ((XeniaSettingsHubItem*)items[4]).needsRunningGame = YES;
   for (XeniaSettingsHubItem* item in items) {
     if (no_game_running_ && item.needsRunningGame) {
       continue;
@@ -2670,6 +2679,17 @@ titleForFooterInSection:(NSInteger)section {
                  tintColor:nil],
       ];
       NSMutableArray* storage = [NSMutableArray array];
+      [storage
+          addObject:[XeniaSettingsActionListItem
+                        itemWithAction:XeniaSettingsHubActionManageStorage
+                                 title:NSLocalizedString(@"Manage Storage",
+                                                         @"settings hub view controller: title")
+                              subtitle:NSLocalizedString(
+                                           @"See what takes space, by kind and by game, "
+                                           @"and free it up.",
+                                           @"settings hub view controller: title")
+                            symbolName:@"internaldrive.fill"
+                             tintColor:[XeniaTheme accent]]];
       [storage addObject:[XeniaSettingsActionListItem
                              itemWithAction:XeniaSettingsHubActionConvertLibraryToZar
                                       title:NSLocalizedString(
@@ -2705,7 +2725,7 @@ titleForFooterInSection:(NSInteger)section {
                                                 @"settings hub view controller: title")
                                  symbolName:@"trash.fill"
                                   tintColor:[XeniaTheme statusError]]];
-      return [[[XeniaSettingsActionListViewController alloc]
+      XeniaSettingsActionListViewController* page = [[[XeniaSettingsActionListViewController alloc]
           initWithTitle:NSLocalizedString(@"Library & Storage",
                                           @"settings hub view controller: title")
                sections:@[ library, storage ]
@@ -2714,6 +2734,8 @@ titleForFooterInSection:(NSInteger)section {
             NSLocalizedString(@"Storage", @"settings hub view controller: section"),
           ]
           actionHandler:action_handler_] autorelease];
+      page.gameRunning = !no_game_running_;
+      return page;
     }
     case XeniaSettingsHubCategoryKindSystemSoftware:
       return [[[XeniaSystemSoftwareViewController alloc] initWithGameRunning:!no_game_running_]

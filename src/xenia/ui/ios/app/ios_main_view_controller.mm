@@ -47,15 +47,15 @@
 #import "xenia/ui/ios/app/ios_controller_navigation_coordinator.h"
 #import "xenia/ui/ios/app/ios_external_display.h"
 #import "xenia/ui/ios/app/ios_in_game_menu_overlay.h"
-#import "xenia/ui/ios/app/ios_online_panel.h"
 #import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
+#import "xenia/ui/ios/app/ios_online_panel.h"
 #import "xenia/ui/ios/app/ios_window_layout.h"
 #import "xenia/ui/ios/app/ios_window_position_overlay.h"
 #import "xenia/ui/ios/app/windowed_app_context_ios.h"
 #import "xenia/ui/ios/game/ios_achievement_notification_presenter.h"
 #import "xenia/ui/ios/game/ios_achievements_view_controller.h"
-#import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/game/ios_launch_status.h"
+#import "xenia/ui/ios/game/ios_metal_view.h"
 #import "xenia/ui/ios/game/ios_shader_compile_indicator.h"
 #import "xenia/ui/ios/launcher/ios_compat_data.h"
 #import "xenia/ui/ios/launcher/ios_compat_report_view_controller.h"
@@ -72,13 +72,12 @@
 #import "xenia/ui/ios/launcher/ios_game_disc_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_library.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
-#import "xenia/ui/ios/shared/ios_live_invite_banner.h"
-#import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/launcher/ios_game_patches_view_controller.h"
-#import "xenia/ui/ios/launcher/ios_jit_sheet_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_picker_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_game_tile_cell.h"
+#import "xenia/ui/ios/launcher/ios_jit_sheet_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_launcher_overlay_view.h"
+#import "xenia/ui/ios/launcher/ios_storage.h"
 #import "xenia/ui/ios/launcher/ios_system_link_view_controller.h"
 #import "xenia/ui/ios/launcher/ios_zar_conversion_coordinator.h"
 #import "xenia/ui/ios/settings/ios_choice_list_view_controller.h"
@@ -86,7 +85,6 @@
 #import "xenia/ui/ios/settings/ios_config_models.h"
 #import "xenia/ui/ios/settings/ios_config_view_controller.h"
 #import "xenia/ui/ios/settings/ios_live_account_view_controllers.h"
-#import "xenia/ui/ios/shared/ios_live_account.h"
 #import "xenia/ui/ios/settings/ios_log_view_controller.h"
 #import "xenia/ui/ios/settings/ios_profile_view_controller.h"
 #import "xenia/ui/ios/settings/ios_quick_settings_view_controller.h"
@@ -95,15 +93,18 @@
 #import "xenia/ui/ios/shared/ios_alert_actions.h"
 #import "xenia/ui/ios/shared/ios_crash_reporting.h"
 #import "xenia/ui/ios/shared/ios_diagnostics.h"
+#import "xenia/ui/ios/shared/ios_glass_card.h"
+#import "xenia/ui/ios/shared/ios_live_account.h"
+#import "xenia/ui/ios/shared/ios_live_invite_banner.h"
+#import "xenia/ui/ios/shared/ios_live_social_bridge.h"
 #import "xenia/ui/ios/shared/ios_online_features.h"
+#import "xenia/ui/ios/shared/ios_page_push.h"
 #import "xenia/ui/ios/shared/ios_resource_pressure.h"
 #import "xenia/ui/ios/shared/ios_status_toast.h"
 #import "xenia/ui/ios/shared/ios_system_link.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
 #import "xenia/ui/ios/shared/ios_theme.h"
 #import "xenia/ui/ios/shared/ios_update_check.h"
-#import "xenia/ui/ios/shared/ios_glass_card.h"
-#import "xenia/ui/ios/shared/ios_page_push.h"
 #import "xenia/ui/ios/shared/ios_view_helpers.h"
 #import "xenia/ui/ios/touch/touch_controls_overlay_ios.h"
 #import "xenia/ui/ios/touch/touch_layout_editor_view_controller_ios.h"
@@ -165,44 +166,6 @@ static bool xe_game_supports_zar_conversion(const IOSDiscoveredGame& game) {
   return false;
 }
 
-static std::filesystem::path xe_ios_settings_cache_root() {
-  std::filesystem::path root = cvars::cache_root;
-  if (root.empty()) {
-    root = xe_get_ios_default_cache_root();
-  } else if (!root.is_absolute()) {
-    root = xe_get_ios_documents_path() / root;
-  }
-  return std::filesystem::absolute(root);
-}
-
-static std::string xe_title_id_cache_prefix(uint32_t title_id) {
-  char buffer[9] = {};
-  std::snprintf(buffer, sizeof(buffer), "%08X", title_id);
-  return std::string(buffer);
-}
-
-static bool xe_cache_entry_matches_title(const std::filesystem::path& path,
-                                         const std::string& title_prefix) {
-  const std::string name = path.filename().string();
-  return name == title_prefix || name.rfind(title_prefix + ".", 0) == 0;
-}
-
-static uintmax_t xe_remove_path_if_present(const std::filesystem::path& path,
-                                           std::error_code* error_out) {
-  std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) {
-    if (error_out) {
-      *error_out = {};
-    }
-    return 0;
-  }
-  uintmax_t removed = std::filesystem::remove_all(path, ec);
-  if (error_out) {
-    *error_out = ec;
-  }
-  return ec ? 0 : removed;
-}
-
 // False when every disc is in a linked folder, so removing the game deletes nothing.
 static bool XeniaGameHasImportedDisc(const IOSDiscoveredGame& game) {
   if (game.discs.empty()) {
@@ -212,11 +175,30 @@ static bool XeniaGameHasImportedDisc(const IOSDiscoveredGame& game) {
                      [](const IOSDiscoveredGame::Disc& disc) { return !disc.is_external; });
 }
 
-// Deletes one copy of a game, or for a linked one takes it out of the library.
+// Deletes one copy of a game. A linked one is taken out of the library, or with
+// `delete_linked_files` its files are deleted from the linked folder. Blocking:
+// call from a background queue.
 static bool XeniaRemoveGameCopy(const std::filesystem::path& path, bool is_external,
-                                std::string* error_out) {
+                                bool delete_linked_files, std::string* error_out) {
   if (!is_external) {
     return XeniaDeleteGameFiles(path, error_out);
+  }
+  if (delete_linked_files) {
+    @autoreleasepool {
+      NSError* access_error = nil;
+      BOOL matched = NO;
+      XeniaIOSExternalLibraryAccess* access =
+          xe::ui::StartIOSExternalLibraryAccessForPath(path, &matched, &access_error);
+      if (matched && !access) {
+        *error_out =
+            access_error.localizedDescription.UTF8String ?: "The linked folder isn’t available.";
+        return false;
+      }
+      // Refuses a linked folder itself or anything containing one.
+      const bool deleted = XeniaDeleteGameFiles(path, error_out);
+      (void)access;  // Held until the pool drains.
+      return deleted;
+    }
   }
   NSError* error = nil;
   if (xe::ui::HideIOSExternalLibraryGameAtPath(path, nil, &error)) {
@@ -225,75 +207,6 @@ static bool XeniaRemoveGameCopy(const std::filesystem::path& path, bool is_exter
   *error_out = error.localizedDescription.UTF8String ?: "";
   return false;
 }
-
-static bool xe_clear_shader_cache_for_title(uint32_t title_id, uintmax_t* removed_out,
-                                            std::error_code* error_out) {
-  const std::filesystem::path cache_root = xe_ios_settings_cache_root();
-  const std::string title_prefix = xe_title_id_cache_prefix(title_id);
-  std::vector<std::filesystem::path> candidates;
-
-  const std::filesystem::path shareable_root = xe::gpu::GetShaderStorageShareableRoot(cache_root);
-  std::error_code ec;
-  if (std::filesystem::exists(shareable_root, ec)) {
-    for (const auto& entry : std::filesystem::directory_iterator(shareable_root, ec)) {
-      if (ec) {
-        break;
-      }
-      if (xe_cache_entry_matches_title(entry.path(), title_prefix)) {
-        candidates.push_back(entry.path());
-      }
-    }
-  }
-
-  const std::filesystem::path local_root = xe::gpu::GetShaderStorageLocalRoot(cache_root);
-  ec = {};
-  if (std::filesystem::exists(local_root, ec)) {
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(local_root, ec)) {
-      if (ec) {
-        break;
-      }
-      if (xe_cache_entry_matches_title(entry.path(), title_prefix)) {
-        candidates.push_back(entry.path());
-      }
-    }
-  }
-
-  uintmax_t removed_total = 0;
-  for (const std::filesystem::path& candidate : candidates) {
-    ec = {};
-    removed_total += xe_remove_path_if_present(candidate, &ec);
-    if (ec) {
-      if (removed_out) {
-        *removed_out = removed_total;
-      }
-      if (error_out) {
-        *error_out = ec;
-      }
-      return false;
-    }
-  }
-  if (removed_out) {
-    *removed_out = removed_total;
-  }
-  if (error_out) {
-    *error_out = {};
-  }
-  return true;
-}
-
-static bool xe_clear_all_shader_caches(uintmax_t* removed_out, std::error_code* error_out) {
-  std::error_code ec;
-  uintmax_t removed =
-      xe_remove_path_if_present(xe::gpu::GetShaderStorageRoot(xe_ios_settings_cache_root()), &ec);
-  if (removed_out) {
-    *removed_out = removed;
-  }
-  if (error_out) {
-    *error_out = ec;
-  }
-  return !ec;
-}
-
 
 // What a launch needs from the file system and linked folders, gathered off the
 // main thread: resolving a folder's bookmark can block on a slow or unreachable
@@ -499,6 +412,9 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   std::unique_ptr<xe::hid::touch::IOSTouchRuntimeModel> touch_runtime_model_;
   BOOL touch_layout_edit_mode_active_;
   BOOL gameplay_modal_presentation_pending_;
+  // The next delete confirmation was asked for by the Storage screen, which
+  // stays open after it.
+  BOOL delete_from_storage_;
   // The user paused the game with the in-game menu's Pause Emulator button.
   BOOL emulation_paused_by_user_;
   BOOL presenting_stikdebug_automation_prompt_;
@@ -737,6 +653,10 @@ NSString* const kZarSuggestionDismissedBytesKey = @"XeniaZarSuggestionDismissedB
   [[NSNotificationCenter defaultCenter] addObserver:self
                                            selector:@selector(onTitleWillStart:)
                                                name:XeniaIOSTitleWillStartNotification
+                                             object:nil];
+  [[NSNotificationCenter defaultCenter] addObserver:self
+                                           selector:@selector(onStorageDeleteGameRequest:)
+                                               name:XeniaStorageDeleteGameRequestNotification
                                              object:nil];
   // Show the last scan's result at once (read from disk, no folder walk), then
   // rescan in the background.
@@ -1919,6 +1839,8 @@ static bool XeJITUsable() {
                             NSString* size = [NSByteCountFormatter
                                 stringFromByteCount:static_cast<long long>(saved_bytes)
                                          countStyle:NSByteCountFormatterCountStyleFile];
+                            // No detail: beside Convert, any more text is
+                            // clipped on an iPhone.
                             [unsafe_self.launcherOverlayView
                                 setZarSuggestionTitle:
                                     [NSString stringWithFormat:NSLocalizedString(
@@ -1926,10 +1848,7 @@ static bool XeJITUsable() {
                                                                    @"Library: ZAR suggestion; %@ "
                                                                    @"is a size, like 18 GB"),
                                                                size]
-                                               detail:NSLocalizedString(
-                                                          @"with ZAR.",
-                                                          @"Library: ZAR suggestion, after "
-                                                          @"\"Save 18 GB\"")];
+                                               detail:nil];
                           }];
 }
 
@@ -2600,8 +2519,7 @@ static bool XeJITUsable() {
 - (void)clearCurrentGameShaderCache {
   uintmax_t removed = 0;
   std::error_code error;
-  BOOL success =
-      xe_clear_shader_cache_for_title(active_game_title_id_, &removed, &error) ? YES : NO;
+  BOOL success = xe_ios_clear_title_shaders(active_game_title_id_, &removed, &error) ? YES : NO;
   [self presentShaderCacheResultWithTitle:(success ? NSLocalizedString(
                                                          @"Shader Cache Cleared",
                                                          @"Alert title: shader cache clear result")
@@ -2616,7 +2534,7 @@ static bool XeJITUsable() {
 - (void)clearAllShaderCaches {
   uintmax_t removed = 0;
   std::error_code error;
-  BOOL success = xe_clear_all_shader_caches(&removed, &error) ? YES : NO;
+  BOOL success = xe_ios_clear_all_shaders(&removed, &error) ? YES : NO;
   [self
       presentShaderCacheResultWithTitle:(success
                                              ? NSLocalizedString(
@@ -2998,6 +2916,9 @@ static bool XeJITUsable() {
       if (refresh_generation == unsafe_self->library_refresh_generation_) {
         unsafe_self->discovered_games_ = std::move(*scanned_games_owner);
         [unsafe_self finishImportedGamesRefresh];
+        // The Storage screen reads the saved list, which the scan updated.
+        [[NSNotificationCenter defaultCenter] postNotificationName:XeniaStorageDidChangeNotification
+                                                            object:nil];
         // Prune covers against a finished scan only. The saved list shown at launch can be
         // missing games, and their covers would be deleted.
         if (!unsafe_self->pruned_game_art_) {
@@ -4327,7 +4248,7 @@ static bool XeJITUsable() {
   actions_controller.deleteTitle =
       XeniaGameHasImportedDisc(game)
           ? NSLocalizedString(@"Delete Game", @"game page: more menu")
-          : NSLocalizedString(@"Remove from Library", @"game page: more menu");
+          : NSLocalizedString(@"Remove or Delete", @"game page: more menu");
   if (game.discs.size() > 1) {
     NSMutableArray<NSString*>* labels = [NSMutableArray array];
     NSMutableArray<NSString*>* details = [NSMutableArray array];
@@ -4432,8 +4353,25 @@ static bool XeJITUsable() {
   }
 }
 
+- (void)onStorageDeleteGameRequest:(NSNotification*)notification {
+  const uint32_t title_id = [notification.userInfo[XeniaStorageTitleIdKey] unsignedIntValue];
+  // A game without a title ID is found by its library path.
+  NSString* game_path = notification.userInfo[XeniaStorageGamePathKey];
+  for (size_t i = 0; i < discovered_games_.size(); ++i) {
+    const IOSDiscoveredGame& game = discovered_games_[i];
+    if (title_id ? game.title_id == title_id
+                 : game_path.length && game.path == std::filesystem::path(game_path.UTF8String)) {
+      delete_from_storage_ = YES;
+      [self confirmDeleteGameAtIndex:i];
+      return;
+    }
+  }
+}
+
 // Offers what can go with the game. Add-ons and saves stay unless asked for.
 - (void)confirmDeleteGameAtIndex:(size_t)game_index {
+  const BOOL from_storage = delete_from_storage_;
+  delete_from_storage_ = NO;
   UIViewController* presenter = [self topPresentedControllerForModalPresentation] ?: self;
   if (self.gameRunning) {
     XEPresentOKAlert(presenter,
@@ -4448,19 +4386,21 @@ static bool XeJITUsable() {
   NSString* game_title =
       game.title.empty() ? ToNSString(game.path.stem().string()) : ToNSString(game.title);
   NSString* title =
-      imported ? [NSString stringWithFormat:NSLocalizedString(@"Delete %@?",
-                                                              @"Delete game: title; %@ is the game"),
-                                            game_title]
-               : [NSString stringWithFormat:NSLocalizedString(@"Remove %@ from Library?",
-                                                              @"Delete game: title; %@ is the game"),
-                                            game_title];
+      imported
+          ? [NSString stringWithFormat:NSLocalizedString(@"Delete %@?",
+                                                         @"Delete game: title; %@ is the game"),
+                                       game_title]
+          : [NSString stringWithFormat:NSLocalizedString(@"Remove or Delete %@?",
+                                                         @"Delete game: title; %@ is the game"),
+                                       game_title];
   NSString* message =
       imported ? [NSString stringWithFormat:NSLocalizedString(
                                                 @"Its files are deleted from this %@. This can’t "
                                                 @"be undone.",
                                                 @"Delete game: message; %@ is the device's kind"),
                                             UIDevice.currentDevice.model]
-               : NSLocalizedString(@"Its files stay in the linked folder.",
+               : NSLocalizedString(@"Removing it from the library leaves its files in the linked "
+                                   @"folder. Deleting its files from the folder can’t be undone.",
                                    @"Delete game: message");
   if (has_content || has_saves) {
     message = [message
@@ -4479,19 +4419,28 @@ static bool XeJITUsable() {
       CGRectMake(CGRectGetMidX(presenter.view.bounds), CGRectGetMidY(presenter.view.bounds), 0, 0);
   confirm.popoverPresentationController.permittedArrowDirections = 0;
   __unsafe_unretained XeniaViewController* unsafe_self = self;
+  void (^add_choice)(NSString*, BOOL, BOOL, BOOL) =
+      ^(NSString* action_title, BOOL content, BOOL saves, BOOL linked_files) {
+        [confirm addAction:[UIAlertAction actionWithTitle:action_title
+                                                    style:UIAlertActionStyleDestructive
+                                                  handler:^(UIAlertAction* __unused action) {
+                                                    [unsafe_self deleteGame:game
+                                                                withContent:content
+                                                                      saves:saves
+                                                          deleteLinkedFiles:linked_files
+                                                                       from:presenter
+                                                              keepPresenter:from_storage];
+                                                  }]];
+      };
   void (^add)(NSString*, BOOL, BOOL) = ^(NSString* action_title, BOOL content, BOOL saves) {
-    [confirm addAction:[UIAlertAction actionWithTitle:action_title
-                                                style:UIAlertActionStyleDestructive
-                                              handler:^(UIAlertAction* __unused action) {
-                                                [unsafe_self deleteGame:game
-                                                            withContent:content
-                                                                  saves:saves
-                                                                   from:presenter];
-                                              }]];
+    add_choice(action_title, content, saves, NO);
   };
   NSString* game_only = imported ? NSLocalizedString(@"Delete Game", @"Delete game: button")
                                  : NSLocalizedString(@"Remove from Library", @"Delete game: button");
   add(game_only, NO, NO);
+  if (!imported) {
+    add_choice(NSLocalizedString(@"Delete Files from Folder", @"Delete game: button"), NO, NO, YES);
+  }
   if (has_content) {
     add(NSLocalizedString(@"Also Delete Updates & Add-ons", @"Delete game: button"), YES, NO);
   }
@@ -4508,9 +4457,11 @@ static bool XeJITUsable() {
 }
 
 - (void)deleteGame:(const IOSDiscoveredGame&)game
-       withContent:(BOOL)content
-             saves:(BOOL)saves
-              from:(UIViewController*)presenter {
+          withContent:(BOOL)content
+                saves:(BOOL)saves
+    deleteLinkedFiles:(BOOL)delete_linked_files
+                 from:(UIViewController*)presenter
+        keepPresenter:(BOOL)keep_presenter {
   // Another copy of the title in the library still uses its shader cache.
   const BOOL last_copy = game.title_id != 0 &&
                          std::count_if(discovered_games_.begin(), discovered_games_.end(),
@@ -4529,10 +4480,10 @@ static bool XeJITUsable() {
     std::string error;
     bool ok = true;
     if (game_copy.discs.empty()) {
-      ok = XeniaRemoveGameCopy(game_copy.path, game_copy.is_external, &error);
+      ok = XeniaRemoveGameCopy(game_copy.path, game_copy.is_external, delete_linked_files, &error);
     }
     for (const auto& disc : game_copy.discs) {
-      ok = XeniaRemoveGameCopy(disc.path, disc.is_external, &error) && ok;
+      ok = XeniaRemoveGameCopy(disc.path, disc.is_external, delete_linked_files, &error) && ok;
     }
     if (ok && content) {
       ok = xe_remove_title_content(game_copy.title_id, &error);
@@ -4543,7 +4494,8 @@ static bool XeJITUsable() {
     if (ok && last_copy) {
       uintmax_t removed = 0;
       std::error_code cache_error;
-      xe_clear_shader_cache_for_title(game_copy.title_id, &removed, &cache_error);
+      xe_ios_clear_title_shaders(game_copy.title_id, &removed, &cache_error);
+      xe_ios_remove_title_art(game_copy.title_id);
     }
     NSString* failure = nil;
     if (!ok) {
@@ -4552,14 +4504,18 @@ static bool XeJITUsable() {
                               : ToNSString(error);
     }
     dispatch_async(dispatch_get_main_queue(), ^{
-      [unsafe_self finishDeleteGameWithBusy:busy failure:failure from:presenter];
+      [unsafe_self finishDeleteGameWithBusy:busy
+                                    failure:failure
+                                       from:presenter
+                              keepPresenter:keep_presenter];
     });
   });
 }
 
 - (void)finishDeleteGameWithBusy:(UIAlertController*)busy
                          failure:(NSString*)failure
-                            from:(UIViewController*)presenter {
+                            from:(UIViewController*)presenter
+                   keepPresenter:(BOOL)keep_presenter {
   __unsafe_unretained XeniaViewController* unsafe_self = self;
   [busy dismissViewControllerAnimated:YES
                            completion:^{
@@ -4568,6 +4524,9 @@ static bool XeJITUsable() {
                                                 NSLocalizedString(@"Couldn’t Delete Game",
                                                                   @"Delete game: alert title"),
                                                 failure);
+                             } else if (keep_presenter) {
+                               // The Storage screen measures again once the
+                               // library is refreshed.
                              } else if (unsafe_self.launcherOverlayView.showsGameDetail) {
                                [unsafe_self.launcherOverlayView hideGameDetailAnimated:YES];
                              } else if (presenter != unsafe_self) {
