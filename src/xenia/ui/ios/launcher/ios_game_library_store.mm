@@ -1295,6 +1295,12 @@ static std::vector<IOSDiscoveredGame> ScanIOSGameLibraryImpl(NSDictionary* title
       const auto filename = entry.path().filename().string();
       const auto filename_lower = ToLowerAsciiCopy(filename);
       if (entry.is_directory(ec)) {
+        if (!filename.empty() && filename.front() == '.') {
+          // A hidden folder holds no games. Documents/.Trash is where the Files
+          // app keeps what was deleted there until Recently Deleted is emptied.
+          ++pruned_directories;
+          it.disable_recursion_pending();
+        }
         if (entry.path().extension() == ".part") {
           // An import or conversion in flight (or a stale one the sweep above
           // missed): never list anything inside it.
