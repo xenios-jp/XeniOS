@@ -31,7 +31,9 @@ namespace {
 
 // 3: records hold the used buffer mask and the shader's texture and sampler
 // bindings.
-constexpr char kMagic[8] = {'X', 'E', 'M', 'T', 'L', 'L', 'B', '3'};
+// 4: a record without a metallib holds the bindings of a shader that only has
+// variant libraries.
+constexpr char kMagic[8] = {'X', 'E', 'M', 'T', 'L', 'L', 'B', '4'};
 // Records larger than this are taken for a damaged file.
 constexpr uint32_t kMaxRecordBytes = 64u << 20;
 
@@ -263,7 +265,8 @@ bool MetalShaderLibraryCache::Find(const Key& key, Entry& entry_out) {
 bool MetalShaderLibraryCache::FindVariant(const Key& variant_key,
                                           Entry& entry_out) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!file_ || !FindLocked(variant_key, entry_out)) {
+  if (!file_ || !FindLocked(variant_key, entry_out) ||
+      entry_out.metallib.empty()) {
     return false;
   }
   ++variant_hits_;
@@ -325,6 +328,22 @@ void MetalShaderLibraryCache::Store(const Key& key,
   std::lock_guard<std::mutex> lock(mutex_);
   AppendLocked(key, metallib, entry_point_name, used_buffer_mask,
                texture_bindings, sampler_bindings);
+}
+
+void MetalShaderLibraryCache::StoreBindings(const Key& key,
+                                            uint32_t used_buffer_mask,
+                                            const SpirvShader& shader) {
+  const std::vector<SpirvShader::TextureBinding>& texture_bindings =
+      shader.GetTextureBindingsAfterTranslation();
+  const std::vector<SpirvShader::SamplerBinding>& sampler_bindings =
+      shader.GetSamplerBindingsAfterTranslation();
+  if (!shader.bindings_ready() || texture_bindings.size() > kMaxBindings ||
+      sampler_bindings.size() > kMaxBindings) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  AppendLocked(key, {}, {}, used_buffer_mask, texture_bindings,
+               sampler_bindings);
 }
 
 MetalShaderLibraryCache::Key MetalShaderLibraryCache::MakeVariantKey(

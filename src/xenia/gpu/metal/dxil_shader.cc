@@ -121,7 +121,7 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
 // the module has an image type and the sampler heap only if it has a sampler
 // type (spirv2air declares them for variables of those types), and never the
 // draw arguments or uniforms. Every bit is set if the module can't be walked.
-static uint32_t GetSpirv2airBufferMask(const std::vector<uint8_t>& spirv) {
+static uint32_t Spirv2airBufferMask(const std::vector<uint8_t>& spirv) {
   constexpr uint32_t kOpTypeImage = 25;
   constexpr uint32_t kOpTypeSampler = 26;
   const size_t word_count = spirv.size() / sizeof(uint32_t);
@@ -213,6 +213,59 @@ bool DxilShader::DxilTranslation::LoadMetallib(
   return true;
 }
 
+bool DxilShader::DxilTranslation::ConvertToAir(
+    const MetalShaderConverter& converter,
+    MetalShaderConversionResult& conversion, bool& native_out) const {
+  const std::vector<uint8_t>& spirv = translated_binary();
+  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
+    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
+           shader().ucode_data_hash());
+    return false;
+  }
+  // Unsupported guest shaders retain the converter path, except the ones
+  // reading render targets, which it can't express.
+  native_out = cvars::metal_shader_compiler != "msc" &&
+               CompileToAirWithSpirv2air(conversion);
+  return native_out || (!ReadsRenderTargets() &&
+                        CompileToAirWithConverter(converter, conversion));
+}
+
+void DxilShader::DxilTranslation::SetBakesOnly(uint32_t used_buffer_mask) {
+  used_buffer_mask_ = used_buffer_mask;
+  // What CompileWithFetchState names the function of each of its libraries.
+  entry_point_name_ = "main";
+  bakes_only_ = true;
+}
+
+uint32_t DxilShader::DxilTranslation::GetSpirv2airBufferMask() const {
+  return Spirv2airBufferMask(translated_binary());
+}
+
+MTL::Library* DxilShader::DxilTranslation::NewGenericLibrary(
+    MTL::Device* device, const MetalShaderConverter& converter,
+    std::string& entry_point_name_out) const {
+  MetalShaderConversionResult conversion;
+  bool native_compiled;
+  if (!device || !ConvertToAir(converter, conversion, native_compiled)) {
+    return nullptr;
+  }
+  NS::Error* error = nullptr;
+  dispatch_data_t metallib_data = dispatch_data_create(
+      conversion.metallib.data(), conversion.metallib.size(), nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  MTL::Library* library = device->newLibrary(metallib_data, &error);
+  dispatch_release(metallib_data);
+  if (!library) {
+    return nullptr;
+  }
+  if (!native_compiled) {
+    // The converter's function may declare any of its bind points.
+    used_buffer_mask_ = ~uint32_t(0);
+  }
+  entry_point_name_out = std::move(conversion.entry_point_name);
+  return library;
+}
+
 bool DxilShader::DxilTranslation::CompileToAir(
     MTL::Device* device, const MetalShaderConverter& converter,
     std::vector<uint8_t>* metallib_out) {
@@ -224,27 +277,15 @@ bool DxilShader::DxilTranslation::CompileToAir(
   }
 
   const std::vector<uint8_t>& spirv = translated_binary();
-  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
-    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
-           shader().ucode_data_hash());
-    return false;
-  }
-
   bool is_vertex = shader().type() == xenos::ShaderType::kVertex;
   MetalShaderConversionResult conversion;
-  // Unsupported guest shaders retain the converter path, except the ones
-  // reading render targets, which it can't express.
-  const bool native_compiled =
-      cvars::metal_shader_compiler != "msc" &&
-      CompileToAirWithSpirv2air(conversion);
-  if (!native_compiled &&
-      (ReadsRenderTargets() ||
-       !CompileToAirWithConverter(converter, conversion))) {
+  bool native_compiled;
+  if (!ConvertToAir(converter, conversion, native_compiled)) {
     return false;
   }
   const char* compiler_name = native_compiled ? "spirv2air" : "msc";
   used_buffer_mask_ =
-      native_compiled ? GetSpirv2airBufferMask(spirv) : ~uint32_t(0);
+      native_compiled ? Spirv2airBufferMask(spirv) : ~uint32_t(0);
 
   const size_t metallib_size = conversion.metallib.size();
   NS::Error* error = nullptr;
