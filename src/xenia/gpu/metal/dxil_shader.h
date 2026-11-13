@@ -56,6 +56,14 @@ class DxilShader : public SpirvShader {
                       const std::string& entry_point_name,
                       uint32_t used_buffer_mask);
 
+    // The same shader with the fetch-state function constants |states| (|count|
+    // uint4 values) compiled into it, as a metallib with one function that
+    // has no function constants left. False when the SPIR-V isn't at hand (the
+    // library came from the cache) or spirv2air can't translate the shader.
+    bool CompileWithFetchState(const uint32_t* states, uint32_t count,
+                               std::vector<uint8_t>& metallib_out,
+                               std::string& entry_point_name_out) const;
+
     MTL::Library* metal_library() const { return metal_library_; }
     MTL::Function* metal_function() const { return metal_function_; }
     const std::string& entry_point_name() const { return entry_point_name_; }

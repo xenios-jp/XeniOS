@@ -149,6 +149,39 @@ static uint32_t GetSpirv2airBufferMask(const std::vector<uint8_t>& spirv) {
   return mask;
 }
 
+bool DxilShader::DxilTranslation::CompileWithFetchState(
+    const uint32_t* states, uint32_t count, std::vector<uint8_t>& metallib_out,
+    std::string& entry_point_name_out) const {
+  const std::vector<uint8_t>& spirv = translated_binary();
+  if (cvars::metal_shader_compiler == "msc" || spirv.empty() ||
+      (spirv.size() % sizeof(uint32_t)) != 0) {
+    return false;
+  }
+  spirv2air::Options options;
+  options.halfPackingRounding = spirv2air::HalfPackingRounding::TowardZero;
+  options.graphics.functionConstantSet =
+      SpirvShaderTranslator::kDescriptorSetFetchState;
+  // As CompileToAirWithSpirv2air: input attachment N is color attachment N.
+  if (ReadsRenderTargets()) {
+    options.graphics.framebufferFetchMask =
+        (UINT32_C(1) << xenos::kMaxColorRenderTargets) - 1;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    options.graphics.functionConstantValues[i] = {
+        states[4 * i], states[4 * i + 1], states[4 * i + 2],
+        states[4 * i + 3]};
+  }
+  spirv2air::Result result =
+      spirv2air::translate(reinterpret_cast<const uint32_t*>(spirv.data()),
+                           spirv.size() / sizeof(uint32_t), options);
+  if (!result.ok()) {
+    return false;
+  }
+  metallib_out = std::move(result.metallib);
+  entry_point_name_out = "main";
+  return true;
+}
+
 bool DxilShader::DxilTranslation::LoadMetallib(
     MTL::Device* device, const std::vector<uint8_t>& metallib,
     const std::string& entry_point_name, uint32_t used_buffer_mask) {

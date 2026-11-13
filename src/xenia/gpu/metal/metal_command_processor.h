@@ -692,11 +692,14 @@ class MetalCommandProcessor : public CommandProcessor,
   void SetPipelineFunctionConstants(PipelineCompileRequest& request,
                                     const Shader::Translation* vertex,
                                     const Shader::Translation* pixel);
-  MTL::Function* GetSpecializedFunction(MTL::Library* library,
-                                        const std::string& function_name,
-                                        const uint32_t* states,
-                                        uint32_t binding_count,
-                                        std::string* error_out);
+  // The function of |translation| (whose generic library is |library|) with
+  // the fetch-state function constants |states|. Preferably one with the
+  // constants compiled in (see metal_bake_fetch_state), else the generic
+  // function specialized by Metal.
+  MTL::Function* GetSpecializedFunction(
+      const DxilShader::DxilTranslation* translation, MTL::Library* library,
+      const std::string& function_name, const uint32_t* states,
+      uint32_t binding_count, std::string* error_out);
   MTL::Function* GetPipelineVertexFunction(
       const PipelineCompileRequest& request, std::string* error_out);
   MTL::Function* GetPipelineFragmentFunction(
@@ -1128,10 +1131,12 @@ class MetalCommandProcessor : public CommandProcessor,
     // every compile thread, as does the fragment library's translation.
     const DxilTessellationShaders* tessellation_shaders = nullptr;
     MTL::Library* vertex_library = nullptr;
+    const DxilShader::DxilTranslation* vertex_translation = nullptr;
     std::string vertex_function_name;
     bool vertex_fetch_states_specialized = false;
     bool fragment_fetch_states_specialized = false;
     MTL::Library* fragment_library = nullptr;
+    const DxilShader::DxilTranslation* fragment_translation = nullptr;
     std::string fragment_function_name;
   };
   // Building one DxilTessellationShaders set, off the draw thread.
@@ -1190,6 +1195,15 @@ class MetalCommandProcessor : public CommandProcessor,
   using SpecializedFunctionKey =
       std::tuple<uintptr_t, std::string, std::vector<uint32_t>>;
   std::map<SpecializedFunctionKey, MTL::Function*> specialized_functions_;
+  // Libraries with fetch-state constants compiled in, behind functions in
+  // specialized_functions_.
+  std::vector<MTL::Library*> baked_libraries_;
+  // The function GetSpecializedFunction wants as a library with the constants
+  // compiled in (cached, or made now from the translation's SPIR-V) and
+  // registers it under |key|. Null when there is no such library.
+  MTL::Function* GetBakedFunction(
+      const DxilShader::DxilTranslation* translation, const uint32_t* states,
+      uint32_t binding_count, const SpecializedFunctionKey& key);
   std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
                       ShaderCompileRequestCompare>
       async_shader_queue_;
@@ -1245,6 +1259,8 @@ class MetalCommandProcessor : public CommandProcessor,
     kCompileStageLibraryCached,   // A metallib from shader_libraries.bin.
     kCompileStageAir,             // SPIR-V to AIR, and its MTLLibrary.
     kCompileStageSpecialize,      // newFunction with constant values.
+    kCompileStageBake,            // spirv2air with the constants compiled in.
+    kCompileStageBakedCached,     // A baked library from the cache.
     kCompileStagePipelineHit,     // A render pipeline found in the archive.
     kCompileStagePipelineMiss,    // A render pipeline Metal compiled.
     kCompileStageTessPipeline,    // A tessellation (mesh) pipeline.
