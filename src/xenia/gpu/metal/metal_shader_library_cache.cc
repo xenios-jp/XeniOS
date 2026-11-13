@@ -252,9 +252,28 @@ bool MetalShaderLibraryCache::Find(const Key& key, Entry& entry_out) {
   if (!file_) {
     return false;
   }
+  if (!FindLocked(key, entry_out)) {
+    ++misses_;
+    return false;
+  }
+  ++hits_;
+  return true;
+}
+
+bool MetalShaderLibraryCache::FindVariant(const Key& variant_key,
+                                          Entry& entry_out) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!file_ || !FindLocked(variant_key, entry_out)) {
+    return false;
+  }
+  ++variant_hits_;
+  return true;
+}
+
+bool MetalShaderLibraryCache::FindLocked(const Key& key,
+                                         Entry& entry_out) const {
   auto it = locations_.find(key);
   if (it == locations_.end()) {
-    ++misses_;
     return false;
   }
   const Location& location = it->second;
@@ -285,7 +304,6 @@ bool MetalShaderLibraryCache::Find(const Key& key, Entry& entry_out) {
       data_.data() + location.metallib_offset,
       data_.data() + location.metallib_offset + location.metallib_length);
   entry_out.used_buffer_mask = location.used_buffer_mask;
-  ++hits_;
   return true;
 }
 
@@ -305,6 +323,45 @@ void MetalShaderLibraryCache::Store(const Key& key,
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  AppendLocked(key, metallib, entry_point_name, used_buffer_mask,
+               texture_bindings, sampler_bindings);
+}
+
+MetalShaderLibraryCache::Key MetalShaderLibraryCache::MakeVariantKey(
+    const Key& shader_key, const uint32_t* states, uint32_t count) {
+  XXH3_state_t state;
+  XXH3_128bits_reset(&state);
+  constexpr uint32_t kVariantTag = 0x56415231;  // "VAR1"
+  XXH3_128bits_update(&state, &kVariantTag, sizeof(kVariantTag));
+  XXH3_128bits_update(&state, &shader_key.low, sizeof(shader_key.low));
+  XXH3_128bits_update(&state, &shader_key.high, sizeof(shader_key.high));
+  XXH3_128bits_update(&state, &count, sizeof(count));
+  XXH3_128bits_update(&state, states, size_t(count) * 4 * sizeof(uint32_t));
+  const XXH128_hash_t hash = XXH3_128bits_digest(&state);
+  return Key{hash.low64, hash.high64};
+}
+
+void MetalShaderLibraryCache::StoreVariant(
+    const Key& variant_key, const std::vector<uint8_t>& metallib,
+    const std::string& entry_point_name, uint32_t used_buffer_mask) {
+  if (metallib.empty() || metallib.size() > kMaxRecordBytes ||
+      entry_point_name.size() > 256) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  const size_t before = stored_.size();
+  AppendLocked(variant_key, metallib, entry_point_name, used_buffer_mask, {},
+               {});
+  if (stored_.size() != before) {
+    ++variant_stores_;
+  }
+}
+
+void MetalShaderLibraryCache::AppendLocked(
+    const Key& key, const std::vector<uint8_t>& metallib,
+    const std::string& entry_point_name, uint32_t used_buffer_mask,
+    const std::vector<SpirvShader::TextureBinding>& texture_bindings,
+    const std::vector<SpirvShader::SamplerBinding>& sampler_bindings) {
   if (!file_ || locations_.count(key) || !stored_.emplace(key, true).second) {
     return;
   }
@@ -344,6 +401,16 @@ void MetalShaderLibraryCache::Store(const Key& key,
 uint32_t MetalShaderLibraryCache::hits() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return hits_;
+}
+
+uint32_t MetalShaderLibraryCache::variant_hits() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return variant_hits_;
+}
+
+uint32_t MetalShaderLibraryCache::variant_stores() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return variant_stores_;
 }
 
 uint32_t MetalShaderLibraryCache::misses() const {

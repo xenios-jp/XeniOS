@@ -93,6 +93,21 @@ DEFINE_bool(metal_stand_in_exact_depth_stencil, true,
             "vertex-only placeholder.",
             "Metal");
 DEFINE_bool(
+    metal_bake_fetch_state, true,
+    "Compile a shader's fetch-state function constants into its library "
+    "(kept in the shader library cache) instead of having Metal specialize the "
+    "generic function at every launch. Specializing is a compile of its own "
+    "whenever the system shader cache is empty, as it is after an app update "
+    "or a restart.",
+    "Metal");
+DEFINE_bool(
+    metal_bake_fetch_state_uncached, false,
+    "Bake the fetch-state constants (metal_bake_fetch_state) even when the "
+    "title has no shader library cache to keep them in. For frame checks of "
+    "baked code against Metal's specialization; the variants are rebuilt "
+    "every run.",
+    "Metal");
+DEFINE_bool(
     metal_use_dxil, true,
     "Compile guest shaders to AIR with the Metal Shader Converter resource "
     "interface (see metal_shader_compiler) instead of SPIRV-Cross MSL.",
@@ -1393,7 +1408,8 @@ void MetalCommandProcessor::LogCompileStages() {
     return;
   }
   static constexpr const char* kNames[kCompileStageCount] = {
-      "translate", "cached library", "AIR", "specialize",
+      "translate", "cached library", "AIR", "specialize", "bake",
+      "baked library",
       "archive pipeline", "compiled pipeline", "tess pipeline", "draw wait"};
   std::string line;
   for (size_t i = 0; i < kCompileStageCount; ++i) {
@@ -1476,8 +1492,9 @@ void MetalCommandProcessor::ApplyColorAttachmentState(
 }
 
 MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
-    MTL::Library* library, const std::string& function_name,
-    const uint32_t* states, uint32_t binding_count, std::string* error_out) {
+    const DxilShader::DxilTranslation* translation, MTL::Library* library,
+    const std::string& function_name, const uint32_t* states,
+    uint32_t binding_count, std::string* error_out) {
   if (!library || function_name.empty()) {
     if (error_out) {
       *error_out = "missing shader library";
@@ -1492,6 +1509,14 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
     auto it = specialized_functions_.find(key);
     if (it != specialized_functions_.end()) {
       return it->second;
+    }
+  }
+  if (translation && cvars::metal_bake_fetch_state &&
+      (shader_library_cache_.is_open() ||
+       cvars::metal_bake_fetch_state_uncached)) {
+    if (MTL::Function* baked = GetBakedFunction(translation, states,
+                                                binding_count, key)) {
+      return baked;
     }
   }
   // The shader only declares the constants of the bindings it reads, and Metal
@@ -1538,6 +1563,63 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
   return it->second;
 }
 
+MTL::Function* MetalCommandProcessor::GetBakedFunction(
+    const DxilShader::DxilTranslation* translation, const uint32_t* states,
+    uint32_t binding_count, const SpecializedFunctionKey& key) {
+  const MetalShaderLibraryCache::Key variant_key =
+      MetalShaderLibraryCache::MakeVariantKey(
+          MetalShaderLibraryCache::MakeKey(*translation), states,
+          binding_count);
+  MetalShaderLibraryCache::Entry entry;
+  const int64_t start_ns = GetSteadyTimeNs();
+  bool cached = shader_library_cache_.FindVariant(variant_key, entry);
+  // TODO(xenios-jp): a shader loaded from the library cache has no
+  // SPIR-V, so a constant set it has never been baked for falls back to
+  // Metal's specialization below. Translating it again on demand (the guest
+  // microcode is at hand) would bake those too.
+  if (!cached) {
+    if (!translation->CompileWithFetchState(states, binding_count,
+                                            entry.metallib,
+                                            entry.entry_point_name)) {
+      return nullptr;
+    }
+    AddCompileStageTime(kCompileStageBake, start_ns);
+  }
+  const int64_t load_start_ns = GetSteadyTimeNs();
+  NS::Error* error = nullptr;
+  dispatch_data_t data = dispatch_data_create(
+      entry.metallib.data(), entry.metallib.size(), nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  MTL::Library* library = device_->newLibrary(data, &error);
+  dispatch_release(data);
+  if (!library) {
+    return nullptr;
+  }
+  MTL::Function* function = library->newFunction(
+      NS::String::string(entry.entry_point_name.c_str(),
+                         NS::UTF8StringEncoding));
+  if (!function) {
+    library->release();
+    return nullptr;
+  }
+  if (cached) {
+    AddCompileStageTime(kCompileStageBakedCached, load_start_ns);
+  } else {
+    shader_library_cache_.StoreVariant(variant_key, entry.metallib,
+                                       entry.entry_point_name,
+                                       translation->used_buffer_mask());
+  }
+  std::lock_guard<std::mutex> lock(specialized_functions_mutex_);
+  auto [it, inserted] = specialized_functions_.emplace(key, function);
+  if (!inserted) {
+    function->release();
+    library->release();
+    return it->second;
+  }
+  baked_libraries_.push_back(library);
+  return function;
+}
+
 MTL::Function* MetalCommandProcessor::GetPipelineVertexFunction(
     const PipelineCompileRequest& request, std::string* error_out) {
   if (!request.vertex_fetch_states_specialized) {
@@ -1567,7 +1649,8 @@ MTL::Function* MetalCommandProcessor::GetPipelineVertexFunction(
       request.description.vertex_texture_decode_bits,
       sizeof(request.description.vertex_texture_decode_bits));
   return GetSpecializedFunction(
-      request.vertex_library, request.vertex_function_name, states,
+      request.vertex_translation, request.vertex_library,
+      request.vertex_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
 }
 
@@ -1608,7 +1691,8 @@ MTL::Function* MetalCommandProcessor::GetPipelineFragmentFunction(
             : kBlendControlNoBlending;
   }
   return GetSpecializedFunction(
-      request.fragment_library, request.fragment_function_name, states,
+      request.fragment_translation, request.fragment_library,
+      request.fragment_function_name, states,
       SpirvShaderTranslator::kFetchStateBindingCount, error_out);
 }
 
@@ -1890,11 +1974,13 @@ void MetalCommandProcessor::SetPipelineFunctionConstants(
       UsesPixelFetchStateFunctionConstants(pixel);
   if (request.vertex_fetch_states_specialized) {
     auto* translation = static_cast<const DxilShader::DxilTranslation*>(vertex);
+    request.vertex_translation = translation;
     request.vertex_library = translation->metal_library();
     request.vertex_function_name = translation->entry_point_name();
   }
   if (request.fragment_fetch_states_specialized) {
     auto* translation = static_cast<const DxilShader::DxilTranslation*>(pixel);
+    request.fragment_translation = translation;
     request.fragment_library = translation->metal_library();
     request.fragment_function_name = translation->entry_point_name();
   }
@@ -3957,6 +4043,10 @@ void MetalCommandProcessor::ShutdownContext() {
       function->release();
     }
     specialized_functions_.clear();
+    for (MTL::Library* library : baked_libraries_) {
+      library->release();
+    }
+    baked_libraries_.clear();
   }
   dxil_tessellation_cache_.clear();
   if (tessellator_tables_buffer_) {
