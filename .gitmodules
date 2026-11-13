@@ -137,3 +137,4 @@
 [submodule "third_party/spirv2air"]
 	path = third_party/spirv2air
 	url = https://github.com/xenios-jp/spirv2air.git
+	branch = main
