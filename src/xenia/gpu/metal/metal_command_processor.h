@@ -611,6 +611,9 @@ class MetalCommandProcessor : public CommandProcessor,
   // CompileHostShader has succeeded for it.
   static MTL::Function* GetHostShaderFunction(
       const Shader::Translation* translation);
+  // Whether pipelines can be made of |translation|: it has its function, or
+  // its functions are made per pipeline (DxilTranslation::bakes_only).
+  static bool IsHostShaderReady(const Shader::Translation* translation);
   bool EnqueuePipelineCompilation(const PipelineCompileRequest& request);
   // Rate-limited "draw skipped, still compiling" logging, shared by both guest
   // shader paths.
@@ -662,6 +665,10 @@ class MetalCommandProcessor : public CommandProcessor,
       const Shader::Translation* translation) const;
   bool UsesPixelFetchStateFunctionConstants(
       const Shader::Translation* translation) const;
+  // Whether every function of |translation| is made with its fetch-state
+  // constants compiled in (GetBakedFunction): then no pipeline uses its
+  // generic library, and TranslateAndCompileHostShader doesn't compile one.
+  bool BakesFetchState(const Shader::Translation* translation) const;
   struct FiniteMultiplyInfo {
     uint64_t required = 0;
     uint64_t direct_constants[4] = {};
@@ -1204,6 +1211,20 @@ class MetalCommandProcessor : public CommandProcessor,
   MTL::Function* GetBakedFunction(
       const DxilShader::DxilTranslation* translation, const uint32_t* states,
       uint32_t binding_count, const SpecializedFunctionKey& key);
+  // Has the SPIR-V of |translation| at hand, translating it now if it was made
+  // ready from the library cache. False if it can't be translated.
+  bool EnsureBakeSpirv(const DxilShader::DxilTranslation* translation);
+  std::mutex bake_translate_mutex_;
+  // The generic library of a translation that bakes only, and its function's
+  // name, for constant values that can't be compiled in (not expected): made
+  // on first use, then specialized by Metal. Null if it couldn't be made.
+  MTL::Library* GetGenericFallbackLibrary(
+      const DxilShader::DxilTranslation* translation,
+      std::string& entry_point_name_out);
+  std::mutex generic_fallback_mutex_;
+  std::map<const DxilShader::DxilTranslation*,
+           std::pair<MTL::Library*, std::string>>
+      generic_fallback_libraries_;
   std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
                       ShaderCompileRequestCompare>
       async_shader_queue_;

@@ -108,6 +108,13 @@ DEFINE_bool(
     "every run.",
     "Metal");
 DEFINE_bool(
+    metal_bake_fetch_state_generic_library, false,
+    "Also compile the generic library (the one with function constants) of a "
+    "shader whose pipelines all take baked libraries "
+    "(metal_bake_fetch_state). It goes unused, so it is skipped by default; "
+    "this is the off switch of the skip.",
+    "Metal");
+DEFINE_bool(
     metal_use_dxil, true,
     "Compile guest shaders to AIR with the Metal Shader Converter resource "
     "interface (see metal_shader_compiler) instead of SPIRV-Cross MSL.",
@@ -1090,6 +1097,15 @@ MTL::Function* MetalCommandProcessor::GetHostShaderFunction(
       ->metal_function();
 }
 
+bool MetalCommandProcessor::IsHostShaderReady(
+    const Shader::Translation* translation) {
+  if (translation && UseDxilPath()) {
+    return static_cast<const DxilShader::DxilTranslation*>(translation)
+        ->is_ready();
+  }
+  return GetHostShaderFunction(translation) != nullptr;
+}
+
 MetalCommandProcessor::ShaderCompileStatus
 MetalCommandProcessor::EnsureTranslationSpirv(
     Shader::Translation* translation, SpirvShaderTranslator& translator) {
@@ -1144,12 +1160,16 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
   const bool cacheable = UseDxilPath() && cvars::dump_shaders.empty() &&
                          shader_library_cache_.is_open();
   auto& spirv_shader = static_cast<SpirvShader&>(translation->shader());
+  // Its pipelines take functions with the constants compiled in, so a generic
+  // library would be converted and loaded to go unused.
+  const bool bakes_only = BakesFetchState(translation);
   MetalShaderLibraryCache::Key key;
   ShaderCompileStatus status;
   if (cacheable && !translation->is_translated()) {
-    // A stored library and the shader's stored bindings stand in for the
-    // translation, so a hit doesn't translate. The claim keeps one thread on
-    // this translation, as EnsureTranslationSpirv's does.
+    // A stored library (or, for a shader that bakes only, none) and the
+    // shader's stored bindings stand in for the translation, so a hit doesn't
+    // translate. The claim keeps one thread on this translation, as
+    // EnsureTranslationSpirv's does.
     if (!translation->TryClaimTranslation()) {
       return ShaderCompileStatus::kPending;
     }
@@ -1159,9 +1179,17 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
     if (shader_library_cache_.Find(key, entry)) {
       spirv_shader.PublishBindings(entry.texture_bindings,
                                    entry.sampler_bindings);
-      if (static_cast<DxilShader::DxilTranslation*>(translation)
-              ->LoadMetallib(device_, entry.metallib, entry.entry_point_name,
-                             entry.used_buffer_mask)) {
+      auto* dxil_translation =
+          static_cast<DxilShader::DxilTranslation*>(translation);
+      if (entry.metallib.empty()) {
+        if (bakes_only) {
+          dxil_translation->SetBakesOnly(entry.used_buffer_mask);
+          AddCompileStageTime(kCompileStageLibraryCached, cached_start_ns);
+          return ShaderCompileStatus::kReady;
+        }
+      } else if (dxil_translation->LoadMetallib(device_, entry.metallib,
+                                                entry.entry_point_name,
+                                                entry.used_buffer_mask)) {
         AddCompileStageTime(kCompileStageLibraryCached, cached_start_ns);
         return ShaderCompileStatus::kReady;
       }
@@ -1175,6 +1203,16 @@ MetalCommandProcessor::TranslateAndCompileHostShader(
   }
   if (status != ShaderCompileStatus::kReady) {
     return status;
+  }
+  if (bakes_only) {
+    auto* dxil_translation =
+        static_cast<DxilShader::DxilTranslation*>(translation);
+    dxil_translation->SetBakesOnly(dxil_translation->GetSpirv2airBufferMask());
+    if (cacheable) {
+      shader_library_cache_.StoreBindings(
+          key, dxil_translation->used_buffer_mask(), spirv_shader);
+    }
+    return ShaderCompileStatus::kReady;
   }
   std::vector<uint8_t> metallib;
   const int64_t air_start_ns = GetSteadyTimeNs();
@@ -1218,8 +1256,8 @@ MetalCommandProcessor::GetShaderCompileStatus(
   if (async_shader_pending_.find(translation) != async_shader_pending_.end()) {
     return ShaderCompileStatus::kPending;
   }
-  return GetHostShaderFunction(translation) ? ShaderCompileStatus::kReady
-                                            : ShaderCompileStatus::kNotQueued;
+  return IsHostShaderReady(translation) ? ShaderCompileStatus::kReady
+                                        : ShaderCompileStatus::kNotQueued;
 }
 
 bool MetalCommandProcessor::EnqueueShaderCompilation(
@@ -1256,10 +1294,13 @@ bool MetalCommandProcessor::EnqueuePipelineCompilation(
     return false;
   }
   // A DXIL tessellation pipeline is linked from the MSC stage libraries, not
-  // from Metal functions, so it is the one kind with no vertex function.
+  // from Metal functions, so it has no vertex function. Nor has a pipeline of
+  // a vertex shader that bakes only, until GetPipelineVertexFunction makes it.
   if (request.description.kind == PipelineKind::kDxilTessellation
           ? request.tessellation_shaders == nullptr
-          : request.vertex_function == nullptr) {
+          : request.vertex_function == nullptr &&
+                !(request.vertex_translation &&
+                  request.vertex_translation->bakes_only())) {
     return false;
   }
 
@@ -1495,14 +1536,17 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
     const DxilShader::DxilTranslation* translation, MTL::Library* library,
     const std::string& function_name, const uint32_t* states,
     uint32_t binding_count, std::string* error_out) {
-  if (!library || function_name.empty()) {
+  // A translation that bakes only has no library: its own address keys its
+  // functions.
+  const bool bakes_only = translation && translation->bakes_only();
+  if ((!library && !bakes_only) || function_name.empty()) {
     if (error_out) {
       *error_out = "missing shader library";
     }
     return nullptr;
   }
   SpecializedFunctionKey key{
-      uintptr_t(library), function_name,
+      library ? uintptr_t(library) : uintptr_t(translation), function_name,
       std::vector<uint32_t>(states, states + 4 * binding_count)};
   {
     std::lock_guard<std::mutex> lock(specialized_functions_mutex_);
@@ -1511,12 +1555,23 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
       return it->second;
     }
   }
-  if (translation && cvars::metal_bake_fetch_state &&
-      (shader_library_cache_.is_open() ||
-       cvars::metal_bake_fetch_state_uncached)) {
+  if (translation &&
+      (bakes_only || (cvars::metal_bake_fetch_state &&
+                      (shader_library_cache_.is_open() ||
+                       cvars::metal_bake_fetch_state_uncached)))) {
     if (MTL::Function* baked = GetBakedFunction(translation, states,
                                                 binding_count, key)) {
       return baked;
+    }
+  }
+  std::string generic_function_name = function_name;
+  if (!library) {
+    library = GetGenericFallbackLibrary(translation, generic_function_name);
+    if (!library) {
+      if (error_out) {
+        *error_out = "no library for the shader's fetch-state constants";
+      }
+      return nullptr;
     }
   }
   // The shader only declares the constants of the bindings it reads, and Metal
@@ -1536,8 +1591,8 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
   // MetalPipelineArchive).
   MTL::FunctionDescriptor* function_desc =
       MTL::FunctionDescriptor::alloc()->init();
-  function_desc->setName(
-      NS::String::string(function_name.c_str(), NS::UTF8StringEncoding));
+  function_desc->setName(NS::String::string(generic_function_name.c_str(),
+                                            NS::UTF8StringEncoding));
   function_desc->setConstantValues(values);
   NS::Error* error = nullptr;
   const int64_t specialize_start_ns = GetSteadyTimeNs();
@@ -1573,12 +1628,11 @@ MTL::Function* MetalCommandProcessor::GetBakedFunction(
   MetalShaderLibraryCache::Entry entry;
   const int64_t start_ns = GetSteadyTimeNs();
   bool cached = shader_library_cache_.FindVariant(variant_key, entry);
-  // TODO(xenios-jp): a shader loaded from the library cache has no
-  // SPIR-V, so a constant set it has never been baked for falls back to
-  // Metal's specialization below. Translating it again on demand (the guest
-  // microcode is at hand) would bake those too.
   if (!cached) {
-    if (!translation->CompileWithFetchState(states, binding_count,
+    // A shader made ready from the library cache is translated here, the
+    // first time a constant set of it has no stored variant.
+    if (!EnsureBakeSpirv(translation) ||
+        !translation->CompileWithFetchState(states, binding_count,
                                             entry.metallib,
                                             entry.entry_point_name)) {
       return nullptr;
@@ -1618,6 +1672,49 @@ MTL::Function* MetalCommandProcessor::GetBakedFunction(
   }
   baked_libraries_.push_back(library);
   return function;
+}
+
+bool MetalCommandProcessor::EnsureBakeSpirv(
+    const DxilShader::DxilTranslation* translation) {
+  if (!translation->is_translated()) {
+    // Only a translation TranslateAndCompileHostShader made ready from the
+    // library cache gets here untranslated, and that took the claim. Compile
+    // requests see the translation through const; it is the shader's own.
+    std::lock_guard<std::mutex> lock(bake_translate_mutex_);
+    if (!translation->is_translated()) {
+      auto translator = CreateSpirvShaderTranslator();
+      TranslateClaimedSpirv(
+          const_cast<DxilShader::DxilTranslation*>(translation), *translator);
+    }
+  }
+  return translation->is_valid() && !translation->translated_binary().empty();
+}
+
+MTL::Library* MetalCommandProcessor::GetGenericFallbackLibrary(
+    const DxilShader::DxilTranslation* translation,
+    std::string& entry_point_name_out) {
+  std::lock_guard<std::mutex> lock(generic_fallback_mutex_);
+  auto it = generic_fallback_libraries_.find(translation);
+  if (it == generic_fallback_libraries_.end()) {
+    MTL::Library* library = nullptr;
+    std::string entry_point_name;
+    if (EnsureBakeSpirv(translation)) {
+      library = translation->NewGenericLibrary(device_, metal_shader_converter_,
+                                               entry_point_name);
+    }
+    XELOGW(
+        "Metal: fetch-state constants of shader {:016X} mod {:016X} can't be "
+        "compiled in, {}",
+        translation->shader().ucode_data_hash(), translation->modification(),
+        library ? "Metal specializes its generic library"
+                : "and it has no generic library either");
+    it = generic_fallback_libraries_
+             .emplace(translation,
+                      std::make_pair(library, std::move(entry_point_name)))
+             .first;
+  }
+  entry_point_name_out = it->second.second;
+  return it->second.first;
 }
 
 MTL::Function* MetalCommandProcessor::GetPipelineVertexFunction(
@@ -1706,6 +1803,22 @@ bool MetalCommandProcessor::UsesVertexFetchStateFunctionConstants(
          (!translation->shader().vertex_bindings().empty() ||
           UsesPixelFetchStateFunctionConstants(translation) ||
           GetDrawExactAnalysis(translation->shader()).flag_count);
+}
+
+bool MetalCommandProcessor::BakesFetchState(
+    const Shader::Translation* translation) const {
+  // As GetSpecializedFunction decides it. Shader dumps want the library of the
+  // translation itself, and the converter doesn't bake.
+  if (!UseDxilPath() || !cvars::metal_bake_fetch_state ||
+      cvars::metal_bake_fetch_state_generic_library ||
+      cvars::metal_shader_compiler == "msc" || !cvars::dump_shaders.empty() ||
+      !(shader_library_cache_.is_open() ||
+        cvars::metal_bake_fetch_state_uncached)) {
+    return false;
+  }
+  return translation->shader().type() == xenos::ShaderType::kVertex
+             ? UsesVertexFetchStateFunctionConstants(translation)
+             : UsesPixelFetchStateFunctionConstants(translation);
 }
 
 bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
@@ -4047,6 +4160,12 @@ void MetalCommandProcessor::ShutdownContext() {
       library->release();
     }
     baked_libraries_.clear();
+    for (auto& fallback : generic_fallback_libraries_) {
+      if (fallback.second.first) {
+        fallback.second.first->release();
+      }
+    }
+    generic_fallback_libraries_.clear();
   }
   dxil_tessellation_cache_.clear();
   if (tessellator_tables_buffer_) {
@@ -10915,11 +11034,12 @@ MTL::RenderPipelineState* MetalCommandProcessor::GetOrCreatePipelineState(
   if (compile_status_out) {
     *compile_status_out = PipelineCompileStatus::kFailed;
   }
-  MTL::Function* vertex_function = GetHostShaderFunction(vertex_translation);
-  if (!vertex_function) {
+  if (!IsHostShaderReady(vertex_translation)) {
     XELOGE("Metal: no valid vertex shader function");
     return nullptr;
   }
+  // Null for a vertex shader that bakes only (GetPipelineVertexFunction).
+  MTL::Function* vertex_function = GetHostShaderFunction(vertex_translation);
 
   PipelineCompileRequest request = {};
   PopulatePipelineCompileRequest(regs, vertex_translation, pixel_translation,

@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_METAL_DXIL_SHADER_H_
 #define XENIA_GPU_METAL_DXIL_SHADER_H_
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -59,11 +60,31 @@ class DxilShader : public SpirvShader {
     // The same shader with the fetch-state function constants |states| (|count|
     // uint4 values) compiled into it, as a metallib with one function that
     // has no function constants left. False when the SPIR-V isn't at hand (the
-    // library came from the cache) or spirv2air can't translate the shader.
+    // translation was made ready from the cache) or spirv2air can't translate
+    // the shader.
     bool CompileWithFetchState(const uint32_t* states, uint32_t count,
                                std::vector<uint8_t>& metallib_out,
                                std::string& entry_point_name_out) const;
 
+    // Makes the translation ready with no library of its own: all of its
+    // functions are compiled by CompileWithFetchState, one library per set of
+    // constant values, so a generic library would be compiled to go unused.
+    void SetBakesOnly(uint32_t used_buffer_mask);
+    bool bakes_only() const { return bakes_only_; }
+    // Whether pipelines can be made of it: it has its function, or is one that
+    // bakes only.
+    bool is_ready() const { return metal_function_ != nullptr || bakes_only_; }
+    // used_buffer_mask of a function spirv2air compiles from translated_binary().
+    uint32_t GetSpirv2airBufferMask() const;
+    // The library CompileToAir would have made for a translation that bakes
+    // only, for constant values spirv2air doesn't compile in (none are known).
+    // It widens used_buffer_mask if the converter compiled it. The caller owns
+    // the library; null if translated_binary() can't be compiled.
+    MTL::Library* NewGenericLibrary(MTL::Device* device,
+                                    const MetalShaderConverter& converter,
+                                    std::string& entry_point_name_out) const;
+
+    // Both null for a translation that bakes only.
     MTL::Library* metal_library() const { return metal_library_; }
     MTL::Function* metal_function() const { return metal_function_; }
     const std::string& entry_point_name() const { return entry_point_name_; }
@@ -73,7 +94,9 @@ class DxilShader : public SpirvShader {
     // index. A function compiled by spirv2air never declares the last two and
     // declares a heap only for a shader with textures or samplers; one from
     // the converter may declare any. Other buffer indices aren't described.
-    uint32_t used_buffer_mask() const { return used_buffer_mask_; }
+    uint32_t used_buffer_mask() const {
+      return used_buffer_mask_.load(std::memory_order_relaxed);
+    }
 
    private:
     // A pixel shader that reads its render targets
@@ -91,11 +114,19 @@ class DxilShader : public SpirvShader {
     bool CompileToAirWithConverter(
         const MetalShaderConverter& converter,
         MetalShaderConversionResult& conversion) const;
+    // translated_binary() to AIR with spirv2air, or with the converter for a
+    // shader spirv2air can't translate (|native_out| false).
+    bool ConvertToAir(const MetalShaderConverter& converter,
+                      MetalShaderConversionResult& conversion,
+                      bool& native_out) const;
 
     MTL::Library* metal_library_ = nullptr;
     MTL::Function* metal_function_ = nullptr;
     std::string entry_point_name_;
-    uint32_t used_buffer_mask_ = ~uint32_t(0);
+    bool bakes_only_ = false;
+    // Atomic for NewGenericLibrary, which a pipeline thread calls while draws
+    // read the mask.
+    mutable std::atomic<uint32_t> used_buffer_mask_{~uint32_t(0)};
   };
 
  protected:
