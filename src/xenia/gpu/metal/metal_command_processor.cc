@@ -1618,6 +1618,13 @@ MTL::Function* MetalCommandProcessor::GetSpecializedFunction(
   return it->second;
 }
 
+// Further compile-time levers, parked untried on park/s2a-compile-levers
+// (tools/PARKED.md: their gains were only modelled, never timed on a device):
+// TODO(xenios-jp): decode 2D and cube texture sizes on the host (f17f39fc8).
+// TODO(xenios-jp): take texture gradient scales from an exp2 table (3ae74a406).
+// TODO(xenios-jp): compile gamma color targets per pipeline (77c743c53).
+// TODO(xenios-jp): compile the vertex position format and the vertex
+// expansion index load per pipeline (ef2ac46b2, f5ba07305).
 MTL::Function* MetalCommandProcessor::GetBakedFunction(
     const DxilShader::DxilTranslation* translation, const uint32_t* states,
     uint32_t binding_count, const SpecializedFunctionKey& key) {
