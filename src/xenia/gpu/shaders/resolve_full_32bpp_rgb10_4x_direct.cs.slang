@@ -1,29 +1,7 @@
 // Exact format-2/10 source, four-sample average, RGB10A2 destination, read
 // straight from the 4x host render target instead of the EDRAM buffer.
 // XE_MSL_ONLY
-// Each sample is packed into the dword the EDRAM dump would store for it, then
-// the copy is the generic 32bpp one specialized for this case (resolve info
-// fixed except the source format, which stays dynamic), with the same unpack,
-// sum, exponent bias and pack code.
-#include "endian.xesli"
-#include "pixel_formats.xesli"
-// The EDRAM binding slot carries the source texel origin instead: two dwords,
-// the host render target texel of the resolve area's first pixel. With
-// XE_RESOLVE_DIRECT_REFRESH, two more follow: the refreshed texture's width
-// with the texture row of the resolve's first row in the upper 16 bits, and
-// its height with the number of its aliases in the upper 16 bits.
-#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
-#include "resolve.xesli"
-
-byte_buffer_align16_wo_declare_xe(xe_resolve_dest, 1, 0, u0, space0, 1)
-#ifdef XE_RESOLVE_DIRECT_REFRESH
-#include "resolve_direct_refresh.xesli"
-#endif
-#define LOCAL_SIZE_X_XE 8
-#define LOCAL_SIZE_Y_XE 8
-#define LOCAL_SIZE_Z_XE 1
-
-#include "resolve_direct_rgb10f.xesli"
+#include "resolve_direct.slang"
 
 entry_bindings_begin_compute_xe
   XE_RESOLVE_PUSH_CONST_BINDING
@@ -52,13 +30,8 @@ entry_inputs_end_code_begin_compute_xe
   if (pixel_index.x >= resolve_info.width_div_8_scaled << 3u) {
     return;
   }
-  int2_xe texel = int2_xe(
-      pixel_index +
-      uint2_xe(byte_buffer_align4_load4_xe(xe_resolve_edram, 0u),
-               byte_buffer_align4_load4_xe(xe_resolve_edram, 4u)));
+  int2_xe texel = XeResolveDirectSourceTexel(pixel_index, resolve_info, false);
 
-  // XeResolveLoad4RGBAColors for sample select 0123, with the samples read
-  // from the render target.
   float4_xe pixel_0, pixel_1, pixel_2, pixel_3;
   float4_xe msaa_resolve_pixel_0, msaa_resolve_pixel_1, msaa_resolve_pixel_2,
       msaa_resolve_pixel_3;
@@ -78,44 +51,20 @@ entry_inputs_end_code_begin_compute_xe
     if (sample == 0) {
       XeResolveUnpack32bpp4Samples(packed, resolve_info.edram_format, pixel_0,
                                    pixel_1, pixel_2, pixel_3);
-      XeResolveDecodePWLGammaSource(resolve_info, pixel_0);
-      XeResolveDecodePWLGammaSource(resolve_info, pixel_1);
-      XeResolveDecodePWLGammaSource(resolve_info, pixel_2);
-      XeResolveDecodePWLGammaSource(resolve_info, pixel_3);
     } else {
       XeResolveUnpack32bpp4Samples(packed, resolve_info.edram_format,
                                    msaa_resolve_pixel_0, msaa_resolve_pixel_1,
                                    msaa_resolve_pixel_2, msaa_resolve_pixel_3);
-      XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
-      XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
-      XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_2);
-      XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_3);
       pixel_0 += msaa_resolve_pixel_0;
       pixel_1 += msaa_resolve_pixel_1;
       pixel_2 += msaa_resolve_pixel_2;
       pixel_3 += msaa_resolve_pixel_3;
     }
   }
-  float exp_bias = resolve_info.dest_exp_bias_factor * 0.5f * 0.5f;
-  pixel_0 *= exp_bias;
-  pixel_1 *= exp_bias;
-  pixel_2 *= exp_bias;
-  pixel_3 *= exp_bias;
-  dont_flatten_xe if (resolve_info.dest_swap) {
-    pixel_0 = pixel_0.bgra;
-    pixel_1 = pixel_1.bgra;
-    pixel_2 = pixel_2.bgra;
-    pixel_3 = pixel_3.bgra;
-  }
 
-  packed = XePack32bpp4Pixels(pixel_0, pixel_1, pixel_2, pixel_3,
-                              resolve_info.dest_format,
-                              resolve_info.dest_num_format);
-#ifdef XE_RESOLVE_DIRECT_REFRESH
-  XeResolveDirectRefreshWrite4(pixel_index, packed);
-#endif
-  byte_buffer_align16_store16_xe(
-      xe_resolve_dest, XeResolveDestPixelAddress(resolve_info, pixel_index, 2u),
-      XeEndianSwap32(packed, resolve_info.dest_endian_128));
+  XeResolveDirectFinish32bpp(
+      resolve_info, pixel_index,
+      resolve_info.dest_exp_bias_factor * 0.5f * 0.5f, pixel_0, pixel_1,
+      pixel_2, pixel_3, false);
 }
 entry_code_end_compute_xe
