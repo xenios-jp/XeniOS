@@ -23,15 +23,9 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
-class MetalShaderConverter;
-struct MetalShaderConversionResult;
-
-// Metal guest shader using the converter-compatible resource interface.
-// Compile SPIR-V directly with spirv2air, with Mesa/DXIL and Metal Shader
-// Converter as a fallback for unsupported guest shaders, or with the converter
-// alone (metal_shader_compiler).
-// Either way, resources follow the MSC top-level argument buffer ABI that
-// MetalShaderConverter's root signature describes.
+// Metal guest shader compiled directly from SPIR-V to Apple AIR by spirv2air.
+// Resources follow the bindless top-level argument buffer and descriptor heap
+// layout in spirv2air/docs/bindings.md (bound by MetalDxilBinder).
 class DxilShader : public SpirvShader {
  public:
   DxilShader(xenos::ShaderType shader_type, uint64_t ucode_data_hash,
@@ -45,10 +39,8 @@ class DxilShader : public SpirvShader {
     ~DxilTranslation();
 
     // Compiles the SPIR-V binary (already in translated_binary()) to a Metal
-    // library with an available compiler, and looks up its
-    // entry point.
+    // library with spirv2air and looks up its entry point.
     bool CompileToAir(MTL::Device* device,
-                      const MetalShaderConverter& converter,
                       std::vector<uint8_t>* metallib_out = nullptr);
 
     // Loads a Metal library this translation was compiled to earlier (see
@@ -78,29 +70,25 @@ class DxilShader : public SpirvShader {
     uint32_t GetSpirv2airBufferMask() const;
     // The library CompileToAir would have made for a translation that bakes
     // only, for constant values spirv2air doesn't compile in (none are known).
-    // It widens used_buffer_mask if the converter compiled it. The caller owns
-    // the library; null if translated_binary() can't be compiled.
+    // The caller owns the library; null if translated_binary() can't be
+    // compiled.
     MTL::Library* NewGenericLibrary(MTL::Device* device,
-                                    const MetalShaderConverter& converter,
                                     std::string& entry_point_name_out) const;
 
     // Both null for a translation that bakes only.
     MTL::Library* metal_library() const { return metal_library_; }
     MTL::Function* metal_function() const { return metal_function_; }
     const std::string& entry_point_name() const { return entry_point_name_; }
-    // Which of the Metal Shader Converter bind points (the descriptor and
-    // sampler heaps, the top-level argument buffer, the draw arguments and
-    // the draw uniforms) the compiled function can read, a bit a buffer
-    // index. A function compiled by spirv2air never declares the last two and
-    // declares a heap only for a shader with textures or samplers; one from
-    // the converter may declare any. Other buffer indices aren't described.
+    // Which of the spirv2air bind points (descriptor heap 0, sampler heap 1,
+    // top-level argument buffer 2) the compiled function can read, one bit per
+    // buffer index. Other buffer indices aren't described.
     uint32_t used_buffer_mask() const {
       return used_buffer_mask_.load(std::memory_order_relaxed);
     }
 
    private:
     // A pixel shader that reads its render targets
-    // (host_render_target_feedback), which only spirv2air can compile.
+    // (host_render_target_feedback).
     bool ReadsRenderTargets() const {
       return shader().type() == xenos::ShaderType::kPixel &&
              SpirvShaderTranslator::Modification(modification())
@@ -114,19 +102,9 @@ class DxilShader : public SpirvShader {
                  SpirvShaderTranslator::Modification(modification())
                      .vertex.host_vertex_shader_type);
     }
-    // SPIR-V -> AIR directly (spirv2air). False if this build lacks spirv2air
-    // or the shader uses something it doesn't support (logged).
-    bool CompileToAirWithSpirv2air(
-        MetalShaderConversionResult& conversion) const;
-    // SPIR-V -> DXIL (spirv_to_dxil) -> AIR (Metal Shader Converter).
-    bool CompileToAirWithConverter(
-        const MetalShaderConverter& converter,
-        MetalShaderConversionResult& conversion) const;
-    // translated_binary() to AIR with spirv2air, or with the converter for a
-    // shader spirv2air can't translate (|native_out| false).
-    bool ConvertToAir(const MetalShaderConverter& converter,
-                      MetalShaderConversionResult& conversion,
-                      bool& native_out) const;
+    // SPIR-V -> AIR directly via spirv2air.
+    bool CompileToAirWithSpirv2air(std::vector<uint8_t>& metallib_out,
+                                   std::string& entry_point_name_out) const;
 
     MTL::Library* metal_library_ = nullptr;
     MTL::Function* metal_function_ = nullptr;

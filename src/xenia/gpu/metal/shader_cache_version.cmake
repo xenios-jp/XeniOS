@@ -7,18 +7,17 @@
 # - our translation sources: the seed files below and every xenia/gpu header
 #   they include, followed recursively, with the .cc of each translation
 #   header, by content (uncommitted edits included);
-# - the compilers they call (spirv2air, Mesa's spirv_to_dxil, glslang's SPIR-V
-#   builder, SPIRV-Tools, SPIRV-Headers), by commit and uncommitted diff.
-# The runtime adds the GPU and Metal options and the Metal shader converter's
-# build (MetalShaderLibraryCache::MakeFingerprint). The header is rewritten
-# only when the hash changes, so an unchanged hash rebuilds nothing.
+# - the compilers they call (spirv2air, glslang's SPIR-V builder, SPIRV-Tools,
+#   SPIRV-Headers), by commit and uncommitted diff.
+# The runtime adds the GPU and Metal options (MetalShaderLibraryCache::MakeFingerprint).
+# The header is rewritten only when the hash changes, so an unchanged hash
+# rebuilds nothing.
 
 set(gpu "${SOURCE_DIR}/src/xenia/gpu")
 file(GLOB seeds
   "${gpu}/shader.cc" "${gpu}/shader_translator*.cc" "${gpu}/spirv_*.cc"
   "${gpu}/ucode.cc" "${gpu}/xenos.cc" "${gpu}/draw_util.cc"
-  "${gpu}/metal/dxil_shader.cc" "${gpu}/metal/metal_shader_converter.cc"
-  "${gpu}/metal/metal_shader_library_cache.cc")
+  "${gpu}/metal/dxil_shader.cc" "${gpu}/metal/metal_shader_library_cache.cc")
 set(pending ${seeds})
 set(files "")
 while(pending)
@@ -51,7 +50,7 @@ foreach(file IN LISTS files)
 endforeach()
 
 find_package(Git QUIET)
-foreach(dir spirv2air mesa glslang SPIRV-Tools SPIRV-Headers)
+foreach(dir spirv2air glslang SPIRV-Tools SPIRV-Headers)
   set(path "${SOURCE_DIR}/third_party/${dir}")
   set(head "")
   set(diff "")

@@ -85,15 +85,6 @@ concurrency:
   group: "${{ ((github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/ci/')) || (github.event_name == 'workflow_dispatch' && inputs.publish)) && 'apple-publish-publish' || format('apple-publish-build-{0}', github.ref) }}"
   cancel-in-progress: "${{ !((github.event_name == 'push' && !startsWith(github.ref, 'refs/heads/ci/')) || (github.event_name == 'workflow_dispatch' && inputs.publish)) }}"
 
-env:
-  # Apple's Metal Shader Converter for iPhoneOS. Apple's download needs a developer
-  # login, so the dylib is mirrored as an asset of release MSC_IOS_RELEASE_TAG in
-  # MSC_IOS_REPO (Apache 2.0 permits it; every IPA ships it too). The hash pins the
-  # mirrored bytes and codesign proves they are Apple's.
-  MSC_IOS_REPO: "xenios-jp/metal-shader-converter"
-  MSC_IOS_RELEASE_TAG: "ios-4.0.3"
-  MSC_IOS_SHA256: "bd6b729dcbde133a511d95130eb4d287a1e18b4170453f8b350e78a20bfc37aa"
-
 jobs:
   resolve-metadata:
     name: Resolve publish metadata
@@ -355,58 +346,20 @@ jobs:
         if: steps.cache-slang.outputs.cache-hit != 'true'
         run: ./xenia-build.py slang
 
-      - name: Cache Metal Shader Converter (macOS)
-        id: cache-msc
-        uses: actions/cache@v4
-        with:
-          path: .metal-shader-converter
-          # Keep in sync with MSC_VERSION in xenia-build.py.
-          key: ${{ runner.os }}-metal-shader-converter-4.0-beta2
-
-      - name: Download Metal Shader Converter (macOS, for the host shader tool's configure)
-        if: steps.cache-msc.outputs.cache-hit != 'true'
-        run: ./xenia-build.py msc
-
-      - name: Download Metal Shader Converter (iOS)
-        shell: bash
-        env:
-          GH_TOKEN: "${{ github.token }}"
-        run: |
-          set -euo pipefail
-          msc_dir="${RUNNER_TEMP}/msc-ios"
-          mkdir -p "${msc_dir}"
-          gh release download "${MSC_IOS_RELEASE_TAG}" --repo "${MSC_IOS_REPO}" \
-            --pattern libmetalirconverter.dylib --dir "${msc_dir}" --clobber
-          dylib="${msc_dir}/libmetalirconverter.dylib"
-          echo "${MSC_IOS_SHA256}  ${dylib}" | shasum -a 256 -c -
-          codesign --verify --strict "${dylib}"
-          xcrun vtool -show-build "${dylib}" | grep "platform IOS"
-          echo "MSC_IOS_LIBRARY=${dylib}" >> "$GITHUB_ENV"
-
       - name: Fetch submodules and data
         shell: bash
         run: |
           set -euo pipefail
-          # DirectXShaderCompiler isn't needed: the DXIL the Metal backend converts
-          # comes from Mesa's spirv_to_dxil.
+          # DirectXShaderCompiler and mesa are only used by the Windows D3D12
+          # backend.
           git submodule update --init --depth=1 -j"$(sysctl -n hw.ncpu)" \
             $(grep -oE 'path = .+' .gitmodules | sed 's/path = //' \
-              | grep -v 'DirectXShaderCompiler')
+              | grep -Ev '^(third_party/DirectXShaderCompiler|third_party/mesa)$')
           # wxWidgets has nested submodules that the macOS configure reads.
           git submodule update --init --recursive --depth=1 \
             -j"$(sysctl -n hw.ncpu)" third_party/wxWidgets
           # game-patches and the compatibility data baked into the app.
           ./xenia-build.py fetchdata
-
-      # The runner's default python3 is Homebrew's and refuses pip installs
-      # (PEP 668). Mesa imports mako from whichever python3 it finds on PATH.
-      - name: Set up Python for Meson
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install Meson for spirv_to_dxil
-        run: python3 -m pip install --upgrade meson mako pyyaml packaging
 
       - name: Build the host shader tool
         # The iOS build runs a native macOS xenia-shader-cc from this revision.
@@ -436,8 +389,7 @@ jobs:
             -DCMAKE_CONFIGURATION_TYPES=Release \
             -DXENIA_BUILD_IOS_TRACE_APP=OFF \
             -DXENIA_IOS_COMPATIBILITY_DATA_DIR="${GITHUB_WORKSPACE}/build/data_repos/game-compatibility" \
-            -DXENIA_IOS_HOST_SHADER_COMPILER="${XENIA_SHADER_CC}" \
-            -DXENIA_IOS_SHADER_CONVERTER_LIBRARY="${MSC_IOS_LIBRARY}"
+            -DXENIA_IOS_HOST_SHADER_COMPILER="${XENIA_SHADER_CC}"
 
       - name: Build and package the IPA
         shell: bash
@@ -558,36 +510,16 @@ jobs:
         if: steps.cache-slang.outputs.cache-hit != 'true'
         run: ./xenia-build.py slang
 
-      - name: Cache Metal Shader Converter (macOS)
-        id: cache-msc
-        uses: actions/cache@v4
-        with:
-          path: .metal-shader-converter
-          # Keep in sync with MSC_VERSION in xenia-build.py.
-          key: ${{ runner.os }}-metal-shader-converter-4.0-beta2
-
-      - name: Download Metal Shader Converter (macOS)
-        if: steps.cache-msc.outputs.cache-hit != 'true'
-        run: ./xenia-build.py msc
-
       - name: Fetch submodules and data
         shell: bash
         run: |
           set -euo pipefail
           git submodule update --init --depth=1 -j"$(sysctl -n hw.ncpu)" \
             $(grep -oE 'path = .+' .gitmodules | sed 's/path = //' \
-              | grep -v 'DirectXShaderCompiler')
+              | grep -Ev '^(third_party/DirectXShaderCompiler|third_party/mesa)$')
           git submodule update --init --recursive --depth=1 \
             -j"$(sysctl -n hw.ncpu)" third_party/wxWidgets
           ./xenia-build.py fetchdata
-
-      - name: Set up Python for Meson
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install Meson for spirv_to_dxil
-        run: python3 -m pip install --upgrade meson mako pyyaml packaging
 
       - name: Configure the macOS build
         shell: bash

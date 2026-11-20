@@ -97,35 +97,6 @@ target_link_options(xenia-app PRIVATE
   "-Wl,-rpath,@executable_path/Frameworks"
   "-Wl,-rpath,@loader_path/Frameworks"
 )
-set(_xe_ios_embedded_dylibs)
-foreach(_xe_app_dylib xenia-third-party-metal-shader-converter)
-  if(TARGET ${_xe_app_dylib})
-    if(XCODE)
-      get_target_property(_xe_app_dylib_path ${_xe_app_dylib}
-                          IMPORTED_LOCATION_RELEASE)
-      if(NOT _xe_app_dylib_path)
-        get_target_property(_xe_app_dylib_path ${_xe_app_dylib}
-                            IMPORTED_LOCATION)
-      endif()
-      if(_xe_app_dylib_path)
-        list(APPEND _xe_ios_embedded_dylibs "${_xe_app_dylib_path}")
-      endif()
-    else()
-      add_custom_command(TARGET xenia-app POST_BUILD
-        COMMAND "${CMAKE_COMMAND}" -E make_directory
-                "$<TARGET_BUNDLE_DIR:xenia-app>/Frameworks"
-        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                "$<TARGET_FILE:${_xe_app_dylib}>"
-                "$<TARGET_BUNDLE_DIR:xenia-app>/Frameworks/$<TARGET_FILE_NAME:${_xe_app_dylib}>"
-        VERBATIM)
-    endif()
-  endif()
-endforeach()
-if(XCODE AND _xe_ios_embedded_dylibs)
-  set_target_properties(xenia-app PROPERTIES
-    XCODE_EMBED_FRAMEWORKS "${_xe_ios_embedded_dylibs}"
-    XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY YES)
-endif()
 target_include_directories(xenia-app PRIVATE
   "${PROJECT_SOURCE_DIR}/third_party/rapidjson/include"
 )

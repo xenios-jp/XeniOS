@@ -1283,12 +1283,10 @@ endif()
 # does not bundle its deps, so we link the whole archive set (nir, vtn,
 # compiler, dxil_compiler, util, blake3, and on Windows the bundled zlib wrap).
 #
-# Built on WIN32 and APPLE. The Windows build runs release with /MD to match
+# Built on WIN32 (D3D12). The Windows build runs release with /MD to match
 # xenia's CRT under an MSVC environment so meson detects cl. Verify the archive
 # paths below against the real build output if Mesa is restructured.
-if(XE_PLATFORM_IOS)
-  include(${PROJECT_SOURCE_DIR}/cmake/ios/Mesa.cmake)
-elseif(WIN32 OR APPLE)
+if(WIN32)
   # Mesa source tree built for spirv_to_dxil. Defaults to the third_party/mesa
   # submodule (our fork with the barycentric, linking, keep_io_vars and FSI->ROV
   # changes). Repoint this cache variable to build a different Mesa checkout.
@@ -1312,27 +1310,6 @@ elseif(WIN32 OR APPLE)
   endif()
 
   set(_xe_s2d_build "${CMAKE_BINARY_DIR}/third_party/mesa-build")
-  set(_xe_s2d_extra_byproducts "")
-  if(APPLE)
-    # Keep the pinned submodule unchanged. The generated source tree shares
-    # file data through APFS clones where available.
-    set(_xe_mesa_original_dir "${_xe_mesa_dir}")
-    set(_xe_mesa_prepare "${CMAKE_SOURCE_DIR}/tools/build/prepare_mesa_metal.py")
-    set(_xe_mesa_dir "${CMAKE_BINARY_DIR}/third_party/mesa-metal-source")
-    set(_xe_s2d_build "${CMAKE_BINARY_DIR}/third_party/mesa-metal-build")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-        "${_xe_mesa_prepare}")
-    execute_process(
-      COMMAND "${Python3_EXECUTABLE}" "${_xe_mesa_prepare}"
-        "${_xe_mesa_original_dir}" "${_xe_mesa_dir}"
-      RESULT_VARIABLE _xe_mesa_prepare_result
-      OUTPUT_QUIET ERROR_VARIABLE _xe_mesa_prepare_error)
-    if(NOT _xe_mesa_prepare_result EQUAL 0)
-      message(FATAL_ERROR "Mesa Metal source preparation failed: ${_xe_mesa_prepare_error}")
-    endif()
-    list(APPEND _xe_s2d_extra_byproducts
-        "${_xe_mesa_dir}/xenia-metal/xenia_mesa_metal_version.h")
-  endif()
   set(_xe_s2d_main "${_xe_s2d_build}/src/microsoft/spirv_to_dxil/libspirv_to_dxil.a")
   # Dependency archives, in the layout meson emits under the build tree.
   set(_xe_s2d_deps
@@ -1343,12 +1320,8 @@ elseif(WIN32 OR APPLE)
     "${_xe_s2d_build}/src/util/libmesa_util.a"
     "${_xe_s2d_build}/src/util/libmesa_util_simd.a"
     "${_xe_s2d_build}/src/c11/impl/libmesa_util_c11.a"
-    "${_xe_s2d_build}/src/util/blake3/libblake3.a")
-  # Windows has no system zlib, so meson builds the bundled wrap subproject.
-  # macOS finds the system zlib, so that archive is never emitted there.
-  if(WIN32)
-    list(APPEND _xe_s2d_deps "${_xe_s2d_build}/subprojects/zlib-1.3.1/libz.a")
-  endif()
+    "${_xe_s2d_build}/src/util/blake3/libblake3.a"
+    "${_xe_s2d_build}/subprojects/zlib-1.3.1/libz.a")
 
   # We only static-link the archives above; spirv_to_dxil is a both_libraries()
   # target, so a full "meson compile" also links spirv_to_dxil.dll and builds
@@ -1379,8 +1352,7 @@ elseif(WIN32 OR APPLE)
     set(_xe_s2d_cpu "x86_64")
   endif()
 
-  # Common meson feature toggles. MSVC also needs the CRT selector and a warning
-  # override; clang (macOS) rejects the MSVC /wd flag, so those are MSVC only.
+  # Common meson feature toggles.
   set(_xe_s2d_meson_args
     --default-library=static --buildtype=release
     -Dspirv-to-dxil=true
@@ -1414,74 +1386,9 @@ endian = 'little'
       list(APPEND _xe_s2d_meson_args --cross-file "${_xe_s2d_cross_file}")
     endif()
   endif()
-  if(APPLE)
-    # Mesa's meson build sets no deployment target, so its objects get the SDK's
-    # and the linker warns about every one of them being newer than what the
-    # rest of the tree links against.
-    if(CMAKE_OSX_DEPLOYMENT_TARGET)
-      list(APPEND _xe_s2d_meson_args
-        "-Dc_args=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}"
-        "-Dcpp_args=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-    endif()
-
-    # Extend the Apple ar/ranlib "has no symbols" quieting we apply to CMake
-    # targets (root CMakeLists.txt) to meson's mesa build. Several util/nir
-    # sources compile to empty objects on macOS (futex is Linux-only,
-    # strndup/u_string/u_atomic/bitscan are libc or inline, nir_validate is
-    # NDEBUG-gated). Meson's rule is `ar csr ... && ranlib -c ...` and both
-    # steps warn. Meson hardcodes the `csr` args, so route ar through a wrapper
-    # that creates with `Scr` (capital S skips the symtab, keeping ar quiet) and
-    # override ranlib with -no_warning_for_no_symbols (it writes the symtab) via
-    # a native file - the same recipe as CMAKE_*_ARCHIVE_CREATE/FINISH. Written
-    # outside _xe_s2d_build, which configure wipes.
-    set(_xe_s2d_ar "${CMAKE_CURRENT_BINARY_DIR}/mesa-macos-ar.sh")
-    file(WRITE "${_xe_s2d_ar}" [=[#!/bin/sh
-# Create static archives with 'Scr' (capital S skips the symbol table, so Apple
-# ar stays quiet on zero-symbol objects); the ranlib step writes it afterward.
-# Pass meson's `ar --version` linker probe straight through for detection.
-case "$1" in
-  c*) shift; exec /usr/bin/ar Scr "$@" ;;
-  *) exec /usr/bin/ar "$@" ;;
-esac
-]=])
-    file(CHMOD "${_xe_s2d_ar}"
-      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ WORLD_READ)
-    set(_xe_s2d_ar_ini
-      "ar = '${_xe_s2d_ar}'\nranlib = ['/usr/bin/ranlib', '-no_warning_for_no_symbols']\n")
-    set(_xe_s2d_native "${CMAKE_CURRENT_BINARY_DIR}/mesa-macos-native.ini")
-    file(WRITE "${_xe_s2d_native}" "[binaries]\n${_xe_s2d_ar_ini}")
-    list(APPEND _xe_s2d_meson_args --native-file "${_xe_s2d_native}")
-
-    if(_xe_s2d_cross)
-      # meson spells it aarch64, clang -arch spells it arm64.
-      string(REPLACE "aarch64" "arm64" _xe_s2d_clang_arch "${_xe_s2d_cpu}")
-      set(_xe_s2d_cross_file
-        "${CMAKE_CURRENT_BINARY_DIR}/mesa-macos-cross-${_xe_s2d_cpu}.ini")
-      file(WRITE "${_xe_s2d_cross_file}"
-"[binaries]
-c = ['${CMAKE_C_COMPILER}', '-arch', '${_xe_s2d_clang_arch}']
-cpp = ['${CMAKE_CXX_COMPILER}', '-arch', '${_xe_s2d_clang_arch}']
-objc = ['${CMAKE_C_COMPILER}', '-arch', '${_xe_s2d_clang_arch}']
-${_xe_s2d_ar_ini}
-[host_machine]
-system = 'darwin'
-cpu_family = '${_xe_s2d_cpu}'
-cpu = '${_xe_s2d_cpu}'
-endian = 'little'
-")
-      list(APPEND _xe_s2d_meson_args --cross-file "${_xe_s2d_cross_file}")
-    endif()
-  endif()
 
   set(_xe_s2d_build_command "${XE_NINJA_EXECUTABLE}" -C "${_xe_s2d_build}"
       ${_xe_s2d_ninja_targets})
-  if(APPLE)
-    # Refresh local Mesa edits before the incremental Meson build, and stamp
-    # Mesa's version from the original checkout rather than the generated tree.
-    set(_xe_s2d_build_command "${Python3_EXECUTABLE}" "${_xe_mesa_prepare}"
-        "${_xe_mesa_original_dir}" "${_xe_mesa_dir}" --run
-        "${XE_NINJA_EXECUTABLE}" -C "${_xe_s2d_build}" ${_xe_s2d_ninja_targets})
-  endif()
 
   include(ExternalProject)
   # Wipe then setup keeps the configure step idempotent across reconfigures.
@@ -1493,7 +1400,7 @@ endian = 'little'
         ${_xe_s2d_meson_args}
     BUILD_COMMAND ${_xe_s2d_build_command}
     INSTALL_COMMAND ""
-    BUILD_BYPRODUCTS "${_xe_s2d_main}" ${_xe_s2d_deps} ${_xe_s2d_extra_byproducts}
+    BUILD_BYPRODUCTS "${_xe_s2d_main}" ${_xe_s2d_deps}
     # Editable source tree, so re-run ninja every build. It is incremental and
     # cheap when nothing changed, and picks up local Mesa edits.
     BUILD_ALWAYS ON
@@ -1501,62 +1408,18 @@ endian = 'little'
 
   add_library(spirv_to_dxil STATIC IMPORTED GLOBAL)
   add_dependencies(spirv_to_dxil mesa_spirv_to_dxil)
-  # synchronization/version are the only non-default system libs Mesa needs, and
-  # only on Windows (mesa's meson resolves both to nothing off Windows).
-  set(_xe_s2d_link ${_xe_s2d_deps})
-  if(WIN32)
-    list(APPEND _xe_s2d_link synchronization version)
-  endif()
+  # synchronization/version are the only non-default system libs Mesa needs on
+  # Windows.
+  set(_xe_s2d_link ${_xe_s2d_deps} synchronization version)
   set_target_properties(spirv_to_dxil PROPERTIES
     IMPORTED_LOCATION "${_xe_s2d_main}"
     INTERFACE_INCLUDE_DIRECTORIES
       "${_xe_mesa_dir}/src/microsoft/spirv_to_dxil;${_xe_mesa_dir}/src/microsoft/compiler"
     INTERFACE_LINK_LIBRARIES "${_xe_s2d_link}")
-  if(APPLE)
-    target_include_directories(spirv_to_dxil INTERFACE "${_xe_mesa_dir}/xenia-metal")
-    target_compile_definitions(spirv_to_dxil INTERFACE XE_MESA_METAL_FMAD32=1)
-  endif()
   # Multi-Config evaluates every config, so point each at the same archive.
   foreach(_xe_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
     string(TOUPPER "${_xe_cfg}" _xe_cfg_u)
     set_target_properties(spirv_to_dxil PROPERTIES
       IMPORTED_LOCATION_${_xe_cfg_u} "${_xe_s2d_main}")
-  endforeach()
-endif()
-
-# ==============================================================================
-# Metal Shader Converter (Apple only — the DXIL -> AIR half of the Metal guest
-# shader path, taking the DXIL that spirv_to_dxil above produces)
-# ==============================================================================
-# Apache 2.0 but closed source, so it is downloaded rather than built. The
-# headers are vendored here; the dylib is mirrored as a release asset and
-# fetched by `./xenia-build.py msc` into .metal-shader-converter/, because
-# Apple's own download requires a developer login.
-if(XE_PLATFORM_IOS)
-  include(${PROJECT_SOURCE_DIR}/cmake/ios/ShaderConverter.cmake)
-elseif(APPLE)
-  set(_xe_msc_root "${CMAKE_CURRENT_SOURCE_DIR}/metal-shader-converter")
-  file(GLOB _xe_msc_found
-       "${PROJECT_SOURCE_DIR}/.metal-shader-converter/*/libmetalirconverter.dylib")
-  if(NOT _xe_msc_found)
-    message(FATAL_ERROR
-      "The Metal backend requires Apple's Metal Shader Converter. Run: "
-      "./xenia-build.py msc")
-  endif()
-  list(GET _xe_msc_found 0 _xe_msc_dylib)
-
-  add_library(xenia-third-party-metal-shader-converter SHARED IMPORTED GLOBAL)
-  # IR_RUNTIME_METALCPP makes metal_irconverter_runtime.h's inline helpers take
-  # metal-cpp types instead of Objective-C ones.
-  set_target_properties(xenia-third-party-metal-shader-converter PROPERTIES
-    IMPORTED_LOCATION "${_xe_msc_dylib}"
-    INTERFACE_INCLUDE_DIRECTORIES
-      "${_xe_msc_root}/include;${_xe_msc_root}/include/metal_irconverter;${_xe_msc_root}/include/metal_irconverter_runtime"
-    INTERFACE_COMPILE_DEFINITIONS "IR_RUNTIME_METALCPP")
-  # Multi-Config evaluates every config, so point each at the same dylib.
-  foreach(_xe_cfg IN LISTS CMAKE_CONFIGURATION_TYPES)
-    string(TOUPPER "${_xe_cfg}" _xe_cfg_u)
-    set_target_properties(xenia-third-party-metal-shader-converter PROPERTIES
-      IMPORTED_LOCATION_${_xe_cfg_u} "${_xe_msc_dylib}")
   endforeach()
 endif()

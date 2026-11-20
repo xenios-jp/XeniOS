@@ -21,12 +21,6 @@ TP = ROOT / "third_party"
 OUT = ROOT / "assets" / "apple" / "Acknowledgements.json"
 
 
-def spdx_body(text):
-    """Mesa's licenses/ files are SPDX templates; keep only the license text."""
-    marker = "License-Text:"
-    return text.split(marker, 1)[1].strip() if marker in text else text
-
-
 def stb_license(text):
     """stb headers end with a dual MIT / public domain notice."""
     match = re.search(r"-{20,}\s*\n(This software is available under 2 licenses.*?)\*/",
@@ -42,14 +36,6 @@ def stb_license(text):
 
 BULLET = re.compile(r"^(\s*)(?:[*\-\u2022]|\d+[.)]|\([a-zA-Z0-9]{1,4}\)|[a-z][.)])\s+")
 UNDERLINE = re.compile(r"^\s*([=\-~^*#])\1{2,}\s*$")
-
-
-def rst_markup(text):
-    """Mesa's notice is reStructuredText: drop the link markup and emphasis."""
-    text = re.sub(r"`([^`]+)`_", r"\1", text)
-    text = re.sub(r"(?<![\w*])\*(\S[^*\n]*?)\*(?![\w*])", r"\1", text)
-    # The link targets become a list under the paragraph that names them.
-    return re.sub(r"^\.\. _([^:]+):", r"- \1:", text, flags=re.M)
 
 
 def md_markup(text):
@@ -113,8 +99,6 @@ LIBRARIES = [
      "the XeniOS source repository, https://github.com/xenios-jp/XeniOS."),
     ("SDL", "Audio output and game controllers", "https://libsdl.org",
      ["SDL3/LICENSE.txt"], None),
-    ("Mesa (NIR, SPIR-V to DXIL)", "Shader translation", "https://www.mesa3d.org",
-     [("mesa/docs/license.rst", rst_markup), ("mesa/licenses/MIT", spdx_body)], None),
     ("SPIRV-Cross", "Shader translation", "https://github.com/KhronosGroup/SPIRV-Cross",
      ["SPIRV-Cross/LICENSE"], None),
     ("glslang (SPIR-V)", "Shader translation", "https://github.com/KhronosGroup/glslang",
@@ -124,11 +108,6 @@ LIBRARIES = [
      ["llvm/LICENSE.txt"], None),
     ("metal-cpp", "Metal C++ bindings", "https://developer.apple.com/metal/cpp/",
      ["metal-cpp/LICENSE.txt"], None),
-    ("Metal Shader Converter headers", "Shader translation",
-     "https://developer.apple.com/metal/shader-converter/",
-     ["metal-shader-converter/LICENSE.txt"],
-     "This is the license of the headers. The converter library itself is Apple software "
-     "under Apple's own terms."),
     ("Capstone", "Disassembly", "https://www.capstone-engine.org",
      ["capstone/LICENSES/LICENSE.TXT", "capstone/LICENSES/LICENSE_BSD_3_CLAUSE.txt",
       "capstone/LICENSES/LICENSE_LLVM.TXT"], None),
@@ -159,7 +138,7 @@ LIBRARIES = [
     ("Xbyak for AArch64", "CPU code generation", "https://github.com/fujitsu/xbyak_aarch64",
      ["xbyak_aarch64/LICENSE"], None),
     ("Boost.Context", "Fibers", "https://www.boost.org/doc/libs/release/libs/context/",
-     [("mesa/licenses/BSL-1.0", spdx_body)],
+     ["asio/LICENSE_1_0.txt"],
      "The standard Boost Software License 1.0 text is shown; third_party/boost_context has "
      "no license file of its own in this checkout."),
     ("Disruptor-plus", "Lock-free queues", "https://github.com/lewissbaker/disruptorplus",

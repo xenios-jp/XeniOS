@@ -34,7 +34,6 @@
 #include "third_party/metal-cpp/Foundation/NSURL.hpp"
 #include "third_party/metal-cpp/Metal/MTLEvent.hpp"
 
-#include "metal_irconverter_runtime.h"
 #include "spirv2air.h"
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -56,7 +55,6 @@
 #include "xenia/gpu/shaders/bytecode/metal/metal_tessellation_prep_cs.h"
 #include "xenia/gpu/packet_disassembler.h"
 #include "xenia/gpu/registers.h"
-#include "xenia/gpu/spirv_to_dxil_compiler.h"
 #include "xenia/gpu/texture_util.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/kernel/kernel_state.h"
@@ -108,17 +106,10 @@ DEFINE_bool(
     "(metal_bake_fetch_state). It goes unused, so it is skipped by default; "
     "this is the off switch of the skip.",
     "Metal");
-DEFINE_string(
-    metal_shader_compiler, "spirv2air",
-    "Guest shader compiler for Metal.\n"
-    " spirv2air: SPIR-V -> AIR directly, falling back to msc for shaders it "
-    "can't translate.\n"
-    " msc: SPIR-V -> DXIL -> AIR with Apple's Metal Shader Converter.",
-    "Metal");
 DEFINE_bool(
     metal_finite_multiply, true,
     "Skip the Xenos 0 * x = 0 guard on multiplications whose operands are "
-    "proven finite (with MSC multiply-add support).",
+    "proven finite.",
     "Metal");
 DEFINE_int32(
     metal_pipeline_creation_threads, -1,
@@ -820,8 +811,7 @@ std::string MetalCommandProcessor::MakeTitleStateSuffix() const {
     return {};
   }
   std::ostringstream suffix;
-  suffix << (cvars::metal_shader_compiler == "msc" ? " - MSC"
-                                                   : " - spirv2air");
+  suffix << " - spirv2air";
   uint32_t draw_resolution_scale_x =
       texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1;
   uint32_t draw_resolution_scale_y =
@@ -1065,7 +1055,7 @@ bool MetalCommandProcessor::CompileHostShader(
     return false;
   }
   return static_cast<DxilShader::DxilTranslation*>(translation)
-      ->CompileToAir(device_, metal_shader_converter_, metallib_out);
+      ->CompileToAir(device_, metallib_out);
 }
 
 MetalCommandProcessor::ShaderCompileStatus
@@ -1614,8 +1604,7 @@ MTL::Library* MetalCommandProcessor::GetGenericFallbackLibrary(
     MTL::Library* library = nullptr;
     std::string entry_point_name;
     if (EnsureBakeSpirv(translation)) {
-      library = translation->NewGenericLibrary(device_, metal_shader_converter_,
-                                               entry_point_name);
+      library = translation->NewGenericLibrary(device_, entry_point_name);
     }
     XELOGW(
         "Metal: fetch-state constants of shader {:016X} mod {:016X} can't be "
@@ -1723,10 +1712,10 @@ bool MetalCommandProcessor::UsesVertexFetchStateFunctionConstants(
 bool MetalCommandProcessor::BakesFetchState(
     const Shader::Translation* translation) const {
   // As GetSpecializedFunction decides it. Shader dumps want the library of the
-  // translation itself, and the converter doesn't bake.
+  // translation itself.
   if (!cvars::metal_bake_fetch_state ||
       cvars::metal_bake_fetch_state_generic_library ||
-      cvars::metal_shader_compiler == "msc" || !cvars::dump_shaders.empty() ||
+      !cvars::dump_shaders.empty() ||
       !(shader_library_cache_.is_open() ||
         cvars::metal_bake_fetch_state_uncached)) {
     return false;
@@ -3047,12 +3036,6 @@ bool MetalCommandProcessor::SetupContext() {
     return false;
   }
 
-  if (!metal_shader_converter_.Initialize()) {
-    XELOGE("Metal: the shader converter is unavailable, nothing can render");
-    return false;
-  }
-
-  // After the converter, which the workers compile against.
   InitializeAsyncCompilation();
 
   return true;
@@ -3071,10 +3054,8 @@ MetalCommandProcessor::CreateSpirvShaderTranslator() const {
 
 bool MetalCommandProcessor::SupportsHostRenderTargetFeedback() const {
   // spirv2air reads input attachments as color attachments in raster order
-  // group 0. Metal Shader Converter's DXIL path has no equivalent, and the
-  // fetch-state function constants specialize the shader's blending.
-  return device_ && cvars::metal_shader_compiler == "spirv2air" &&
-         device_->supportsFamily(MTL::GPUFamilyApple4) &&
+  // group 0, and fetch-state function constants specialize the blending.
+  return device_ && device_->supportsFamily(MTL::GPUFamilyApple4) &&
          device_->areRasterOrderGroupsSupported();
 }
 
@@ -3103,11 +3084,10 @@ bool MetalCommandProcessor::InitializeShaderTranslation() {
   // every texture size), so the host division gives the shader's bits.
   spirv_features.texture_coord_epsilon_constants = true;
   spirv_features.predecoded_texture_fetch_lod_gradient = true;
-  spirv_features.optimize_finite_multiplication =
-      cvars::metal_finite_multiply && SpirvToDxilCompiler::SupportsMscFmad32();
+  spirv_features.optimize_finite_multiplication = cvars::metal_finite_multiply;
   spirv_features.finite_multiply_one_sided = true;
   spirv_features.finite_multiply_control_flow_join = true;
-  spirv_features.fused_float32_fma = SpirvToDxilCompiler::SupportsMscFmad32();
+  spirv_features.fused_float32_fma = true;
   // Not using fragment shader interlock — we use host render targets.
   spirv_features.fragment_shader_sample_interlock = false;
   // A live primitive-specific input prevents adjacent primitives from sharing
@@ -6721,37 +6701,18 @@ bool MetalCommandProcessor::IssueDrawDxil(
           NS::UInteger(0));
     });
   } else {
-    // The converter's draw helpers also push the draw arguments the compiled
-    // vertex function reads for SV_VertexID and SV_InstanceID.
     if (draw_index_buffer.indexed) {
       UseRenderEncoderResource(draw_index_buffer.buffer,
                                MTL::ResourceUsageRead);
     }
-    // A vertex function that declares neither bind point gets the same draw
-    // without the two pushes.
-    const bool push_draw_arguments =
-        (vertex_buffer_mask &
-         ((uint32_t(1) << kIRArgumentBufferDrawArgumentsBindPoint) |
-          (uint32_t(1) << kIRArgumentBufferUniformsBindPoint))) != 0;
     DrawStripMergeBands([&]() {
       if (draw_index_buffer.indexed) {
-        if (push_draw_arguments) {
-          IRRuntimeDrawIndexedPrimitives(
-              current_render_encoder_, draw_index_buffer.primitive_type,
-              draw_index_buffer.index_count, draw_index_buffer.index_type,
-              draw_index_buffer.buffer, draw_index_buffer.offset);
-        } else {
-          current_render_encoder_->drawIndexedPrimitives(
-              draw_index_buffer.primitive_type,
-              NS::UInteger(draw_index_buffer.index_count),
-              draw_index_buffer.index_type, draw_index_buffer.buffer,
-              NS::UInteger(draw_index_buffer.offset), NS::UInteger(1),
-              NS::Integer(0), NS::UInteger(0));
-        }
-      } else if (push_draw_arguments) {
-        IRRuntimeDrawPrimitives(current_render_encoder_,
-                                draw_index_buffer.primitive_type, uint64_t(0),
-                                uint64_t(draw_index_buffer.index_count));
+        current_render_encoder_->drawIndexedPrimitives(
+            draw_index_buffer.primitive_type,
+            NS::UInteger(draw_index_buffer.index_count),
+            draw_index_buffer.index_type, draw_index_buffer.buffer,
+            NS::UInteger(draw_index_buffer.offset), NS::UInteger(1),
+            NS::Integer(0), NS::UInteger(0));
       } else {
         current_render_encoder_->drawPrimitives(
             draw_index_buffer.primitive_type, NS::UInteger(0),

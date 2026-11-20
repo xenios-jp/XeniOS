@@ -1,7 +1,6 @@
 add_library(xenia-gpu-metal STATIC
   dxil_shader.cc
   dxil_shader.h
-  ir_runtime_impl.cc
   metal_buffer_hazards.cc
   metal_buffer_hazards.h
   metal_command_processor.cc
@@ -18,8 +17,6 @@ add_library(xenia-gpu-metal STATIC
   metal_primitive_processor.h
   metal_render_target_cache.cc
   metal_render_target_cache.h
-  metal_shader_converter.cc
-  metal_shader_converter.h
   metal_shader_library_cache.cc
   metal_shader_library_cache.h
   metal_shared_memory.cc
@@ -56,7 +53,6 @@ target_link_libraries(xenia-gpu-metal PUBLIC
   xenia-gpu
   xenia-ui-metal
   spirv-cross
-  xenia-third-party-metal-shader-converter
   "-framework Foundation"
   "-framework Metal"
   "-framework MetalKit"
@@ -132,14 +128,5 @@ if(XE_PLATFORM_IOS AND XENIA_BUILD_IOS_TRACE_APP)
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.xenios.tracebench"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
   )
-  if(TARGET xenia-third-party-metal-shader-converter)
-    add_custom_command(TARGET xenia-gpu-metal-trace-app POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E make_directory
-              "$<TARGET_BUNDLE_DIR:xenia-gpu-metal-trace-app>/Frameworks"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-              "$<TARGET_FILE:xenia-third-party-metal-shader-converter>"
-              "$<TARGET_BUNDLE_DIR:xenia-gpu-metal-trace-app>/Frameworks/"
-      VERBATIM)
-  endif()
   xe_target_defaults(xenia-gpu-metal-trace-app)
 endif()

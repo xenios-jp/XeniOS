@@ -215,26 +215,13 @@ jobs:
         if: steps.cache-slang.outputs.cache-hit != 'true'
         run: ./xenia-build.py slang
 
-      - name: Cache Metal Shader Converter
-        id: cache-msc
-        uses: actions/cache@v5
-        with:
-          path: .metal-shader-converter
-          # Keep in sync with MSC_VERSION in xenia-build.py.
-          key: ${{ runner.os }}-metal-shader-converter-4.0-beta2
-
-      - name: Download Metal Shader Converter
-        if: steps.cache-msc.outputs.cache-hit != 'true'
-        run: ./xenia-build.py msc
-
       - name: Setup
         run: |
-          # Update submodules. Skip DirectXShaderCompiler (the DXIL that the
-          # Metal backend converts comes from mesa's spirv_to_dxil, not
-          # dxilconv).
+          # Update submodules. Skip DirectXShaderCompiler and mesa (only used
+          # by the Windows D3D12 backend).
           git submodule update --init --depth=1 -j$(sysctl -n hw.ncpu) \
             $(grep -oE 'path = .+' .gitmodules | sed 's/path = //' \
-              | grep -v 'DirectXShaderCompiler')
+              | grep -Ev '^(third_party/DirectXShaderCompiler|third_party/mesa)$')
 
           # wxWidgets has nested submodules (pcre, libpng, ...) needed when
           # building from vendored source.
@@ -243,16 +230,6 @@ jobs:
 
           # Fetch data repos (game-patches)
           ./xenia-build.py fetchdata
-
-      # The runner's default python3 is Homebrew's and refuses pip installs
-      # (PEP 668). mesa imports mako from whichever python3 it finds on PATH.
-      - name: Set up Python for Meson
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-
-      - name: Install Meson for spirv_to_dxil
-        run: python3 -m pip install --upgrade meson mako pyyaml packaging
 
       - name: Install Metal Toolchain
         # Apple's MobileAsset catalog fetch is flaky; retry with backoff. A

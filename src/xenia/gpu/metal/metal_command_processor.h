@@ -43,7 +43,6 @@
 #include "xenia/gpu/metal/metal_pipeline_archive.h"
 #include "xenia/gpu/metal/metal_primitive_processor.h"
 #include "xenia/gpu/metal/metal_render_target_cache.h"
-#include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/gpu/metal/metal_shader_library_cache.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
@@ -285,9 +284,6 @@ class MetalCommandProcessor : public CommandProcessor,
   bool AcquireSpirvArgumentBufferSlice(uint32_t bytes, uint32_t alignment,
                                        MTL::Buffer** buffer_out,
                                        NS::UInteger* offset_out);
-  const MetalShaderConverter& metal_shader_converter() const {
-    return metal_shader_converter_;
-  }
   MTL::Buffer* null_buffer() const { return null_buffer_; }
   MTL::SamplerState* null_sampler() const { return null_sampler_; }
 
@@ -967,8 +963,6 @@ class MetalCommandProcessor : public CommandProcessor,
   // The last entry each stage loaded through (vertex, pixel).
   std::array<std::pair<uint32_t, AddressShaderLoad*>, 2>
       last_address_shader_loads_{};
-  // Owns the root signature the DXIL shaders are compiled against.
-  MetalShaderConverter metal_shader_converter_;
   MetalDxilBinder dxil_binder_;
   MTL::ComputePipelineState* tess_prep_pipeline_ = nullptr;
   std::vector<TessPrepDispatch> tess_prep_ahead_;

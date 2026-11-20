@@ -164,33 +164,6 @@ In addition, you will need up to date Vulkan libraries and drivers for your hard
   point at an existing install instead, set the `SLANGC_PATH` environment
   variable. See `.github/workflows/build.yml` for the version CI pins and how
   it caches the download.
-* Mesa's `spirv_to_dxil` is built from the `third_party/mesa` submodule using
-  Meson. Its codegen requires Python 3.10+ and Apple ships 3.9, so install a
-  newer one and put Meson and the modules Mesa imports in it:
-    ```sh
-    curl -O https://www.python.org/ftp/python/3.14.6/python-3.14.6-macos11.pkg
-    sudo installer -pkg python-3.14.6-macos11.pkg -target /
-    "/Applications/Python 3.14/Install Certificates.command"
-    python3.14 -m pip install meson mako pyyaml packaging
-    ```
-  The installer puts `python3.14` in `/usr/local/bin`, where Meson finds it. It
-  also becomes the default `python3`, and it ships no CA bundle until that
-  certificates step runs, which `xb`'s downloads need.
-  Initialize the submodule along with the others (`git submodule update --init
-  third_party/mesa`).
-* Apple's Metal Shader Converter turns that DXIL into the AIR the Metal backend
-  runs. Its headers are vendored in `third_party/metal-shader-converter`, the
-  dylib is downloaded, as the cmake configure step fails without it:
-    ```sh
-    ./xenia-build.py msc
-    ```
-  Apple's own download needs a developer login, so the dylib is mirrored as a
-  release asset and verified against Apple's code signature after download. To
-  move to a newer release, install the [Metal Developer
-  Tools](https://developer.apple.com/metal/), compare its version against
-  `MSC_VERSION` in `xenia-build.py`, then re-mirror
-  `/usr/local/lib/libmetalirconverter.dylib` and refresh the headers with
-  `rsync -a /usr/local/include/metal_irconverter* third_party/metal-shader-converter/include/`.
 
 ```sh
 git clone https://github.com/has207/xenia-edge.git

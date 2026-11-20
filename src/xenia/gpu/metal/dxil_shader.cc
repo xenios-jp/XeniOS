@@ -14,15 +14,10 @@
 #include <string>
 #include <vector>
 
-#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
-#include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/gpu/spirv_shader_translator.h"
-#include "xenia/gpu/spirv_to_dxil_compiler.h"
 
 #include "spirv2air.h"
-
-DECLARE_string(metal_shader_compiler);
 
 namespace xe {
 namespace gpu {
@@ -50,45 +45,15 @@ DxilShader::DxilTranslation::~DxilTranslation() {
   }
 }
 
-bool DxilShader::DxilTranslation::CompileToAirWithConverter(
-    const MetalShaderConverter& converter,
-    MetalShaderConversionResult& conversion) const {
-  if (!converter.is_available()) {
-    XELOGE("DxilShader: Metal Shader Converter is unavailable");
-    return false;
-  }
+bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
+    std::vector<uint8_t>& metallib_out,
+    std::string& entry_point_name_out) const {
   const std::vector<uint8_t>& spirv = translated_binary();
-  bool is_vertex = shader().type() == xenos::ShaderType::kVertex;
-  // Bindless matches the D3D12 guest path: every descriptor set resource
-  // becomes a heap index the shader reads from its per-stage index buffer.
-  std::vector<uint8_t> dxil = SpirvToDxilCompiler::Translate(
-      reinterpret_cast<const uint32_t*>(spirv.data()),
-      spirv.size() / sizeof(uint32_t),
-      is_vertex ? SpirvToDxilCompiler::Stage::kVertex
-                : SpirvToDxilCompiler::Stage::kPixel,
-      /*lower_to_bindless=*/true, /*input_clip_size=*/0,
-      /*preserve_msc_fmad32=*/SpirvToDxilCompiler::SupportsMscFmad32());
-  if (dxil.empty()) {
-    XELOGE("DxilShader: SPIR-V to DXIL failed for shader {:016X}",
+  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
+    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
            shader().ucode_data_hash());
     return false;
   }
-
-  conversion = converter.Convert(
-      is_vertex ? MetalShaderStage::kVertex : MetalShaderStage::kFragment,
-      dxil);
-  if (!conversion.success) {
-    XELOGE("DxilShader: DXIL to AIR failed for shader {:016X}: {}",
-           shader().ucode_data_hash(), conversion.error_message);
-    return false;
-  }
-
-  return true;
-}
-
-bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
-    MetalShaderConversionResult& conversion) const {
-  const std::vector<uint8_t>& spirv = translated_binary();
   spirv2air::Options options;
   options.halfPackingRounding = spirv2air::HalfPackingRounding::TowardZero;
   options.graphics.functionConstantSet =
@@ -108,7 +73,7 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
         spirv2air_reject_count.fetch_add(1, std::memory_order_relaxed) + 1;
     XELOGW(
         "DxilShader: spirv2air rejected {} shader {:016X} modification "
-        "{:016X} (fallback #{}: {})",
+        "{:016X} (reject #{}: {})",
         IsTessellationDomain()
             ? "domain"
             : (shader().type() == xenos::ShaderType::kVertex ? "vertex"
@@ -116,23 +81,19 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
         shader().ucode_data_hash(), modification(), reject_index, result.error);
     return false;
   }
-  conversion.success = true;
-  conversion.metallib = std::move(result.metallib);
-  conversion.entry_point_name = "main";
+  metallib_out = std::move(result.metallib);
+  entry_point_name_out = "main";
   return true;
 }
 
-// The converter bind points a function spirv2air compiles from |spirv| can
-// declare: always the top-level argument buffer, the descriptor heap only if
-// the module has an image type and the sampler heap only if it has a sampler
-// type (spirv2air declares them for variables of those types), and never the
-// draw arguments or uniforms. Every bit is set if the module can't be walked.
+// The buffer bind points a function spirv2air compiles from |spirv| can
+// declare: always the top-level argument buffer (2), the descriptor heap (0)
+// only if the module has an image type, and the sampler heap (1) only if it
+// has a sampler type. Every bit is set if the module can't be walked.
 static uint32_t Spirv2airBufferMask(const std::vector<uint8_t>& spirv) {
   constexpr uint32_t kOpTypeImage = 25;
   constexpr uint32_t kOpTypeSampler = 26;
   const size_t word_count = spirv.size() / sizeof(uint32_t);
-  // kIRDescriptorHeapBindPoint, kIRSamplerHeapBindPoint and
-  // kIRArgumentBufferBindPoint, spirv2air's defaults.
   constexpr uint32_t kDescriptorHeapBuffer = 0;
   constexpr uint32_t kSamplerHeapBuffer = 1;
   constexpr uint32_t kArgumentBuffer = 2;
@@ -159,8 +120,7 @@ bool DxilShader::DxilTranslation::CompileWithFetchState(
     const uint32_t* states, uint32_t count, std::vector<uint8_t>& metallib_out,
     std::string& entry_point_name_out) const {
   const std::vector<uint8_t>& spirv = translated_binary();
-  if (cvars::metal_shader_compiler == "msc" || spirv.empty() ||
-      (spirv.size() % sizeof(uint32_t)) != 0) {
+  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
     return false;
   }
   spirv2air::Options options;
@@ -219,25 +179,6 @@ bool DxilShader::DxilTranslation::LoadMetallib(
   return true;
 }
 
-bool DxilShader::DxilTranslation::ConvertToAir(
-    const MetalShaderConverter& converter,
-    MetalShaderConversionResult& conversion, bool& native_out) const {
-  const std::vector<uint8_t>& spirv = translated_binary();
-  if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
-    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
-           shader().ucode_data_hash());
-    return false;
-  }
-  // Unsupported guest shaders retain the converter path, except the ones
-  // reading render targets and tessellation domain shaders, which only
-  // spirv2air compiles directly.
-  const bool domain = IsTessellationDomain();
-  native_out = (cvars::metal_shader_compiler != "msc" || domain) &&
-               CompileToAirWithSpirv2air(conversion);
-  return native_out || (!ReadsRenderTargets() && !domain &&
-                        CompileToAirWithConverter(converter, conversion));
-}
-
 void DxilShader::DxilTranslation::SetBakesOnly(uint32_t used_buffer_mask) {
   used_buffer_mask_ = used_buffer_mask;
   // What CompileWithFetchState names the function of each of its libraries.
@@ -250,33 +191,27 @@ uint32_t DxilShader::DxilTranslation::GetSpirv2airBufferMask() const {
 }
 
 MTL::Library* DxilShader::DxilTranslation::NewGenericLibrary(
-    MTL::Device* device, const MetalShaderConverter& converter,
-    std::string& entry_point_name_out) const {
-  MetalShaderConversionResult conversion;
-  bool native_compiled;
-  if (!device || !ConvertToAir(converter, conversion, native_compiled)) {
+    MTL::Device* device, std::string& entry_point_name_out) const {
+  std::vector<uint8_t> metallib;
+  std::string entry_point_name;
+  if (!device || !CompileToAirWithSpirv2air(metallib, entry_point_name)) {
     return nullptr;
   }
   NS::Error* error = nullptr;
-  dispatch_data_t metallib_data = dispatch_data_create(
-      conversion.metallib.data(), conversion.metallib.size(), nullptr,
-      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  dispatch_data_t metallib_data =
+      dispatch_data_create(metallib.data(), metallib.size(), nullptr,
+                           DISPATCH_DATA_DESTRUCTOR_DEFAULT);
   MTL::Library* library = device->newLibrary(metallib_data, &error);
   dispatch_release(metallib_data);
   if (!library) {
     return nullptr;
   }
-  if (!native_compiled) {
-    // The converter's function may declare any of its bind points.
-    used_buffer_mask_ = ~uint32_t(0);
-  }
-  entry_point_name_out = std::move(conversion.entry_point_name);
+  entry_point_name_out = std::move(entry_point_name);
   return library;
 }
 
 bool DxilShader::DxilTranslation::CompileToAir(
-    MTL::Device* device, const MetalShaderConverter& converter,
-    std::vector<uint8_t>* metallib_out) {
+    MTL::Device* device, std::vector<uint8_t>* metallib_out) {
   if (metal_function_) {
     return true;
   }
@@ -285,21 +220,18 @@ bool DxilShader::DxilTranslation::CompileToAir(
   }
 
   const std::vector<uint8_t>& spirv = translated_binary();
-  bool is_vertex = shader().type() == xenos::ShaderType::kVertex;
-  MetalShaderConversionResult conversion;
-  bool native_compiled;
-  if (!ConvertToAir(converter, conversion, native_compiled)) {
+  std::vector<uint8_t> metallib;
+  std::string entry_point_name_str;
+  if (!CompileToAirWithSpirv2air(metallib, entry_point_name_str)) {
     return false;
   }
-  const char* compiler_name = native_compiled ? "spirv2air" : "msc";
-  used_buffer_mask_ =
-      native_compiled ? Spirv2airBufferMask(spirv) : ~uint32_t(0);
+  used_buffer_mask_ = Spirv2airBufferMask(spirv);
 
-  const size_t metallib_size = conversion.metallib.size();
+  const size_t metallib_size = metallib.size();
   NS::Error* error = nullptr;
-  dispatch_data_t metallib_data = dispatch_data_create(
-      conversion.metallib.data(), conversion.metallib.size(), nullptr,
-      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  dispatch_data_t metallib_data =
+      dispatch_data_create(metallib.data(), metallib.size(), nullptr,
+                           DISPATCH_DATA_DESTRUCTOR_DEFAULT);
   metal_library_ = device->newLibrary(metallib_data, &error);
   dispatch_release(metallib_data);
   if (!metal_library_) {
@@ -311,23 +243,27 @@ bool DxilShader::DxilTranslation::CompileToAir(
   }
 
   NS::String* entry_point_name = NS::String::string(
-      conversion.entry_point_name.c_str(), NS::UTF8StringEncoding);
+      entry_point_name_str.c_str(), NS::UTF8StringEncoding);
   metal_function_ = metal_library_->newFunction(entry_point_name);
   if (!metal_function_) {
     XELOGE("DxilShader: shader {:016X} has no '{}' function in its library",
-           shader().ucode_data_hash(), conversion.entry_point_name);
+           shader().ucode_data_hash(), entry_point_name_str);
     metal_library_->release();
     metal_library_ = nullptr;
     return false;
   }
-  entry_point_name_ = std::move(conversion.entry_point_name);
+  entry_point_name_ = std::move(entry_point_name_str);
   if (metallib_out) {
-    *metallib_out = std::move(conversion.metallib);
+    *metallib_out = std::move(metallib);
   }
 
-  XELOGD("DxilShader: compiled {} shader {:016X} with {} ({}B SPIR-V, {}B AIR)",
-         is_vertex ? "vertex" : "pixel", shader().ucode_data_hash(),
-         compiler_name, spirv.size(), metallib_size);
+  XELOGD("DxilShader: compiled {} shader {:016X} with spirv2air ({}B SPIR-V, "
+         "{}B AIR)",
+         IsTessellationDomain()
+             ? "domain"
+             : (shader().type() == xenos::ShaderType::kVertex ? "vertex"
+                                                              : "pixel"),
+         shader().ucode_data_hash(), spirv.size(), metallib_size);
   return true;
 }
 

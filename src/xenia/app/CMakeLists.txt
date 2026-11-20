@@ -188,22 +188,7 @@ elseif(APPLE)
   target_link_options(xenia-app PRIVATE
     "-Wl,-rpath,@executable_path/../Frameworks"
     "-Wl,-rpath,@loader_path/../Frameworks")
-  # Linking the imported Metal Shader Converter otherwise bakes its source-tree
-  # directory in as a third rpath, shipping a machine-specific path. The two
-  # rpaths above are explicit link options, so dropping the generated ones
-  # leaves only them.
   set_target_properties(xenia-app PROPERTIES SKIP_BUILD_RPATH TRUE)
-
-  # The Metal Shader Converter dylib has an @rpath install name, so it has to
-  # sit in Frameworks for the rpaths above to find it. Copied before the
-  # codesign step below, which seals whatever is in the bundle.
-  add_custom_command(TARGET xenia-app POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "$<TARGET_BUNDLE_CONTENT_DIR:xenia-app>/Frameworks"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "$<TARGET_FILE:xenia-third-party-metal-shader-converter>"
-            "$<TARGET_BUNDLE_CONTENT_DIR:xenia-app>/Frameworks/"
-    VERBATIM)
 endif()
 
 xe_target_defaults(xenia-app)
