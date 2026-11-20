@@ -63,10 +63,6 @@ IRShaderStage ToIRShaderStage(MetalShaderStage stage) {
   switch (stage) {
     case MetalShaderStage::kVertex:
       return IRShaderStageVertex;
-    case MetalShaderStage::kHull:
-      return IRShaderStageHull;
-    case MetalShaderStage::kDomain:
-      return IRShaderStageDomain;
     case MetalShaderStage::kFragment:
       return IRShaderStageFragment;
     default:
@@ -78,74 +74,10 @@ const char* StageName(MetalShaderStage stage) {
   switch (stage) {
     case MetalShaderStage::kVertex:
       return "vertex";
-    case MetalShaderStage::kHull:
-      return "hull";
-    case MetalShaderStage::kDomain:
-      return "domain";
     case MetalShaderStage::kFragment:
       return "fragment";
     default:
       return "compute";
-  }
-}
-
-// MSC only fills the info block of the stage it compiled.
-void CopyStageReflection(const IRShaderReflection* shader_reflection,
-                         IRShaderStage ir_stage,
-                         MetalShaderReflection& reflection_out) {
-  switch (ir_stage) {
-    case IRShaderStageVertex: {
-      IRVersionedVSInfo info = {};
-      if (IRShaderReflectionCopyVertexInfo(shader_reflection,
-                                           IRReflectionVersion_1_0, &info)) {
-        reflection_out.vertex_output_size_in_bytes =
-            info.info_1_0.vertex_output_size_in_bytes;
-        IRShaderReflectionReleaseVertexInfo(&info);
-      }
-      break;
-    }
-    case IRShaderStageHull: {
-      IRVersionedHSInfo info = {};
-      if (IRShaderReflectionCopyHullInfo(shader_reflection,
-                                         IRReflectionVersion_1_0, &info)) {
-        reflection_out.hs_max_patches_per_object_threadgroup =
-            info.info_1_0.max_patches_per_object_threadgroup;
-        reflection_out.hs_max_object_threads_per_patch =
-            info.info_1_0.max_object_threads_per_patch;
-        reflection_out.hs_input_control_point_count =
-            info.info_1_0.input_control_point_count;
-        reflection_out.hs_output_control_point_count =
-            info.info_1_0.output_control_point_count;
-        reflection_out.hs_output_control_point_size =
-            info.info_1_0.output_control_point_size;
-        reflection_out.hs_patch_constants_size =
-            info.info_1_0.patch_constants_size;
-        reflection_out.hs_tessellator_output_primitive =
-            uint32_t(info.info_1_0.tessellator_output_primitive);
-        reflection_out.hs_max_tessellation_factor =
-            info.info_1_0.max_tessellation_factor;
-        IRShaderReflectionReleaseHullInfo(&info);
-      }
-      break;
-    }
-    case IRShaderStageDomain: {
-      IRVersionedDSInfo info = {};
-      if (IRShaderReflectionCopyDomainInfo(shader_reflection,
-                                           IRReflectionVersion_1_0, &info)) {
-        reflection_out.ds_max_input_prims_per_mesh_threadgroup =
-            info.info_1_0.max_input_prims_per_mesh_threadgroup;
-        reflection_out.ds_input_control_point_count =
-            info.info_1_0.input_control_point_count;
-        reflection_out.ds_input_control_point_size =
-            info.info_1_0.input_control_point_size;
-        reflection_out.ds_patch_constants_size =
-            info.info_1_0.patch_constants_size;
-        IRShaderReflectionReleaseDomainInfo(&info);
-      }
-      break;
-    }
-    default:
-      break;
   }
 }
 
@@ -464,10 +396,9 @@ bool MetalShaderConverter::QueryRootParameterOffsets() {
 }
 
 MetalShaderConversionResult MetalShaderConverter::Convert(
-    MetalShaderStage stage, const std::vector<uint8_t>& dxil,
-    bool tessellation_emulation) const {
+    MetalShaderStage stage, const std::vector<uint8_t>& dxil) const {
   return ConvertWithRootSignature(stage, dxil, root_signature_,
-                                  kCompatibilityFlags, tessellation_emulation);
+                                  kCompatibilityFlags);
 }
 
 IRRootSignature* MetalShaderConverter::CreateInternalGraphicsRootSignature()
@@ -576,7 +507,7 @@ MetalShaderConversionResult MetalShaderConverter::ConvertInternalGraphics(
   // No compatibility flags, for the same reason internal compute uses none.
   return ConvertWithRootSignature(stage, dxil,
                                   internal_graphics_root_signature_,
-                                  IRCompatibilityFlagNone, false);
+                                  IRCompatibilityFlagNone);
 }
 
 MetalShaderConversionResult MetalShaderConverter::ConvertInternalCompute(
@@ -586,13 +517,12 @@ MetalShaderConversionResult MetalShaderConverter::ConvertInternalCompute(
   // textures, which the render target cache does not bind.
   return ConvertWithRootSignature(MetalShaderStage::kCompute, dxil,
                                   internal_compute_root_signature_,
-                                  IRCompatibilityFlagNone, false);
+                                  IRCompatibilityFlagNone);
 }
 
 MetalShaderConversionResult MetalShaderConverter::ConvertWithRootSignature(
     MetalShaderStage stage, const std::vector<uint8_t>& dxil,
-    IRRootSignature* root_signature, uint32_t compatibility_flags,
-    bool tessellation_emulation) const {
+    IRRootSignature* root_signature, uint32_t compatibility_flags) const {
   MetalShaderConversionResult result;
   if (!is_available_ || !root_signature) {
     result.error_message = "MetalShaderConverter is not initialized";
@@ -620,24 +550,13 @@ MetalShaderConversionResult MetalShaderConverter::ConvertWithRootSignature(
                                   IRCompatibilityFlags(compatibility_flags));
   IRCompilerSetGlobalRootSignature(compiler, root_signature);
   if (stage == MetalShaderStage::kFragment ||
-      (stage == MetalShaderStage::kVertex && !tessellation_emulation)) {
+      stage == MetalShaderStage::kVertex) {
     IRCompilerSetFunctionConstantResourceSpace(
         compiler, SpirvShaderTranslator::kDescriptorSetFetchState);
   }
   // Mesa embeds no root signature, but the flag also keeps MSC from inferring
   // one and disagreeing with ours.
   IRCompilerIgnoreRootSignature(compiler, true);
-  bool synthesize_stage_in =
-      tessellation_emulation && stage == MetalShaderStage::kVertex;
-  if (tessellation_emulation) {
-    IRCompilerEnableGeometryAndTessellationEmulation(compiler, true);
-  }
-  if (synthesize_stage_in) {
-    // The tessellation emulation pipeline links a separate stage-in function
-    // into the object function.
-    IRCompilerSetStageInGenerationMode(
-        compiler, IRStageInCodeGenerationModeUseSeparateStageInFunction);
-  }
 
   IRError* error = nullptr;
   IRObject* metal_object =
@@ -679,25 +598,6 @@ MetalShaderConversionResult MetalShaderConverter::ConvertWithRootSignature(
       if (entry_point_name) {
         result.entry_point_name = entry_point_name;
       }
-      CopyStageReflection(reflection, ir_stage, result.reflection);
-      if (synthesize_stage_in) {
-        IRVersionedInputLayoutDescriptor input_layout = {};
-        input_layout.version = IRInputLayoutDescriptorVersion_1;
-        input_layout.desc_1_0.numElements = 0;
-        IRMetalLibBinary* stage_in_metallib = IRMetalLibBinaryCreate();
-        if (stage_in_metallib) {
-          if (IRMetalLibSynthesizeStageInFunction(
-                  compiler, reflection, &input_layout, stage_in_metallib)) {
-            size_t size = IRMetalLibGetBytecodeSize(stage_in_metallib);
-            if (size) {
-              result.stage_in_metallib.resize(size);
-              IRMetalLibGetBytecode(stage_in_metallib,
-                                    result.stage_in_metallib.data());
-            }
-          }
-          IRMetalLibBinaryDestroy(stage_in_metallib);
-        }
-      }
     }
     IRShaderReflectionDestroy(reflection);
   }
@@ -714,10 +614,6 @@ MetalShaderConversionResult MetalShaderConverter::ConvertWithRootSignature(
   if (result.entry_point_name.empty()) {
     result.error_message = std::string("MSC reported no ") + StageName(stage) +
                            " entry point name";
-    return result;
-  }
-  if (synthesize_stage_in && result.stage_in_metallib.empty()) {
-    result.error_message = "MSC could not synthesize the stage-in function";
     return result;
   }
 

@@ -106,6 +106,14 @@ class DxilShader : public SpirvShader {
              SpirvShaderTranslator::Modification(modification())
                  .pixel.host_render_target_feedback;
     }
+    // A tessellation evaluation (domain) shader, compiled directly to a Metal
+    // post-tessellation vertex function by spirv2air.
+    bool IsTessellationDomain() const {
+      return shader().type() == xenos::ShaderType::kVertex &&
+             Shader::IsHostVertexShaderTypeDomain(
+                 SpirvShaderTranslator::Modification(modification())
+                     .vertex.host_vertex_shader_type);
+    }
     // SPIR-V -> AIR directly (spirv2air). False if this build lacks spirv2air
     // or the shader uses something it doesn't support (logged).
     bool CompileToAirWithSpirv2air(

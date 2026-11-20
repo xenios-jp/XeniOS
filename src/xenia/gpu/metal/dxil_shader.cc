@@ -109,7 +109,10 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
     XELOGW(
         "DxilShader: spirv2air rejected {} shader {:016X} modification "
         "{:016X} (fallback #{}: {})",
-        shader().type() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
+        IsTessellationDomain()
+            ? "domain"
+            : (shader().type() == xenos::ShaderType::kVertex ? "vertex"
+                                                             : "pixel"),
         shader().ucode_data_hash(), modification(), reject_index, result.error);
     return false;
   }
@@ -226,10 +229,12 @@ bool DxilShader::DxilTranslation::ConvertToAir(
     return false;
   }
   // Unsupported guest shaders retain the converter path, except the ones
-  // reading render targets, which it can't express.
-  native_out = cvars::metal_shader_compiler != "msc" &&
+  // reading render targets and tessellation domain shaders, which only
+  // spirv2air compiles directly.
+  const bool domain = IsTessellationDomain();
+  native_out = (cvars::metal_shader_compiler != "msc" || domain) &&
                CompileToAirWithSpirv2air(conversion);
-  return native_out || (!ReadsRenderTargets() &&
+  return native_out || (!ReadsRenderTargets() && !domain &&
                         CompileToAirWithConverter(converter, conversion));
 }
 

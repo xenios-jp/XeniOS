@@ -159,6 +159,7 @@ class MetalCommandProcessor : public CommandProcessor,
     kRenderTargetOther,
     kSubmissionPassLimit,
     kSubmissionAfterDrain,
+    kTessellationPrep,
     kCount,
   };
   // What the CPU waited for the GPU for, to attribute the per-frame wait time.
@@ -720,65 +721,46 @@ class MetalCommandProcessor : public CommandProcessor,
       ShaderCompileStatus* compile_status_out,
       std::shared_ptr<const Shader::Specialization> specialization = {});
 
-  // One MSC stage of a tessellated draw.
-  struct DxilTessellationStage {
-    MTL::Library* library = nullptr;
-    MTL::Function* function = nullptr;
-    std::string function_name;
-    MetalShaderReflection reflection;
+  // Per-draw buffers prepared for native Metal drawPatches + spirv2air
+  // TessellationEvaluation (buffer(6) control points and half-float factors).
+  struct NativeTessellationDraw {
+    uint32_t patch_count = 0;
+    uint32_t cp_per_patch = 0;
+    MTL::Buffer* cp_buffer = nullptr;
+    NS::UInteger cp_offset = 0;
+    MTL::Buffer* factor_buffer = nullptr;
+    NS::UInteger factor_offset = 0;
   };
-  // The host vertex and hull shaders linked with one guest domain shader.
-  // Tessellation emulation links all three together, so they are cached as a
-  // unit rather than per stage.
-  struct DxilTessellationShaders {
-    DxilTessellationShaders() = default;
-    DxilTessellationShaders(const DxilTessellationShaders&) = delete;
-    DxilTessellationShaders& operator=(const DxilTessellationShaders&) = delete;
-    ~DxilTessellationShaders() {
-      for (DxilTessellationStage* stage : {&vertex, &hull, &domain}) {
-        if (stage->function) {
-          stage->function->release();
-        }
-        if (stage->library) {
-          stage->library->release();
-        }
-      }
-      if (stage_in_library) {
-        stage_in_library->release();
-      }
-    }
-
-    // The synthesized stage-in function linked into the vertex stage.
-    MTL::Library* stage_in_library = nullptr;
-    DxilTessellationStage vertex;
-    DxilTessellationStage hull;
-    DxilTessellationStage domain;
+  struct TessPrepConstants {
+    uint32_t count = 0;
+    uint32_t mode_flags = 0;
+    uint32_t index_offset = 0;
+    uint32_t min_index = 0;
+    uint32_t max_index = 0;
+    uint32_t src_byte_offset = 0;
+    float factor_min = 1.0f;
+    float factor_max = 1.0f;
   };
-  // The three linked stages for one guest domain shader. A compile thread
-  // builds them, so this reports kPending until it lands.
-  DxilTessellationShaders* GetDxilTessellationShaders(
-      DxilShader& domain_shader, uint64_t domain_modification,
-      xenos::TessellationMode tessellation_mode,
-      Shader::HostVertexShaderType host_vertex_shader_type, bool allow_async,
-      ShaderCompileStatus* compile_status_out);
-  MTL::RenderPipelineState* GetOrCreateDxilTessellationPipelineState(
-      const DxilTessellationShaders& shaders,
-      const Shader::Translation* domain_translation,
-      xenos::TessellationMode tessellation_mode,
-      Shader::HostVertexShaderType host_vertex_shader_type,
-      DxilShader::DxilTranslation* pixel_translation, const RegisterFile& regs,
-      PipelineCompileStatus* compile_status_out);
-  MTL::RenderPipelineState* CreateDxilTessellationPipelineState(
-      const PipelineCompileRequest& request, std::string* error_out);
-  // Builds one linked stage set. Runs on a compile thread, from the domain
-  // SPIR-V the draw thread already produced.
-  bool BuildDxilTessellationShaders(
-      const std::vector<uint8_t>& domain_spirv, uint64_t domain_ucode_hash,
-      xenos::TessellationMode tessellation_mode,
-      Shader::HostVertexShaderType host_vertex_shader_type,
-      DxilTessellationShaders& shaders_out);
-  // MSC's tessellator lookup tables, allocated once and kept resident.
-  bool EnsureTessellatorTablesBuffer();
+  struct TessPrepDispatch {
+    TessPrepConstants constants;
+    MTL::Buffer* cp_buffer = nullptr;
+    NS::UInteger cp_offset = 0;
+    MTL::Buffer* src_buffer = nullptr;
+    NS::UInteger src_offset = 0;
+    MTL::Buffer* factor_buffer = nullptr;
+    NS::UInteger factor_offset = 0;
+    bool reads_shared_memory = false;
+    uint32_t shared_memory_start = 0;
+    uint32_t shared_memory_length = 0;
+  };
+  bool EnsureTessellationPrepPipeline();
+  bool PrepareNativeTessellationDraw(
+      const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+      const DrawIndexBuffer& draw_index_buffer, const RegisterFile& regs,
+      NativeTessellationDraw& tess_out);
+  void EncodeTessPrepDispatch(MTL::ComputeCommandEncoder* encoder,
+                              const TessPrepDispatch& dispatch);
+  void CommitTessPrepAhead();
 
   // Metal device and command queue (from provider)
   MTL::Device* device_ = nullptr;
@@ -990,12 +972,9 @@ class MetalCommandProcessor : public CommandProcessor,
   // Owns the root signature the DXIL shaders are compiled against.
   MetalShaderConverter metal_shader_converter_;
   MetalDxilBinder dxil_binder_;
-  // Keyed by domain shader hash, modification, tessellation mode and host
-  // vertex shader type, which together pick all three linked stages.
-  std::unordered_map<uint64_t, std::unique_ptr<DxilTessellationShaders>>
-      dxil_tessellation_cache_;
-  MTL::Buffer* tessellator_tables_buffer_ = nullptr;
-  bool mesh_shader_supported_ = false;
+  MTL::ComputePipelineState* tess_prep_pipeline_ = nullptr;
+  std::vector<TessPrepDispatch> tess_prep_ahead_;
+  uint32_t max_tessellation_factor_ = 64;
   // Includes user clip planes and tessellation constants.
   SpirvShaderTranslator::SystemConstants spirv_system_constants_ = {};
   struct ShaderCompileRequest {
@@ -1009,10 +988,11 @@ class MetalCommandProcessor : public CommandProcessor,
   // What a queued pipeline request builds. Each kind reads a different subset
   // of the request, but all of them are captured on the draw thread.
   // Explicit values preserve on-disk .metal.xpso compatibility (1 was the
-  // removed MSL tessellation kind).
+  // removed MSL tessellation kind, 2 was the removed MSC mesh tessellation
+  // kind).
   enum class PipelineKind : uint32_t {
     kRender = 0,
-    kDxilTessellation = 2,
+    kPatchTessellation = 3,
   };
   // Everything that distinguishes one pipeline, in a form that survives to
   // disk. Its hash is the cache key, so replay lands where a draw looks.
@@ -1108,9 +1088,6 @@ class MetalCommandProcessor : public CommandProcessor,
     MTL::Function* vertex_function = nullptr;
     MTL::Function* fragment_function = nullptr;
     uint8_t priority = 0;
-    // kDxilTessellation: owned by dxil_tessellation_cache_, which outlives
-    // every compile thread, as does the fragment library's translation.
-    const DxilTessellationShaders* tessellation_shaders = nullptr;
     MTL::Library* vertex_library = nullptr;
     const DxilShader::DxilTranslation* vertex_translation = nullptr;
     std::string vertex_function_name;
@@ -1119,19 +1096,6 @@ class MetalCommandProcessor : public CommandProcessor,
     MTL::Library* fragment_library = nullptr;
     const DxilShader::DxilTranslation* fragment_translation = nullptr;
     std::string fragment_function_name;
-  };
-  // Building one DxilTessellationShaders set, off the draw thread.
-  struct TessellationShadersCompileRequest {
-    uint64_t key = 0;
-    // Points into the domain Translation, which is immutable once translated.
-    const std::vector<uint8_t>* domain_spirv = nullptr;
-    uint64_t domain_ucode_hash = 0;
-    xenos::TessellationMode tessellation_mode =
-        xenos::TessellationMode::kDiscrete;
-    Shader::HostVertexShaderType host_vertex_shader_type =
-        Shader::HostVertexShaderType::kVertex;
-    // Queued by the shader storage load, so it counts toward its progress.
-    bool storage = false;
   };
   struct ShaderCompileRequestCompare {
     bool operator()(const ShaderCompileRequest& a,
@@ -1213,9 +1177,6 @@ class MetalCommandProcessor : public CommandProcessor,
   std::unordered_set<Shader::Translation*> async_shader_failed_;
   std::unordered_set<uint64_t> async_pipeline_pending_;
   std::unordered_set<uint64_t> async_pipeline_failed_;
-  std::queue<TessellationShadersCompileRequest> async_tess_shaders_queue_;
-  std::unordered_set<uint64_t> async_tess_shaders_pending_;
-  std::unordered_set<uint64_t> async_tess_shaders_failed_;
   std::mutex async_compile_mutex_;
   std::condition_variable async_compile_cv_;
   // Signalled when the last in-flight task finishes, for AwaitAsyncCompiles.
@@ -1258,7 +1219,6 @@ class MetalCommandProcessor : public CommandProcessor,
     kCompileStageBakedCached,     // A baked library from the cache.
     kCompileStagePipelineHit,     // A render pipeline found in the archive.
     kCompileStagePipelineMiss,    // A render pipeline Metal compiled.
-    kCompileStageTessPipeline,    // A tessellation (mesh) pipeline.
     kCompileStageDrawWait,        // The draw thread waiting for a compile.
     kCompileStageCount,
   };

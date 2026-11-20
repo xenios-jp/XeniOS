@@ -53,7 +53,7 @@
 #include "xenia/gpu/metal/metal_compile_activity.h"
 #include "xenia/gpu/metal/metal_graphics_system.h"
 #include "xenia/gpu/texture_info.h"
-#include "xenia/gpu/metal/metal_tessellation_shaders.h"
+#include "xenia/gpu/shaders/bytecode/metal/metal_tessellation_prep_cs.h"
 #include "xenia/gpu/packet_disassembler.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/spirv_to_dxil_compiler.h"
@@ -341,64 +341,46 @@ uint32_t GetColorTargetsWritten(uint32_t normalized_color_mask) {
   return color_targets;
 }
 
-// function_name_suffix is appended to the entry point name of the converted
-// shader, for functions MSC emits under a derived name.
-bool CreateMetalFunction(MTL::Device* device,
-                         const MetalShaderConversionResult& conversion,
-                         MTL::Library*& library_out,
-                         MTL::Function*& function_out,
-                         const char* function_name_suffix = "") {
-  NS::Error* error = nullptr;
-  dispatch_data_t metallib_data = dispatch_data_create(
-      conversion.metallib.data(), conversion.metallib.size(), nullptr,
-      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-  MTL::Library* library = device->newLibrary(metallib_data, &error);
-  dispatch_release(metallib_data);
-  if (!library) {
-    return false;
-  }
-  std::string function_name =
-      conversion.entry_point_name + function_name_suffix;
-  NS::String* name =
-      NS::String::string(function_name.c_str(), NS::UTF8StringEncoding);
-  MTL::Function* function = library->newFunction(name);
-  if (!function) {
-    library->release();
-    return false;
-  }
-  library_out = library;
-  function_out = function;
-  return true;
-}
+// Direct vertex buffer slot where spirv2air reads tessellation control point
+// floats (controlPointBuffer=6, element p * N + k).
+constexpr NS::UInteger kSpirv2airControlPointBufferIndex = 6;
 
-const char* StageNameOf(MetalShaderStage stage) {
-  switch (stage) {
-    case MetalShaderStage::kHull:
-      return "hull";
-    case MetalShaderStage::kDomain:
-      return "domain";
-    default:
-      return "vertex";
+// IEEE 754 binary32 -> binary16 (round to nearest even), preserving NaN/Inf
+// and <= 0 values so Metal culls patches consistently with D3D12/Vulkan.
+uint16_t Float32ToHalf(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  uint32_t sign = (bits >> 16) & 0x8000u;
+  uint32_t exp = (bits >> 23) & 0xFFu;
+  uint32_t mant = bits & 0x7FFFFFu;
+  if (exp == 0xFFu) {
+    return uint16_t(sign | 0x7C00u | (mant ? 0x0200u : 0u));
   }
-}
-
-IRRuntimeTessellationPipelineConfig BuildTessellationPipelineConfig(
-    const MetalShaderReflection& vertex, const MetalShaderReflection& hull,
-    const MetalShaderReflection& domain) {
-  IRRuntimeTessellationPipelineConfig config = {};
-  config.outputPrimitiveType =
-      IRRuntimeTessellatorOutputPrimitive(hull.hs_tessellator_output_primitive);
-  config.vsOutputSizeInBytes = vertex.vertex_output_size_in_bytes;
-  config.gsMaxInputPrimitivesPerMeshThreadgroup =
-      domain.ds_max_input_prims_per_mesh_threadgroup;
-  config.hsMaxPatchesPerObjectThreadgroup =
-      hull.hs_max_patches_per_object_threadgroup;
-  config.hsInputControlPointCount = hull.hs_input_control_point_count;
-  config.hsMaxObjectThreadsPerThreadgroup =
-      hull.hs_max_object_threads_per_patch;
-  config.hsMaxTessellationFactor = hull.hs_max_tessellation_factor;
-  config.gsInstanceCount = 1;
-  return config;
+  int half_exp = int(exp) - 127 + 15;
+  if (half_exp >= 31) {
+    return uint16_t(sign | 0x7C00u);
+  }
+  if (half_exp <= 0) {
+    if (half_exp < -10) {
+      return uint16_t(sign);
+    }
+    mant |= 0x800000u;
+    uint32_t shift = uint32_t(14 - half_exp);
+    uint32_t half_mant = mant >> shift;
+    uint32_t round_bit = 1u << (shift - 1u);
+    uint32_t remainder = mant & ((1u << shift) - 1u);
+    if (remainder > round_bit ||
+        (remainder == round_bit && (half_mant & 1u))) {
+      ++half_mant;
+    }
+    return uint16_t(sign | half_mant);
+  }
+  uint32_t half_val = (uint32_t(half_exp) << 10) | (mant >> 13);
+  uint32_t remainder = mant & 0x1FFFu;
+  if (remainder > 0x1000u || (remainder == 0x1000u && (half_val & 1u))) {
+    ++half_val;
+  }
+  return uint16_t(sign | half_val);
 }
 
 void GetRenderPassSize(MTL::RenderPassDescriptor* pass_descriptor,
@@ -490,6 +472,7 @@ const char* const kCommandBufferKindNames[] = {
     "rt_other",
     "submission_pass_limit",
     "submission_after_drain",
+    "tess_prep",
 };
 static_assert(std::size(kCommandBufferKindNames) ==
                   size_t(MetalCommandProcessor::CommandBufferKind::kCount),
@@ -1006,15 +989,10 @@ void MetalCommandProcessor::ShutdownAsyncCompilation() {
   async_pipeline_queue_.clear();
   async_pipeline_queued_.clear();
   async_pipeline_queue_arrivals_ = 0;
-  while (!async_tess_shaders_queue_.empty()) {
-    async_tess_shaders_queue_.pop();
-  }
   async_shader_pending_.clear();
   async_shader_failed_.clear();
   async_pipeline_pending_.clear();
   async_pipeline_failed_.clear();
-  async_tess_shaders_pending_.clear();
-  async_tess_shaders_failed_.clear();
   async_compile_busy_ = 0;
   async_compile_shutdown_ = false;
   async_compile_base_thread_count_ = 0;
@@ -1232,14 +1210,11 @@ bool MetalCommandProcessor::EnqueuePipelineCompilation(
   if (!cvars::async_shader_compilation || async_compile_threads_.empty()) {
     return false;
   }
-  // A DXIL tessellation pipeline is linked from the MSC stage libraries, not
-  // from Metal functions, so it has no vertex function. Nor has a pipeline of
-  // a vertex shader that bakes only, until GetPipelineVertexFunction makes it.
-  if (request.description.kind == PipelineKind::kDxilTessellation
-          ? request.tessellation_shaders == nullptr
-          : request.vertex_function == nullptr &&
-                !(request.vertex_translation &&
-                  request.vertex_translation->bakes_only())) {
+  // A vertex shader that bakes only has no vertex_function until
+  // GetPipelineVertexFunction makes it.
+  if (request.vertex_function == nullptr &&
+      !(request.vertex_translation &&
+        request.vertex_translation->bakes_only())) {
     return false;
   }
 
@@ -1384,7 +1359,7 @@ void MetalCommandProcessor::LogCompileStages() {
   static constexpr const char* kNames[kCompileStageCount] = {
       "translate", "cached library", "AIR", "specialize", "bake",
       "baked library",
-      "archive pipeline", "compiled pipeline", "tess pipeline", "draw wait"};
+      "archive pipeline", "compiled pipeline", "draw wait"};
   std::string line;
   for (size_t i = 0; i < kCompileStageCount; ++i) {
     CompileStageTotal& total = compile_stage_totals_[i];
@@ -2044,13 +2019,9 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
   if (error_out) {
     error_out->clear();
   }
-  switch (request.description.kind) {
-    case PipelineKind::kDxilTessellation:
-      return CreateDxilTessellationPipelineState(request, error_out);
-    case PipelineKind::kRender:
-      break;
-    default:
-      return nullptr;
+  if (request.description.kind != PipelineKind::kRender &&
+      request.description.kind != PipelineKind::kPatchTessellation) {
+    return nullptr;
   }
   MTL::Function* vertex_function =
       GetPipelineVertexFunction(request, error_out);
@@ -2084,6 +2055,27 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
   // native alpha-to-coverage stays off.
   desc->setAlphaToCoverageEnabled(false);
 
+  if (request.description.kind == PipelineKind::kPatchTessellation) {
+    desc->setMaxTessellationFactor(max_tessellation_factor_);
+    desc->setTessellationFactorStepFunction(
+        request.description.tessellation_mode ==
+                xenos::TessellationMode::kAdaptive
+            ? MTL::TessellationFactorStepFunctionPerPatch
+            : MTL::TessellationFactorStepFunctionConstant);
+    desc->setTessellationPartitionMode(
+        request.description.tessellation_mode ==
+                xenos::TessellationMode::kDiscrete
+            ? MTL::TessellationPartitionModeInteger
+            : MTL::TessellationPartitionModeFractionalEven);
+    desc->setTessellationControlPointIndexType(
+        MTL::TessellationControlPointIndexTypeNone);
+    // Guest domain shaders are clockwise in the Direct3D and Vulkan tessellator
+    // domain (v downwards). Metal's has v upwards, so the same winding is
+    // counterclockwise in its terms. The opposite one inverts the facing, and
+    // guest face culling removes the surface.
+    desc->setTessellationOutputWindingOrder(MTL::WindingCounterClockwise);
+  }
+
   NS::Error* error = nullptr;
   const int64_t pipeline_start_ns = GetSteadyTimeNs();
   bool archive_hit = false;
@@ -2104,164 +2096,6 @@ MTL::RenderPipelineState* MetalCommandProcessor::CreatePipelineState(
   return pipeline;
 }
 
-MTL::RenderPipelineState*
-MetalCommandProcessor::CreateDxilTessellationPipelineState(
-    const PipelineCompileRequest& request, std::string* error_out) {
-  const DxilTessellationShaders* shaders = request.tessellation_shaders;
-  if (!shaders) {
-    if (error_out) {
-      *error_out = "missing tessellation stages";
-    }
-    return nullptr;
-  }
-  const MetalShaderReflection& hull = shaders->hull.reflection;
-  const MetalShaderReflection& domain = shaders->domain.reflection;
-  auto output_primitive =
-      IRRuntimeTessellatorOutputPrimitive(hull.hs_tessellator_output_primitive);
-  IRRuntimePrimitiveType geometry_primitive = IRRuntimePrimitiveTypeTriangle;
-  const char* geometry_function = kIRTrianglePassthroughGeometryShader;
-  switch (output_primitive) {
-    case IRRuntimeTessellatorOutputPoint:
-      geometry_primitive = IRRuntimePrimitiveTypePoint;
-      geometry_function = kIRPointPassthroughGeometryShader;
-      break;
-    case IRRuntimeTessellatorOutputLine:
-      geometry_primitive = IRRuntimePrimitiveTypeLine;
-      geometry_function = kIRLinePassthroughGeometryShader;
-      break;
-    default:
-      break;
-  }
-  if (!IRRuntimeValidateTessellationPipeline(
-          output_primitive, geometry_primitive,
-          hull.hs_output_control_point_size, domain.ds_input_control_point_size,
-          hull.hs_patch_constants_size, domain.ds_patch_constants_size,
-          hull.hs_output_control_point_count,
-          domain.ds_input_control_point_count)) {
-    if (error_out) {
-      *error_out = "hull and domain stages are not compatible";
-    }
-    return nullptr;
-  }
-
-  MTL::MeshRenderPipelineDescriptor* desc =
-      MTL::MeshRenderPipelineDescriptor::alloc()->init();
-  ApplyColorAttachmentState(desc->colorAttachments(), request);
-  desc->setDepthAttachmentPixelFormat(
-      MTL::PixelFormat(request.description.depth_format));
-  desc->setStencilAttachmentPixelFormat(
-      MTL::PixelFormat(request.description.stencil_format));
-  desc->setRasterSampleCount(request.description.sample_count);
-  // Xenos alpha-to-mask is emitted by the shader as its sample mask, so the
-  // native alpha-to-coverage stays off.
-  desc->setAlphaToCoverageEnabled(false);
-
-  // Linked the way IRRuntimeNewGeometryTessellationEmulationPipeline does, but
-  // with a fragment function rather than a library and a name, as a pixel
-  // shader specialized on bool and loop constants needs function constants.
-  MTL::Function* fragment_function =
-      GetPipelineFragmentFunction(request, error_out);
-  if (request.fragment_fetch_states_specialized && !fragment_function) {
-    desc->release();
-    return nullptr;
-  }
-  IRRuntimeTessellationPipelineConfig config =
-      BuildTessellationPipelineConfig(shaders->vertex.reflection, hull, domain);
-  auto new_function = [](MTL::Library* library, const std::string& name,
-                         MTL::FunctionConstantValues* values,
-                         NS::Error** error) -> MTL::Function* {
-    if (!library) {
-      return nullptr;
-    }
-    NS::String* ns_name =
-        NS::String::string(name.c_str(), NS::UTF8StringEncoding);
-    return values ? library->newFunction(ns_name, values, error)
-                  : library->newFunction(ns_name);
-  };
-  NS::Error* error = nullptr;
-  MTL::FunctionConstantValues* vertex_values =
-      MTL::FunctionConstantValues::alloc()->init();
-  bool tessellation_enabled = true;
-  vertex_values->setConstantValue(&tessellation_enabled, MTL::DataTypeBool,
-                                  MTLSTR("tessellationEnabled"));
-  MTL::FunctionConstantValues* hull_values =
-      MTL::FunctionConstantValues::alloc()->init();
-  hull_values->setConstantValue(&config.vsOutputSizeInBytes, MTL::DataTypeInt,
-                                MTLSTR("vertex_shader_output_size_fc"));
-  hull_values->setConstantValue(&config.hsMaxTessellationFactor,
-                                MTL::DataTypeFloat,
-                                MTLSTR("max_tessellation_factor_fc"));
-  // The guest fetches vertices from shared memory, so the host vertex shader
-  // takes no attributes, but the pipeline still links a stage-in function.
-  MTL::Function* stage_in_function =
-      new_function(shaders->stage_in_library, "irconverter_stage_in_shader",
-                   nullptr, nullptr);
-  // The vertex stage is emulated in the object function.
-  MTL::Function* object_function = new_function(
-      shaders->vertex.library,
-      shaders->vertex.function_name + ".dxil_irconverter_object_shader",
-      vertex_values, &error);
-  // MSC compiles the hull stage into the control point and patch constant
-  // phases, and the tessellator.
-  MTL::Function* hull_function = new_function(
-      shaders->hull.library, "irconverter_hull_shader", hull_values, &error);
-  MTL::Function* tessellator_function = new_function(
-      shaders->hull.library, "irconverter_tessellator", hull_values, &error);
-  MTL::Function* domain_function =
-      new_function(shaders->domain.library, "irconverter_dxil_domain_shader",
-                   nullptr, nullptr);
-  // The guest has no geometry shader. MSC synthesizes the passthrough that
-  // the mesh function emulates the geometry stage with.
-  MTL::Function* mesh_function = new_function(
-      shaders->domain.library, geometry_function, nullptr, nullptr);
-  vertex_values->release();
-  hull_values->release();
-
-  MTL::RenderPipelineState* pipeline = nullptr;
-  if (stage_in_function && object_function && hull_function &&
-      tessellator_function && domain_function && mesh_function) {
-    desc->setObjectFunction(object_function);
-    desc->setMeshFunction(mesh_function);
-    desc->setFragmentFunction(fragment_function);
-    const NS::Object* object_linked[] = {stage_in_function, hull_function};
-    MTL::LinkedFunctions* object_linked_functions =
-        MTL::LinkedFunctions::alloc()->init();
-    object_linked_functions->setFunctions(
-        NS::Array::array(object_linked, std::size(object_linked)));
-    desc->setObjectLinkedFunctions(object_linked_functions);
-    object_linked_functions->release();
-    const NS::Object* mesh_linked[] = {tessellator_function, domain_function};
-    MTL::LinkedFunctions* mesh_linked_functions =
-        MTL::LinkedFunctions::alloc()->init();
-    mesh_linked_functions->setFunctions(
-        NS::Array::array(mesh_linked, std::size(mesh_linked)));
-    desc->setMeshLinkedFunctions(mesh_linked_functions);
-    mesh_linked_functions->release();
-    error = nullptr;
-    const int64_t pipeline_start_ns = GetSteadyTimeNs();
-    pipeline = device_->newRenderPipelineState(desc, MTL::PipelineOptionNone,
-                                               nullptr, &error);
-    AddCompileStageTime(kCompileStageTessPipeline, pipeline_start_ns);
-  } else if (error_out && !error) {
-    *error_out = "missing tessellation stage function";
-  }
-  for (MTL::Function* function :
-       {stage_in_function, object_function, hull_function, tessellator_function,
-        domain_function, mesh_function}) {
-    if (function) {
-      function->release();
-    }
-  }
-  desc->release();
-  if (!pipeline && error_out && error) {
-    NS::String* description = error->localizedDescription();
-    if (description) {
-      *error_out = description->utf8String();
-    }
-  }
-  return pipeline;
-}
-
 void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
   xe::threading::set_name(fmt::format("Metal Shaders {}", thread_index));
   if (cvars::metal_compile_thread_qos == "user-initiated") {
@@ -2272,11 +2106,10 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
   std::unique_ptr<SpirvShaderTranslator> worker_translator =
       CreateSpirvShaderTranslator();
   while (true) {
-    enum class RequestKind { kPipeline, kShader, kTessellationShaders };
+    enum class RequestKind { kPipeline, kShader };
     RequestKind request_kind = RequestKind::kPipeline;
     ShaderCompileRequest shader_request;
     PipelineCompileRequest pipeline_request;
-    TessellationShadersCompileRequest tess_shaders_request;
     {
       std::unique_lock<std::mutex> lock(async_compile_mutex_);
       async_compile_boost_cv_.wait(lock, [this, thread_index]() {
@@ -2287,8 +2120,7 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
         return async_compile_shutdown_ ||
                thread_index >= async_compile_thread_limit_ ||
                !async_shader_queue_.empty() ||
-               !async_pipeline_queue_.empty() ||
-               !async_tess_shaders_queue_.empty();
+               !async_pipeline_queue_.empty();
       });
       if (async_compile_shutdown_) {
         return;
@@ -2299,52 +2131,26 @@ void MetalCommandProcessor::AsyncCompileThread(size_t thread_index) {
       }
       // Pipelines first: they are the nearly finished work, and everything
       // else exists to unblock one. Except the stored ones a launch rebuilds:
-      // the shaders and tessellation stages draws are waiting for go first.
+      // the shaders draws are waiting for go first.
       if (!async_pipeline_queue_.empty() &&
           (async_pipeline_queue_.begin()->second.priority >
                kPipelinePriorityStored ||
-           (async_shader_queue_.empty() &&
-            async_tess_shaders_queue_.empty()))) {
+           async_shader_queue_.empty())) {
         request_kind = RequestKind::kPipeline;
         auto queue_it = async_pipeline_queue_.begin();
         pipeline_request = std::move(queue_it->second);
         async_pipeline_queued_.erase(pipeline_request.pipeline_key);
         async_pipeline_queue_.erase(queue_it);
-      } else if (!async_shader_queue_.empty()) {
+      } else {
         request_kind = RequestKind::kShader;
         shader_request = async_shader_queue_.top();
         async_shader_queue_.pop();
-      } else {
-        request_kind = RequestKind::kTessellationShaders;
-        tess_shaders_request = async_tess_shaders_queue_.front();
-        async_tess_shaders_queue_.pop();
       }
       ++async_compile_busy_;
     }
 
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    if (request_kind == RequestKind::kTessellationShaders) {
-      auto shaders = std::make_unique<DxilTessellationShaders>();
-      bool compiled = BuildDxilTessellationShaders(
-          *tess_shaders_request.domain_spirv,
-          tess_shaders_request.domain_ucode_hash,
-          tess_shaders_request.tessellation_mode,
-          tess_shaders_request.host_vertex_shader_type, *shaders);
-      std::lock_guard<std::mutex> lock(async_compile_mutex_);
-      async_tess_shaders_pending_.erase(tess_shaders_request.key);
-      if (compiled) {
-        // The pending set admits one build per key, so this always inserts.
-        // A loser would release its stages through the destructor.
-        dxil_tessellation_cache_.emplace(tess_shaders_request.key,
-                                         std::move(shaders));
-      } else {
-        async_tess_shaders_failed_.insert(tess_shaders_request.key);
-      }
-      if (tess_shaders_request.storage) {
-        NoteStorageRequestDoneLocked();
-      }
-      FinishAsyncCompileTaskLocked();
-    } else if (request_kind == RequestKind::kPipeline) {
+    if (request_kind == RequestKind::kPipeline) {
       std::string pipeline_error;
       MTL::RenderPipelineState* pipeline =
           CreatePipelineState(pipeline_request, &pipeline_error);
@@ -3040,9 +2846,13 @@ bool MetalCommandProcessor::SetupContext() {
         "waitUntilCompleted");
   }
 
-  // MSC runs tessellation as object and mesh stages.
-  mesh_shader_supported_ = device_->supportsFamily(MTL::GPUFamilyApple7) ||
-                           device_->supportsFamily(MTL::GPUFamilyMac2);
+  // Native patch tessellation limit: 64 on Apple5+/Mac2, 16 on older Apple GPUs
+  // (both even, as required by fractional_even partitioning).
+  max_tessellation_factor_ =
+      (device_->supportsFamily(MTL::GPUFamilyApple5) ||
+       device_->supportsFamily(MTL::GPUFamilyMac2))
+          ? 64u
+          : 16u;
 
   msl_system_constants_version_ = 1;
   msl_current_float_constant_map_vertex_.fill(0);
@@ -3832,6 +3642,7 @@ void MetalCommandProcessor::ShutdownContext() {
     if (texture_cache_) {
       texture_cache_->CommitLoadsAhead();
     }
+    CommitTessPrepAhead();
     ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
     current_command_buffer_->commit();
     if (wait_shared_event_) {
@@ -3981,10 +3792,10 @@ void MetalCommandProcessor::ShutdownContext() {
     }
     generic_fallback_libraries_.clear();
   }
-  dxil_tessellation_cache_.clear();
-  if (tessellator_tables_buffer_) {
-    tessellator_tables_buffer_->release();
-    tessellator_tables_buffer_ = nullptr;
+  tess_prep_ahead_.clear();
+  if (tess_prep_pipeline_) {
+    tess_prep_pipeline_->release();
+    tess_prep_pipeline_ = nullptr;
   }
   finite_multiply_requirements_.clear();
   std::fill(std::begin(finite_multiply_last_shader_),
@@ -4033,15 +3844,6 @@ void MetalCommandProcessor::TranslateShadersForStorage(
     if (!it->second->is_ucode_analyzed()) {
       it->second->AnalyzeUcode(ucode_disasm_buffer_);
     }
-    // A domain modification's SPIR-V is a tessellation evaluation module, which
-    // cannot be built as a standalone vertex function yet.
-    // GetDxilTessellationShaders links it with the host stages instead.
-    if (it->second->type() == xenos::ShaderType::kVertex &&
-        Shader::IsHostVertexShaderTypeDomain(
-            SpirvShaderTranslator::Modification(modification)
-                .vertex.host_vertex_shader_type)) {
-      continue;
-    }
     ShaderCompileStatus status = ShaderCompileStatus::kReady;
     GetOrCreateHostTranslation(*it->second, modification, /*allow_async=*/true,
                                &status);
@@ -4060,33 +3862,6 @@ void MetalCommandProcessor::TranslateShadersForStorage(
 void MetalCommandProcessor::CreateStoredPipelines(
     const std::vector<PipelineStoredDescription>& stored_descriptions) {
   replaying_stored_pipelines_ = true;
-
-  // Ask for every tessellation stage set first, so the one drain below covers
-  // them all rather than one per description.
-  bool tessellation_queued = false;
-  queueing_storage_requests_ = true;
-  for (const PipelineStoredDescription& stored : stored_descriptions) {
-    const PipelineDescription& description = stored.description;
-    if (PipelineKind(description.kind) != PipelineKind::kDxilTessellation) {
-      continue;
-    }
-    auto it = guest_shader_cache_.find(description.vertex_shader_hash);
-    if (it == guest_shader_cache_.end()) {
-      continue;
-    }
-    ShaderCompileStatus status = ShaderCompileStatus::kReady;
-    GetDxilTessellationShaders(*static_cast<DxilShader*>(it->second.get()),
-                               description.vertex_shader_modification,
-                               description.tessellation_mode,
-                               description.host_vertex_shader_type,
-                               /*allow_async=*/true, &status);
-    tessellation_queued |= status == ShaderCompileStatus::kPending;
-  }
-  queueing_storage_requests_ = false;
-  if (tessellation_queued) {
-    AwaitAsyncCompiles();
-  }
-
   ReplayStoredPipelines(stored_descriptions,
                         [this](const PipelineStoredDescription& stored,
                                Shader*& vertex_shader_out) {
@@ -4112,10 +3887,11 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
     stable.flags &= draw_exact_flags;
     stable.settled_draws = UINT32_MAX;
   }
-  // Reject stored descriptions from the removed MSL tessellation path.
+  // Reject stored descriptions from removed tessellation paths (1 = MSL, 2 =
+  // MSC mesh).
   if (PipelineKind(description.kind) != PipelineKind::kRender &&
-      PipelineKind(description.kind) != PipelineKind::kDxilTessellation) {
-    return "belonging to the removed MSL path";
+      PipelineKind(description.kind) != PipelineKind::kPatchTessellation) {
+    return "belonging to a removed tessellation path";
   }
   auto vertex_it = guest_shader_cache_.find(description.vertex_shader_hash);
   if (vertex_it == guest_shader_cache_.end()) {
@@ -4143,33 +3919,13 @@ const char* MetalCommandProcessor::QueueStoredPipeline(
   request.pipeline_key = description.GetHash();
   request.priority = pixel_translation ? kPipelinePriorityStored
                                        : kPipelinePriorityStoredDepthOnly;
-  Shader::Translation* vertex_translation = nullptr;
-  if (PipelineKind(description.kind) == PipelineKind::kDxilTessellation) {
-    // The domain modification never becomes a standalone vertex function, so
-    // it is asked for through the linked stages rather than translated here.
-    const DxilTessellationShaders* shaders = GetDxilTessellationShaders(
-        *static_cast<DxilShader*>(vertex_it->second.get()),
-        description.vertex_shader_modification, description.tessellation_mode,
-        description.host_vertex_shader_type, /*allow_async=*/true, &status);
-    if (!shaders) {
-      return "tessellation stages failed";
-    }
-    request.tessellation_shaders = shaders;
-    if (pixel_translation) {
-      auto* dxil_pixel =
-          static_cast<DxilShader::DxilTranslation*>(pixel_translation);
-      request.fragment_library = dxil_pixel->metal_library();
-      request.fragment_function_name = dxil_pixel->entry_point_name();
-    }
-  } else {
-    vertex_translation = GetOrCreateHostTranslation(
-        *vertex_it->second, description.vertex_shader_modification,
-        /*allow_async=*/false, &status);
-    if (status != ShaderCompileStatus::kReady) {
-      return "VS not buildable";
-    }
-    request.vertex_function = GetHostShaderFunction(vertex_translation);
+  Shader::Translation* vertex_translation = GetOrCreateHostTranslation(
+      *vertex_it->second, description.vertex_shader_modification,
+      /*allow_async=*/false, &status);
+  if (status != ShaderCompileStatus::kReady) {
+    return "VS not buildable";
   }
+  request.vertex_function = GetHostShaderFunction(vertex_translation);
 
   request.fragment_function = GetHostShaderFunction(pixel_translation);
   SetPipelineFunctionConstants(request, vertex_translation, pixel_translation);
@@ -4452,6 +4208,8 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                       kind_per_frame(CommandBufferKind::kRenderTargetDump));
     COUNT_profile_set("gpu/cb_rt_other_per_frame",
                       kind_per_frame(CommandBufferKind::kRenderTargetOther));
+    COUNT_profile_set("gpu/cb_tess_prep_per_frame",
+                      kind_per_frame(CommandBufferKind::kTessellationPrep));
 
     COUNT_profile_set(
         "gpu/render_passes_per_frame",
@@ -4654,9 +4412,8 @@ void MetalCommandProcessor::CommitBetweenRenderPasses() {
 
 bool MetalCommandProcessor::IsAsyncCompileIdleLocked() const {
   return async_compile_busy_ == 0 && async_shader_queue_.empty() &&
-         async_pipeline_queue_.empty() && async_tess_shaders_queue_.empty() &&
-         async_shader_pending_.empty() && async_pipeline_pending_.empty() &&
-         async_tess_shaders_pending_.empty();
+         async_pipeline_queue_.empty() && async_shader_pending_.empty() &&
+         async_pipeline_pending_.empty();
 }
 
 void MetalCommandProcessor::RecordStorageRebuildStatsLocked() {
@@ -5645,29 +5402,6 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         Shader::HostVertexShaderType::kVertex;
   }
 
-  if (primitive_processing_result.IsTessellated()) {
-    // Tessellation runs through MSC's object/mesh emulation.
-    if (!mesh_shader_supported_) {
-      static bool tess_mesh_logged = false;
-      if (!tess_mesh_logged) {
-        tess_mesh_logged = true;
-        XELOGW(
-            "Metal: skipping tessellated draws, mesh shaders are not supported "
-            "on this device");
-      }
-      return true;
-    }
-    if (!pixel_shader) {
-      static bool tess_no_ps_logged = false;
-      if (!tess_no_ps_logged) {
-        tess_no_ps_logged = true;
-        XELOGW(
-            "Metal: Tessellation emulation requested without a pixel shader; "
-            "using depth-only PS fallback");
-      }
-    }
-  }
-
   // Configure render targets via MetalRenderTargetCache, similar to D3D12.
   draw_stand_in_wait_reason_ = nullptr;
   if (render_target_cache_) {
@@ -6399,261 +6133,254 @@ bool MetalCommandProcessor::ResolveDrawIndexBuffer(
 // SPIR-V -> DXIL -> AIR draw path
 // ==========================================================================
 
-bool MetalCommandProcessor::EnsureTessellatorTablesBuffer() {
-  if (tessellator_tables_buffer_) {
+bool MetalCommandProcessor::EnsureTessellationPrepPipeline() {
+  if (tess_prep_pipeline_) {
     return true;
   }
-  uint64_t size = IRRuntimeTessellatorTablesSize();
-  tessellator_tables_buffer_ =
-      device_->newBuffer(size, MTL::ResourceStorageModeShared);
-  if (!tessellator_tables_buffer_) {
-    XELOGE("DXIL: failed to allocate the tessellator tables buffer ({} bytes)",
-           size);
+  if (!device_) {
     return false;
   }
-  tessellator_tables_buffer_->setLabel(
-      NS::String::string("XeniaTessellatorTables", NS::UTF8StringEncoding));
-  IRRuntimeLoadTessellatorTables(tessellator_tables_buffer_);
+  NS::Error* error = nullptr;
+  dispatch_data_t data = dispatch_data_create(
+      metal_tessellation_prep_cs_metallib,
+      sizeof(metal_tessellation_prep_cs_metallib), nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  MTL::Library* lib = device_->newLibrary(data, &error);
+  dispatch_release(data);
+  if (!lib) {
+    XELOGE("Metal: failed to load tessellation prep library: {}",
+           error ? error->localizedDescription()->utf8String() : "unknown");
+    return false;
+  }
+  MTL::Function* fn =
+      lib->newFunction(NS::String::string("entry_xe", NS::UTF8StringEncoding));
+  if (!fn) {
+    XELOGE("Metal: tessellation prep library has no 'entry_xe' function");
+    lib->release();
+    return false;
+  }
+  tess_prep_pipeline_ = device_->newComputePipelineState(fn, &error);
+  fn->release();
+  lib->release();
+  if (!tess_prep_pipeline_) {
+    XELOGE("Metal: failed to create tessellation prep pipeline: {}",
+           error ? error->localizedDescription()->utf8String() : "unknown");
+    return false;
+  }
   return true;
 }
 
-bool MetalCommandProcessor::BuildDxilTessellationShaders(
-    const std::vector<uint8_t>& domain_spirv, uint64_t domain_ucode_hash,
-    xenos::TessellationMode tessellation_mode,
-    Shader::HostVertexShaderType host_vertex_shader_type,
-    DxilTessellationShaders& shaders_out) {
-  MetalTessellationHostShaders host_shaders;
-  if (!GetMetalTessellationHostShaders(tessellation_mode,
-                                       host_vertex_shader_type, host_shaders)) {
-    XELOGE("DXIL: no host tessellation shaders for mode {} domain type {}",
-           uint32_t(tessellation_mode), uint32_t(host_vertex_shader_type));
-    return false;
+void MetalCommandProcessor::EncodeTessPrepDispatch(
+    MTL::ComputeCommandEncoder* encoder, const TessPrepDispatch& dispatch) {
+  encoder->setComputePipelineState(tess_prep_pipeline_);
+  encoder->setBytes(&dispatch.constants, sizeof(dispatch.constants), 0);
+  encoder->setBuffer(dispatch.cp_buffer, dispatch.cp_offset, 1);
+  encoder->setBuffer(dispatch.src_buffer, dispatch.src_offset, 2);
+  encoder->setBuffer(dispatch.factor_buffer, dispatch.factor_offset, 3);
+  const NS::UInteger groups = (dispatch.constants.count + 63u) / 64u;
+  encoder->dispatchThreadgroups(MTL::Size::Make(groups, 1, 1),
+                                MTL::Size::Make(64, 1, 1));
+}
+
+void MetalCommandProcessor::CommitTessPrepAhead() {
+  if (tess_prep_ahead_.empty()) {
+    return;
   }
-  if (domain_spirv.empty() || (domain_spirv.size() % sizeof(uint32_t)) != 0) {
-    XELOGE("DXIL: domain shader {:016X} has no usable SPIR-V",
-           domain_ucode_hash);
+  if (!EnsureTessellationPrepPipeline()) {
+    tess_prep_ahead_.clear();
+    return;
+  }
+  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+  MTL::CommandBuffer* cmd =
+      CreateAccountedCommandBuffer(CommandBufferKind::kTessellationPrep);
+  if (!cmd) {
+    XELOGE("Metal: failed to create pre-pass command buffer for tess prep");
+    tess_prep_ahead_.clear();
+    pool->release();
+    return;
+  }
+  MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+  if (!encoder) {
+    XELOGE("Metal: failed to create pre-pass compute encoder for tess prep");
+    DiscardAccountedCommandBuffer(cmd, CommandBufferKind::kTessellationPrep);
+    tess_prep_ahead_.clear();
+    pool->release();
+    return;
+  }
+  MetalBufferHazards::Encoder hazards;
+  if (shared_memory_ && shared_memory_->hazards()) {
+    hazards.Begin(*shared_memory_->hazards(), cmd, encoder);
+  }
+  for (const TessPrepDispatch& dispatch : tess_prep_ahead_) {
+    if (dispatch.reads_shared_memory && hazards.is_active()) {
+      hazards.Access(dispatch.shared_memory_start,
+                     dispatch.shared_memory_length, false);
+    }
+    EncodeTessPrepDispatch(encoder, dispatch);
+  }
+  if (hazards.is_active()) {
+    hazards.End();
+  }
+  encoder->endEncoding();
+  cmd->commit();
+  tess_prep_ahead_.clear();
+  pool->release();
+}
+
+bool MetalCommandProcessor::PrepareNativeTessellationDraw(
+    const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+    const DrawIndexBuffer& draw_index_buffer, const RegisterFile& regs,
+    NativeTessellationDraw& tess_out) {
+  tess_out = {};
+  if (!EnsureTessellationPrepPipeline() || !null_buffer_) {
     return false;
   }
 
-  // Linked so the hull and domain signatures agree on control point counts and
-  // patch constants, which MSC checks before building the pipeline.
-  std::vector<SpirvToDxilCompiler::LinkedStage> stages = {
-      {host_shaders.vertex_spirv, host_shaders.vertex_word_count,
-       SpirvToDxilCompiler::Stage::kVertex},
-      {host_shaders.hull_spirv, host_shaders.hull_word_count,
-       SpirvToDxilCompiler::Stage::kTessellationControl},
-      {reinterpret_cast<const uint32_t*>(domain_spirv.data()),
-       domain_spirv.size() / sizeof(uint32_t),
-       SpirvToDxilCompiler::Stage::kTessellationEvaluation},
-  };
   using HVS = Shader::HostVertexShaderType;
-  bool is_quad = host_vertex_shader_type == HVS::kQuadDomainCPIndexed ||
-                 host_vertex_shader_type == HVS::kQuadDomainPatchIndexed;
-  bool is_control_point_indexed =
-      host_vertex_shader_type == HVS::kQuadDomainCPIndexed ||
-      host_vertex_shader_type == HVS::kTriangleDomainCPIndexed;
-  // Unsized hull input arrays use the maximum patch size in SPIR-V. Mesa
-  // needs the actual pipeline size to avoid grouping unrelated guest patches.
-  // Adaptive patches read a factor per corner; non-adaptive patch-indexed
-  // shaders receive one patch index rather than a vertex for each corner.
-  uint32_t input_control_point_count =
-      tessellation_mode == xenos::TessellationMode::kAdaptive ||
-              is_control_point_indexed
-          ? (is_quad ? 4u : 3u)
-          : 1u;
-  std::vector<std::vector<uint8_t>> dxil = SpirvToDxilCompiler::TranslateLinked(
-      stages, /*lower_to_bindless=*/true,
-      /*preserve_msc_fmad32=*/false, input_control_point_count);
-  if (dxil.size() != 3 || dxil[0].empty() || dxil[1].empty() ||
-      dxil[2].empty()) {
-    XELOGE("DXIL: linked tessellation translation failed (domain {:016X})",
-           domain_ucode_hash);
+  const HVS hvs = primitive_processing_result.host_vertex_shader_type;
+  const bool is_quad = hvs == HVS::kQuadDomainCPIndexed ||
+                       hvs == HVS::kQuadDomainPatchIndexed;
+  const bool is_cp_indexed = hvs == HVS::kTriangleDomainCPIndexed ||
+                             hvs == HVS::kQuadDomainCPIndexed;
+  const bool is_adaptive = primitive_processing_result.tessellation_mode ==
+                           xenos::TessellationMode::kAdaptive;
+  const uint32_t cp_per_patch = is_cp_indexed ? (is_quad ? 4u : 3u) : 1u;
+  const uint32_t input_elements_per_patch =
+      is_adaptive ? (is_quad ? 4u : 3u) : cp_per_patch;
+  const uint32_t patch_count =
+      draw_index_buffer.index_count / input_elements_per_patch;
+  if (!patch_count) {
+    return true;
+  }
+
+  const uint32_t total_control_points =
+      is_adaptive ? patch_count : patch_count * cp_per_patch;
+  const uint32_t cp_bytes = total_control_points * sizeof(float);
+  if (!AcquireSpirvArgumentBufferSlice(cp_bytes, 4, &tess_out.cp_buffer,
+                                       &tess_out.cp_offset)) {
+    XELOGE("Metal: failed to allocate {}B tessellation control point buffer",
+           cp_bytes);
     return false;
   }
 
-  const MetalShaderStage kStages[] = {MetalShaderStage::kVertex,
-                                      MetalShaderStage::kHull,
-                                      MetalShaderStage::kDomain};
-  DxilTessellationStage* stage_out[] = {&shaders_out.vertex, &shaders_out.hull,
-                                        &shaders_out.domain};
-  auto release_stages = [&]() {
-    for (DxilTessellationStage* stage : stage_out) {
-      if (stage->function) {
-        stage->function->release();
-        stage->function = nullptr;
-      }
-      if (stage->library) {
-        stage->library->release();
-        stage->library = nullptr;
-      }
-    }
-    if (shaders_out.stage_in_library) {
-      shaders_out.stage_in_library->release();
-      shaders_out.stage_in_library = nullptr;
-    }
-  };
-  for (size_t i = 0; i < 3; ++i) {
-    const char* stage_name = StageNameOf(kStages[i]);
-    MetalShaderConversionResult conversion = metal_shader_converter_.Convert(
-        kStages[i], dxil[i], /*tessellation_emulation=*/true);
-    if (!conversion.success) {
-      XELOGE("DXIL: DXIL to AIR failed for the {} stage of domain {:016X}: {}",
-             stage_name, domain_ucode_hash, conversion.error_message);
-      release_stages();
-      return false;
-    }
-    // With tessellation emulation, the vertex stage becomes an object function
-    // under a derived name, which IRRuntimeNewGeometryTessellationEmulation-
-    // Pipeline also derives from the entry point name.
-    if (!CreateMetalFunction(device_, conversion, stage_out[i]->library,
-                             stage_out[i]->function,
-                             kStages[i] == MetalShaderStage::kVertex
-                                 ? ".dxil_irconverter_object_shader"
-                                 : "")) {
-      XELOGE("DXIL: could not create the {} function of domain {:016X}",
-             stage_name, domain_ucode_hash);
-      release_stages();
-      return false;
-    }
-    if (kStages[i] == MetalShaderStage::kVertex) {
-      NS::Error* error = nullptr;
-      dispatch_data_t stage_in_data =
-          dispatch_data_create(conversion.stage_in_metallib.data(),
-                               conversion.stage_in_metallib.size(), nullptr,
-                               DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-      shaders_out.stage_in_library = device_->newLibrary(stage_in_data, &error);
-      dispatch_release(stage_in_data);
-      if (!shaders_out.stage_in_library) {
-        XELOGE("DXIL: could not create the stage-in library of domain {:016X}",
-               domain_ucode_hash);
-        release_stages();
-        return false;
-      }
-    }
-    stage_out[i]->function_name = std::move(conversion.entry_point_name);
-    stage_out[i]->reflection = conversion.reflection;
+  const float factor_min =
+      regs.Get<float>(XE_GPU_REG_VGT_HOS_MIN_TESS_LEVEL) + 1.0f;
+  const float factor_max =
+      regs.Get<float>(XE_GPU_REG_VGT_HOS_MAX_TESS_LEVEL) + 1.0f;
+  const float clamped_factor_max =
+      factor_max > 0.0f
+          ? std::min(factor_max, float(max_tessellation_factor_))
+          : factor_max;
+  const uint32_t factor_struct_bytes = is_quad ? 12u : 8u;
+  const uint32_t factor_bytes =
+      is_adaptive ? patch_count * factor_struct_bytes : factor_struct_bytes;
+  if (!AcquireSpirvArgumentBufferSlice(
+          factor_bytes, 4, &tess_out.factor_buffer, &tess_out.factor_offset)) {
+    XELOGE("Metal: failed to allocate {}B tessellation factor buffer",
+           factor_bytes);
+    return false;
   }
 
-  XELOGI(
-      "DxilShader: compiled tessellation for domain {:016X} (mode {}, {} "
-      "control points)",
-      domain_ucode_hash, uint32_t(tessellation_mode),
-      shaders_out.hull.reflection.hs_input_control_point_count);
+  if (!is_adaptive) {
+    // Discrete and continuous modes use TessellationFactorStepFunctionConstant
+    // with one half-float struct shared by all patches.
+    const uint16_t factor_half = Float32ToHalf(clamped_factor_max);
+    auto* dst = reinterpret_cast<uint16_t*>(
+        static_cast<uint8_t*>(tess_out.factor_buffer->contents()) +
+        tess_out.factor_offset);
+    const uint32_t half_count = is_quad ? 6u : 4u;
+    for (uint32_t i = 0; i < half_count; ++i) {
+      dst[i] = factor_half;
+    }
+  }
+
+  TessPrepDispatch dispatch;
+  dispatch.constants.count = total_control_points;
+  uint32_t index_source = 0u;
+  if (draw_index_buffer.indexed) {
+    index_source =
+        draw_index_buffer.index_type == MTL::IndexTypeUInt16 ? 1u : 2u;
+  }
+  dispatch.constants.mode_flags =
+      index_source |
+      ((uint32_t(primitive_processing_result.host_shader_index_endian) & 3u)
+       << 2u) |
+      (is_adaptive ? (1u << 4u) : 0u) | (is_quad ? (1u << 5u) : 0u);
+  dispatch.constants.index_offset = regs[XE_GPU_REG_VGT_INDX_OFFSET];
+  dispatch.constants.min_index = regs[XE_GPU_REG_VGT_MIN_VTX_INDX];
+  dispatch.constants.max_index = regs[XE_GPU_REG_VGT_MAX_VTX_INDX];
+  dispatch.constants.factor_min = factor_min;
+  dispatch.constants.factor_max = clamped_factor_max;
+
+  dispatch.cp_buffer = tess_out.cp_buffer;
+  dispatch.cp_offset = tess_out.cp_offset;
+  if (draw_index_buffer.indexed) {
+    const NS::UInteger aligned_offset =
+        NS::UInteger(draw_index_buffer.offset) & ~NS::UInteger(3);
+    dispatch.src_buffer = draw_index_buffer.buffer;
+    dispatch.src_offset = aligned_offset;
+    dispatch.constants.src_byte_offset =
+        uint32_t(draw_index_buffer.offset - aligned_offset);
+  } else {
+    dispatch.src_buffer = null_buffer_;
+    dispatch.src_offset = 0;
+    dispatch.constants.src_byte_offset = 0;
+  }
+  dispatch.factor_buffer = is_adaptive ? tess_out.factor_buffer : null_buffer_;
+  dispatch.factor_offset = is_adaptive ? tess_out.factor_offset : 0;
+
+  const bool is_shared_memory =
+      draw_index_buffer.indexed && shared_memory_ &&
+      draw_index_buffer.buffer == shared_memory_->GetBuffer();
+  if (is_shared_memory) {
+    const uint64_t index_stride =
+        draw_index_buffer.index_type == MTL::IndexTypeUInt16 ? sizeof(uint16_t)
+                                                             : sizeof(uint32_t);
+    const uint64_t index_bytes =
+        uint64_t(draw_index_buffer.index_count) * index_stride;
+    dispatch.reads_shared_memory = true;
+    dispatch.shared_memory_start = uint32_t(draw_index_buffer.offset);
+    dispatch.shared_memory_length =
+        uint32_t(std::min(index_bytes, uint64_t(SharedMemory::kBufferSize)));
+  }
+
+  // If a render pass is already open and the source buffer has no pending GPU
+  // accesses in shared memory, queue the prep dispatch into a pre-pass command
+  // buffer committed right before current_command_buffer_ (like
+  // CommitLoadsAhead) so TBDR tile memory isn't broken mid-pass.
+  bool encode_ahead = current_render_encoder_ != nullptr;
+  if (encode_ahead && dispatch.reads_shared_memory) {
+    auto* hazards = shared_memory_->hazards();
+    if (!hazards ||
+        hazards->HasPendingAccess(dispatch.shared_memory_start,
+                                  dispatch.shared_memory_length) ||
+        render_encoder_shared_memory_hazards_.HasAccess(
+            dispatch.shared_memory_start, dispatch.shared_memory_length)) {
+      encode_ahead = false;
+    }
+  }
+
+  if (encode_ahead) {
+    tess_prep_ahead_.push_back(dispatch);
+  } else {
+    MetalBufferHazards::Encoder* compute_hazards = nullptr;
+    MTL::ComputeCommandEncoder* compute =
+        BeginSharedComputeEncoder(current_command_buffer_, &compute_hazards);
+    if (!compute) {
+      XELOGE("Metal: failed to open compute encoder for tessellation prep");
+      return false;
+    }
+    if (dispatch.reads_shared_memory && compute_hazards &&
+        compute_hazards->is_active()) {
+      compute_hazards->Access(dispatch.shared_memory_start,
+                              dispatch.shared_memory_length, false);
+    }
+    EncodeTessPrepDispatch(compute, dispatch);
+  }
+
+  tess_out.patch_count = patch_count;
+  tess_out.cp_per_patch = cp_per_patch;
   return true;
-}
-
-MetalCommandProcessor::DxilTessellationShaders*
-MetalCommandProcessor::GetDxilTessellationShaders(
-    DxilShader& domain_shader, uint64_t domain_modification,
-    xenos::TessellationMode tessellation_mode,
-    Shader::HostVertexShaderType host_vertex_shader_type, bool allow_async,
-    ShaderCompileStatus* compile_status_out) {
-  *compile_status_out = ShaderCompileStatus::kFailed;
-  struct {
-    uint64_t ucode_hash;
-    uint64_t modification;
-    uint32_t tessellation_mode;
-    uint32_t host_vertex_shader_type;
-  } key_data = {domain_shader.ucode_data_hash(), domain_modification,
-                uint32_t(tessellation_mode), uint32_t(host_vertex_shader_type)};
-  uint64_t key = XXH3_64bits(&key_data, sizeof(key_data));
-  {
-    std::lock_guard<std::mutex> lock(async_compile_mutex_);
-    auto it = dxil_tessellation_cache_.find(key);
-    if (it != dxil_tessellation_cache_.end()) {
-      *compile_status_out = ShaderCompileStatus::kReady;
-      return it->second.get();
-    }
-    if (async_tess_shaders_failed_.find(key) !=
-        async_tess_shaders_failed_.end()) {
-      return nullptr;
-    }
-    if (async_tess_shaders_pending_.find(key) !=
-        async_tess_shaders_pending_.end()) {
-      *compile_status_out = ShaderCompileStatus::kPending;
-      return nullptr;
-    }
-  }
-
-  // Only this path uses domain modifications, so the claim is uncontended and
-  // the SPIR-V is produced here. What is queued is the three stages behind it.
-  auto* domain_translation = static_cast<DxilShader::DxilTranslation*>(
-      domain_shader.GetOrCreateTranslation(domain_modification));
-  ShaderCompileStatus spirv_status =
-      EnsureTranslationSpirv(domain_translation, *spirv_shader_translator_);
-  if (spirv_status != ShaderCompileStatus::kReady) {
-    if (spirv_status == ShaderCompileStatus::kFailed) {
-      std::lock_guard<std::mutex> lock(async_compile_mutex_);
-      async_tess_shaders_failed_.insert(key);
-    }
-    *compile_status_out = spirv_status;
-    return nullptr;
-  }
-
-  TessellationShadersCompileRequest request;
-  request.key = key;
-  request.domain_spirv = &domain_translation->translated_binary();
-  request.domain_ucode_hash = domain_shader.ucode_data_hash();
-  request.tessellation_mode = tessellation_mode;
-  request.host_vertex_shader_type = host_vertex_shader_type;
-  if (allow_async && cvars::async_shader_compilation &&
-      !async_compile_threads_.empty()) {
-    {
-      std::lock_guard<std::mutex> lock(async_compile_mutex_);
-      request.storage = queueing_storage_requests_;
-      async_tess_shaders_pending_.insert(key);
-      async_tess_shaders_queue_.push(request);
-      compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
-      if (request.storage) {
-        ++storage_shader_requests_;
-        PublishStorageRequestsLocked();
-      }
-    }
-    async_compile_cv_.notify_one();
-    *compile_status_out = ShaderCompileStatus::kPending;
-    return nullptr;
-  }
-
-  auto shaders = std::make_unique<DxilTessellationShaders>();
-  if (!BuildDxilTessellationShaders(
-          *request.domain_spirv, request.domain_ucode_hash, tessellation_mode,
-          host_vertex_shader_type, *shaders)) {
-    std::lock_guard<std::mutex> lock(async_compile_mutex_);
-    async_tess_shaders_failed_.insert(key);
-    return nullptr;
-  }
-  std::lock_guard<std::mutex> lock(async_compile_mutex_);
-  auto [it, inserted] =
-      dxil_tessellation_cache_.emplace(key, std::move(shaders));
-  *compile_status_out = ShaderCompileStatus::kReady;
-  return it->second.get();
-}
-
-MTL::RenderPipelineState*
-MetalCommandProcessor::GetOrCreateDxilTessellationPipelineState(
-    const DxilTessellationShaders& shaders,
-    const Shader::Translation* domain_translation,
-    xenos::TessellationMode tessellation_mode,
-    Shader::HostVertexShaderType host_vertex_shader_type,
-    DxilShader::DxilTranslation* pixel_translation, const RegisterFile& regs,
-    PipelineCompileStatus* compile_status_out) {
-  PipelineCompileRequest request = {};
-  request.fragment_function = GetHostShaderFunction(pixel_translation);
-  PopulatePipelineCompileRequest(regs, domain_translation, pixel_translation,
-                                 request);
-  // The linked stage set is identified by the domain shader plus these two, so
-  // the description covers it without naming the stages themselves.
-  request.description.kind = PipelineKind::kDxilTessellation;
-  request.description.tessellation_mode = tessellation_mode;
-  request.description.host_vertex_shader_type = host_vertex_shader_type;
-  request.pipeline_key = request.description.GetHash();
-  request.tessellation_shaders = &shaders;
-  if (pixel_translation) {
-    request.fragment_library = pixel_translation->metal_library();
-    request.fragment_function_name = pixel_translation->entry_point_name();
-  }
-  return AcquirePipelineState(request, /*allow_async=*/true,
-                              compile_status_out);
 }
 
 bool MetalCommandProcessor::IssueDrawDxil(
@@ -6733,9 +6460,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
     pixel_translation =
         static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
             *dxil_pixel_shader, pixel_shader_modification.value,
-            !exact_shaders_required &&
-                (!is_tessellated || cvars::async_shader_skip_draws),
-            &pixel_status));
+            !exact_shaders_required, &pixel_status));
     // Only spirv2air reads render targets. If it can't translate the shader,
     // blend the targets with fixed-function blending (gamma in gamma space)
     // rather than dropping the draw.
@@ -6747,168 +6472,99 @@ bool MetalCommandProcessor::IssueDrawDxil(
       pixel_translation =
           static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
               *dxil_pixel_shader, pixel_shader_modification.value,
-              !exact_shaders_required &&
-                  (!is_tessellated || cvars::async_shader_skip_draws),
-              &pixel_status));
+              !exact_shaders_required, &pixel_status));
     }
     if (pixel_status == ShaderCompileStatus::kFailed) {
       return false;
     }
   }
 
-  // The guest vertex shader becomes the domain shader of a tessellated draw,
-  // linked with the host vertex and hull shaders. Those three stages are linked
-  // together and built here rather than on the compile threads.
   MTL::RenderPipelineState* pipeline = nullptr;
-  DxilTessellationShaders* tessellation_shaders = nullptr;
   bool bound_placeholder = false;
-  // The converter bind points the pipeline's functions can read, by stage.
-  // Tessellated pipelines run more functions than the two translations, so
-  // they keep every bind point.
-  uint32_t vertex_buffer_mask = ~uint32_t(0);
-  uint32_t pixel_buffer_mask = ~uint32_t(0);
-  if (is_tessellated) {
-    if (!EnsureTessellatorTablesBuffer()) {
-      return false;
-    }
-    // GetDxilTessellationShaders owns this translation. Kept here for the logs.
-    Shader::Translation* domain_translation =
-        dxil_vertex_shader->GetOrCreateTranslation(
-            vertex_shader_modification.value);
-    // A tessellated draw links all three stages into its pipeline, so the
-    // vertex-only placeholder can't stand in for its pixel shader.
-    if (pixel_status != ShaderCompileStatus::kReady) {
-      LogShaderCompilePending(pixel_translation, "pixel");
-      return true;
-    }
-    tessellation_shaders = GetDxilTessellationShaders(
-        *dxil_vertex_shader, vertex_shader_modification.value,
-        primitive_processing_result.tessellation_mode, host_vertex_shader_type,
-        !exact_shaders_required && cvars::async_shader_skip_draws,
-        &compile_status);
-    if (!tessellation_shaders && exact_shaders_required &&
-        compile_status == ShaderCompileStatus::kPending) {
-      AwaitAsyncCompiles();
-      tessellation_shaders = GetDxilTessellationShaders(
+  auto* vertex_translation =
+      static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
           *dxil_vertex_shader, vertex_shader_modification.value,
-          primitive_processing_result.tessellation_mode,
-          host_vertex_shader_type, /*allow_async=*/false, &compile_status);
-    }
-    if (!tessellation_shaders) {
-      if (compile_status == ShaderCompileStatus::kPending) {
-        LogShaderCompilePending(domain_translation, "tessellation");
-        return true;
-      }
-      return false;
-    }
-    PipelineCompileStatus tess_pipeline_status = PipelineCompileStatus::kReady;
-    pipeline = GetOrCreateDxilTessellationPipelineState(
-        *tessellation_shaders, domain_translation,
-        primitive_processing_result.tessellation_mode, host_vertex_shader_type,
-        pixel_translation, regs, &tess_pipeline_status);
-    if (!pipeline && exact_shaders_required &&
-        tess_pipeline_status == PipelineCompileStatus::kPending) {
-      AwaitPendingPipeline();
-      pipeline = GetOrCreateDxilTessellationPipelineState(
-          *tessellation_shaders, domain_translation,
-          primitive_processing_result.tessellation_mode,
-          host_vertex_shader_type, pixel_translation, regs,
-          &tess_pipeline_status);
-    }
-    if (!pipeline) {
-      if (tess_pipeline_status == PipelineCompileStatus::kPending) {
-        LogPipelineCompilePending(domain_translation, pixel_translation);
-        return true;
-      }
-      return false;
-    }
-  } else {
-    auto* vertex_translation =
+          !exact_shaders_required && cvars::async_shader_skip_draws,
+          &compile_status, vertex_specialization));
+  // Nothing can stand in for the vertex/domain shader, so its draws wait.
+  if (compile_status == ShaderCompileStatus::kPending) {
+    LogShaderCompilePending(vertex_translation,
+                            is_tessellated ? "domain" : "vertex");
+    return true;
+  }
+  // A memory export format profile is speculative. If the compiler rejects
+  // the specialized translation, or its pipeline fails to link, use the
+  // generic translation, which always exists, rather than failing this draw
+  // on every frame for the rest of the session or handing it to a
+  // placeholder that cannot export.
+  auto use_generic_vertex_translation = [&]() {
+    vertex_shader_modification.vertex.memexport_format_specialized = 0;
+    vertex_shader_modification.vertex.memexport_format_slot = 0;
+    vertex_translation =
         static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
             *dxil_vertex_shader, vertex_shader_modification.value,
-            !exact_shaders_required && cvars::async_shader_skip_draws,
-            &compile_status, vertex_specialization));
-    // Nothing can stand in for the vertex shader, so its draws wait.
-    if (compile_status == ShaderCompileStatus::kPending) {
-      LogShaderCompilePending(vertex_translation, "vertex");
+            /*allow_async=*/false, &compile_status));
+    return compile_status == ShaderCompileStatus::kReady;
+  };
+  if (compile_status != ShaderCompileStatus::kReady &&
+      (!vertex_shader_modification.vertex.memexport_format_specialized ||
+       !use_generic_vertex_translation())) {
+    return false;
+  }
+  PipelineCompileStatus pipeline_compile_status = PipelineCompileStatus::kReady;
+  if (pixel_status == ShaderCompileStatus::kReady) {
+    pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
+                                        regs, &pipeline_compile_status);
+    if (!pipeline && exact_shaders_required &&
+        pipeline_compile_status == PipelineCompileStatus::kPending) {
+      AwaitPendingPipeline();
+      pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
+                                          regs, &pipeline_compile_status);
+    }
+  }
+  if (!pipeline && pixel_status == ShaderCompileStatus::kReady &&
+      vertex_shader_modification.vertex.memexport_format_specialized) {
+    if (!use_generic_vertex_translation()) {
+      return false;
+    }
+    pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
+                                        regs, &pipeline_compile_status);
+    if (!pipeline &&
+        pipeline_compile_status == PipelineCompileStatus::kPending) {
+      AwaitPendingPipeline();
+      pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
+                                          regs, &pipeline_compile_status);
+    }
+  }
+  if (!pipeline && !exact_shaders_required &&
+      (pixel_status != ShaderCompileStatus::kReady ||
+       pipeline_compile_status == PipelineCompileStatus::kPending)) {
+    pipeline = GetOrCreatePlaceholderPipelineState(vertex_translation, regs);
+    bound_placeholder = pipeline != nullptr;
+    if (bound_placeholder) {
+      LogPlaceholderDraw(vertex_translation, pixel_translation);
+    }
+  }
+  if (!pipeline) {
+    if (pipeline_compile_status == PipelineCompileStatus::kPending ||
+        pixel_status != ShaderCompileStatus::kReady) {
+      LogPipelineCompilePending(vertex_translation, pixel_translation);
       return true;
     }
-    // A memory export format profile is speculative. If the compiler rejects
-    // the specialized translation, or its pipeline fails to link, use the
-    // generic translation, which always exists, rather than failing this draw
-    // on every frame for the rest of the session or handing it to a
-    // placeholder that cannot export.
-    auto use_generic_vertex_translation = [&]() {
-      vertex_shader_modification.vertex.memexport_format_specialized = 0;
-      vertex_shader_modification.vertex.memexport_format_slot = 0;
-      vertex_translation =
-          static_cast<DxilShader::DxilTranslation*>(GetOrCreateHostTranslation(
-              *dxil_vertex_shader, vertex_shader_modification.value,
-              /*allow_async=*/false, &compile_status));
-      return compile_status == ShaderCompileStatus::kReady;
-    };
-    if (compile_status != ShaderCompileStatus::kReady &&
-        (!vertex_shader_modification.vertex.memexport_format_specialized ||
-         !use_generic_vertex_translation())) {
-      return false;
-    }
-    PipelineCompileStatus pipeline_compile_status =
-        PipelineCompileStatus::kReady;
-    if (pixel_status == ShaderCompileStatus::kReady) {
-      pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
-                                          regs, &pipeline_compile_status);
-      if (!pipeline && exact_shaders_required &&
-          pipeline_compile_status == PipelineCompileStatus::kPending) {
-        AwaitPendingPipeline();
-        pipeline =
-            GetOrCreatePipelineState(vertex_translation, pixel_translation,
-                                     regs, &pipeline_compile_status);
-      }
-    }
-    if (!pipeline && pixel_status == ShaderCompileStatus::kReady &&
-        vertex_shader_modification.vertex.memexport_format_specialized) {
-      if (!use_generic_vertex_translation()) {
-        return false;
-      }
-      pipeline = GetOrCreatePipelineState(vertex_translation, pixel_translation,
-                                          regs, &pipeline_compile_status);
-      if (!pipeline &&
-          pipeline_compile_status == PipelineCompileStatus::kPending) {
-        AwaitPendingPipeline();
-        pipeline =
-            GetOrCreatePipelineState(vertex_translation, pixel_translation,
-                                     regs, &pipeline_compile_status);
-      }
-    }
-    if (!pipeline && !exact_shaders_required &&
-        (pixel_status != ShaderCompileStatus::kReady ||
-         pipeline_compile_status == PipelineCompileStatus::kPending)) {
-      pipeline = GetOrCreatePlaceholderPipelineState(vertex_translation, regs);
-      bound_placeholder = pipeline != nullptr;
-      if (bound_placeholder) {
-        LogPlaceholderDraw(vertex_translation, pixel_translation);
-      }
-    }
-    if (!pipeline) {
-      if (pipeline_compile_status == PipelineCompileStatus::kPending ||
-          pixel_status != ShaderCompileStatus::kReady) {
-        LogPipelineCompilePending(vertex_translation, pixel_translation);
-        return true;
-      }
-      return false;
-    }
-    vertex_buffer_mask = vertex_translation->used_buffer_mask();
-    // A pipeline without a pixel shader, and the placeholder, have no fragment
-    // function and read no heap. The argument buffer stays bound to the
-    // fragment stage all the same: without it Metal's validation reports draws
-    // whose fragment function declares it and finds none bound (12 in a BF4
-    // frame), so something has been relying on the binding these draws leave
-    // behind.
-    // TODO(xenios-jp): find those draws and have them bind it, then drop this.
-    pixel_buffer_mask = pixel_translation && !bound_placeholder
-                            ? pixel_translation->used_buffer_mask()
-                            : uint32_t(1) << kIRArgumentBufferBindPoint;
+    return false;
   }
+  const uint32_t vertex_buffer_mask = vertex_translation->used_buffer_mask();
+  // A pipeline without a pixel shader, and the placeholder, have no fragment
+  // function and read no heap. The argument buffer stays bound to the
+  // fragment stage all the same: without it Metal's validation reports draws
+  // whose fragment function declares it and finds none bound (12 in a BF4
+  // frame), so something has been relying on the binding these draws leave
+  // behind.
+  // TODO(xenios-jp): find those draws and have them bind it, then drop this.
+  const uint32_t pixel_buffer_mask =
+      pixel_translation && !bound_placeholder
+          ? pixel_translation->used_buffer_mask()
+          : uint32_t(1) << kIRArgumentBufferBindPoint;
   if (stand_in_wait_start_ticks) {
     double wait_ms = double(xe::Clock::QueryHostTickCount() -
                             stand_in_wait_start_ticks) *
@@ -6949,9 +6605,26 @@ bool MetalCommandProcessor::IssueDrawDxil(
   if (!RequestDrawSharedMemoryRanges(*dxil_vertex_shader, regs)) {
     return false;
   }
-  // A texture load may have ended the render encoder to be ordered after the
-  // earlier draws in the command buffer. A pass begun here starts with this
-  // draw, drawn with its own shaders unless a placeholder stands in.
+  DrawIndexBuffer draw_index_buffer;
+  if (!ResolveDrawIndexBuffer(primitive_processing_result,
+                              host_vertex_shader_type, is_tessellated,
+                              draw_index_buffer)) {
+    return false;
+  }
+  NativeTessellationDraw native_tess;
+  if (is_tessellated) {
+    if (!PrepareNativeTessellationDraw(primitive_processing_result,
+                                       draw_index_buffer, regs, native_tess)) {
+      return false;
+    }
+    if (!native_tess.patch_count) {
+      return true;
+    }
+  }
+  // A texture load or tessellation prep with a shared-memory hazard may have
+  // ended the render encoder to be ordered after earlier draws in the command
+  // buffer. A pass begun here starts with this draw, drawn with its own
+  // shaders unless a placeholder stands in.
   if (render_target_cache_) {
     render_target_cache_->SetClearQuadPassBegin(!bound_placeholder);
   }
@@ -7026,15 +6699,8 @@ bool MetalCommandProcessor::IssueDrawDxil(
                      dxil_guest_constant_versions_[3]};
   if (!dxil_binder_.Bind(current_render_encoder_, dxil_vertex_shader,
                          bind_pixel_shader, constants, memexport_used,
-                         is_tessellated, vertex_buffer_mask,
+                         /*tessellated=*/false, vertex_buffer_mask,
                          pixel_buffer_mask)) {
-    return false;
-  }
-
-  DrawIndexBuffer draw_index_buffer;
-  if (!ResolveDrawIndexBuffer(primitive_processing_result,
-                              host_vertex_shader_type, is_tessellated,
-                              draw_index_buffer)) {
     return false;
   }
 
@@ -7052,37 +6718,19 @@ bool MetalCommandProcessor::IssueDrawDxil(
   OpenQuerySegment(false);
 
   if (is_tessellated) {
-    // The companion draw helpers consume these tables but don't bind them.
-    current_render_encoder_->setObjectBuffer(
-        tessellator_tables_buffer_, 0, kIRRuntimeTessellatorTablesBindPoint);
-    current_render_encoder_->setMeshBuffer(
-        tessellator_tables_buffer_, 0, kIRRuntimeTessellatorTablesBindPoint);
-    UseRenderEncoderResource(tessellator_tables_buffer_,
-                             MTL::ResourceUsageRead);
-    IRRuntimeTessellationPipelineConfig config =
-        BuildTessellationPipelineConfig(
-            tessellation_shaders->vertex.reflection,
-            tessellation_shaders->hull.reflection,
-            tessellation_shaders->domain.reflection);
-    // Every patch list lowers to the same runtime primitive type; the control
-    // point count comes from the hull reflection in the config.
-    if (draw_index_buffer.indexed) {
-      UseRenderEncoderResource(draw_index_buffer.buffer,
-                               MTL::ResourceUsageRead);
-      uint32_t index_stride =
-          draw_index_buffer.index_type == MTL::IndexTypeUInt16
-              ? sizeof(uint16_t)
-              : sizeof(uint32_t);
-      IRRuntimeDrawIndexedPatchesTessellationEmulation(
-          current_render_encoder_, IRRuntimePrimitiveTypeTriangle,
-          draw_index_buffer.index_type, draw_index_buffer.buffer, config, 1,
-          draw_index_buffer.index_count, 0, 0,
-          uint32_t(draw_index_buffer.offset / index_stride));
-    } else {
-      IRRuntimeDrawPatchesTessellationEmulation(
-          current_render_encoder_, IRRuntimePrimitiveTypeTriangle, config, 1,
-          draw_index_buffer.index_count, 0, 0);
-    }
+    current_render_encoder_->setVertexBuffer(
+        native_tess.cp_buffer, native_tess.cp_offset,
+        kSpirv2airControlPointBufferIndex);
+    UseRenderEncoderResource(native_tess.cp_buffer, MTL::ResourceUsageRead);
+    current_render_encoder_->setTessellationFactorBuffer(
+        native_tess.factor_buffer, native_tess.factor_offset, 0);
+    UseRenderEncoderResource(native_tess.factor_buffer, MTL::ResourceUsageRead);
+    DrawStripMergeBands([&]() {
+      current_render_encoder_->drawPatches(
+          NS::UInteger(native_tess.cp_per_patch), NS::UInteger(0),
+          NS::UInteger(native_tess.patch_count), nullptr, 0, NS::UInteger(1),
+          NS::UInteger(0));
+    });
   } else {
     // The converter's draw helpers also push the draw arguments the compiled
     // vertex function reads for SV_VertexID and SV_InstanceID.
@@ -8438,6 +8086,7 @@ void MetalCommandProcessor::EndCommandBuffer(CommandBufferKind next_kind) {
     if (texture_cache_) {
       texture_cache_->CommitLoadsAhead();
     }
+    CommitTessPrepAhead();
     ScheduleSpirvArgumentBufferRelease(current_command_buffer_);
     if (!adaptive_fence_tests_.empty()) {
       AdaptiveJudgeFenceTests();
@@ -8693,10 +8342,6 @@ MTL::RenderPassDescriptor*
 MetalCommandProcessor::GetCurrentRenderPassDescriptor() {
   return render_pass_descriptor_;
 }
-
-// ==========================================================================
-// SPIRV-Cross tessellation support.
-// ==========================================================================
 
 SpirvShaderTranslator::Modification
 MetalCommandProcessor::GetCurrentSpirvVertexShaderModification(
@@ -8971,6 +8616,15 @@ uint64_t MetalCommandProcessor::PopulatePipelineCompileRequest(
     description.vertex_shader_hash =
         vertex_translation->shader().ucode_data_hash();
     description.vertex_shader_modification = vertex_translation->modification();
+    SpirvShaderTranslator::Modification vertex_mod(
+        vertex_translation->modification());
+    if (Shader::IsHostVertexShaderTypeDomain(
+            vertex_mod.vertex.host_vertex_shader_type)) {
+      description.kind = PipelineKind::kPatchTessellation;
+      description.tessellation_mode = vertex_mod.vertex.tessellation_mode;
+      description.host_vertex_shader_type =
+          vertex_mod.vertex.host_vertex_shader_type;
+    }
   }
   if (pixel_translation) {
     description.pixel_shader_hash =

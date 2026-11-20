@@ -76,30 +76,8 @@ enum class MetalInternalGraphicsRootParameter : uint32_t {
 
 enum class MetalShaderStage {
   kVertex,
-  kHull,
-  kDomain,
   kFragment,
   kCompute,
-};
-
-// The reflection values IRRuntimeTessellationPipelineConfig and the hull/domain
-// compatibility check need. Only the fields of the converted stage are filled.
-struct MetalShaderReflection {
-  uint32_t vertex_output_size_in_bytes = 0;
-
-  uint32_t hs_max_patches_per_object_threadgroup = 0;
-  uint32_t hs_max_object_threads_per_patch = 0;
-  uint32_t hs_input_control_point_count = 0;
-  uint32_t hs_output_control_point_count = 0;
-  uint32_t hs_output_control_point_size = 0;
-  uint32_t hs_patch_constants_size = 0;
-  uint32_t hs_tessellator_output_primitive = 0;
-  float hs_max_tessellation_factor = 0.0f;
-
-  uint32_t ds_max_input_prims_per_mesh_threadgroup = 0;
-  uint32_t ds_input_control_point_count = 0;
-  uint32_t ds_input_control_point_size = 0;
-  uint32_t ds_patch_constants_size = 0;
 };
 
 struct MetalShaderConversionResult {
@@ -107,11 +85,6 @@ struct MetalShaderConversionResult {
   std::vector<uint8_t> metallib;
   // Entry point to look up in the metallib, from MSC's reflection.
   std::string entry_point_name;
-  MetalShaderReflection reflection;
-  // For the vertex stage with tessellation emulation, the synthesized stage-in
-  // function that the object function links (no vertex attributes, the guest
-  // fetches its vertices itself).
-  std::vector<uint8_t> stage_in_metallib;
   std::string error_message;
 };
 
@@ -144,11 +117,8 @@ class MetalShaderConverter {
     return root_parameter_offsets_[uint32_t(parameter)];
   }
 
-  // tessellation_emulation turns on the object/mesh lowering MSC needs for
-  // hull and domain stages, and for the vertex stage feeding them.
-  MetalShaderConversionResult Convert(
-      MetalShaderStage stage, const std::vector<uint8_t>& dxil,
-      bool tessellation_emulation = false) const;
+  MetalShaderConversionResult Convert(MetalShaderStage stage,
+                                      const std::vector<uint8_t>& dxil) const;
 
   // Converts an internal compute shader against the internal root signature
   // rather than the guest one.
@@ -183,8 +153,7 @@ class MetalShaderConverter {
   IRRootSignature* CreateInternalGraphicsRootSignature() const;
   MetalShaderConversionResult ConvertWithRootSignature(
       MetalShaderStage stage, const std::vector<uint8_t>& dxil,
-      IRRootSignature* root_signature, uint32_t compatibility_flags,
-      bool tessellation_emulation) const;
+      IRRootSignature* root_signature, uint32_t compatibility_flags) const;
   // Fills root_parameter_offsets_ and argument_buffer_size_ from the root
   // signature's reflection, failing if it does not describe the layout the
   // shaders were compiled against.
