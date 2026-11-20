@@ -33,10 +33,6 @@ add_library(xenia-gpu-metal STATIC
   metal_upload_cache.h
   metal_zpd_visibility_pool.cc
   metal_zpd_visibility_pool.h
-  msl_bindings.h
-  msl_shader.cc
-  msl_shader.h
-  msl_tess_factor_kernels.h
 )
 target_include_directories(xenia-gpu-metal PRIVATE
   ${PROJECT_SOURCE_DIR}/third_party/glslang
