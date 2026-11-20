@@ -117,9 +117,9 @@ MTL::Function* CompileTransferFragmentFunctionMsl(
   return CompileFunctionMsl(device, spirv, error_out, false);
 }
 
-MTL::Function* CompileResolveRefreshFunctionMsl(
-    MTL::Device* device, const std::vector<uint32_t>& spirv,
-    std::string* error_out) {
+MTL::Function* CompileEdramDumpFunctionMsl(MTL::Device* device,
+                                           const std::vector<uint32_t>& spirv,
+                                           std::string* error_out) {
   return CompileFunctionMsl(device, spirv, error_out, true);
 }
 

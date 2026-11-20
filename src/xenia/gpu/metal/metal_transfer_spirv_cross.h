@@ -20,10 +20,9 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
-// The render target ownership transfer fragment shaders, taken from the shared
-// SPIR-V emitter through SPIRV-Cross rather than through spirv_to_dxil and the
-// Metal Shader Converter, so their textures and push constants are bound
-// directly instead of through an argument buffer and a descriptor heap.
+// The render target ownership transfer fragment shaders and EDRAM dump/resolve
+// compute shaders, taken from the shared SPIR-V emitters through SPIRV-Cross
+// so their textures, buffers and push constants are bound directly.
 //
 // SPIRV-Cross and glslang both define namespace spv, incompatibly, so this
 // cannot be compiled beside the emitter that uses glslang's SPIR-V builder.
@@ -49,12 +48,13 @@ MTL::Function* CompileTransferFragmentFunctionMsl(
     MTL::Device* device, const std::vector<uint32_t>& spirv,
     std::string* error_out);
 
-// Direct resolve with a sampled-image output: push constants at buffer 0,
-// guest destination at buffer 1, source at texture 0, output at texture 1,
-// source stencil at texture 2.
-MTL::Function* CompileResolveRefreshFunctionMsl(
-    MTL::Device* device, const std::vector<uint32_t>& spirv,
-    std::string* error_out);
+// EDRAM dump / direct resolve compute shader: push constants at buffer 0,
+// destination buffer (EDRAM or guest memory) at buffer 1, source at texture 0,
+// optional refresh output at texture 1, source stencil at texture 2, optional
+// refresh aliases at textures 3..5.
+MTL::Function* CompileEdramDumpFunctionMsl(MTL::Device* device,
+                                           const std::vector<uint32_t>& spirv,
+                                           std::string* error_out);
 
 }  // namespace metal
 }  // namespace gpu

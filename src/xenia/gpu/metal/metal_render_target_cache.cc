@@ -71,24 +71,16 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_8bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_8bpp_scaled_cs.h"
 
-#include "metal_irconverter_runtime.h"
-
 #include "xenia/gpu/edram_dump_shader.h"
 #include "xenia/gpu/edram_transfer_shader.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_transfer_spirv_cross.h"
-#include "xenia/gpu/spirv_to_dxil_compiler.h"
 #include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/texture_util.h"
 #include "xenia/gpu/xenos.h"
 
 DEFINE_bool(metal_transfer_fast_divmod, true,
             "Use fast exact div/mod in Metal transfer shaders", "Metal");
-DEFINE_bool(metal_transfer_spirv_cross, true,
-            "Compile the render target ownership transfer shaders with "
-            "SPIRV-Cross to MSL and bind their resources directly, instead of "
-            "taking them through spirv_to_dxil and the Metal Shader Converter",
-            "Metal");
 DEFINE_bool(metal_transfer_sample_mask, true,
             "Draw a multisampled transfer destination one sample per draw, "
             "with the sample index in the push constants and the shader "
@@ -2370,8 +2362,7 @@ bool MetalRenderTargetCache::CanRotateHostDepth(
   // The rotation is a SPIR-V Cross transfer draw with native stencil output
   // from color sources into an unscaled depth destination that is a host
   // depth source of its own transfers.
-  if (!cvars::metal_transfer_spirv_cross ||
-      !UseNativeStencilOutputInTransfers() || IsDrawResolutionScaled()) {
+  if (!UseNativeStencilOutputInTransfers() || IsDrawResolutionScaled()) {
     return false;
   }
   if (!render_target_count || !render_targets || !transfers ||
@@ -4663,39 +4654,17 @@ MTL::ComputePipelineState* MetalRenderTargetCache::GetOrCreateDumpPipeline(
   if (spirv.empty()) {
     XELOGE("MetalRenderTargetCache: failed to emit the dump shader 0x{:08X}",
            key.key);
-  } else if (key.direct_resolve_texture) {
+  } else {
     std::string error;
     MTL::Function* function =
-        CompileResolveRefreshFunctionMsl(device_, spirv, &error);
+        CompileEdramDumpFunctionMsl(device_, spirv, &error);
     if (function) {
       NS::Error* pipeline_error = nullptr;
       pipeline = device_->newComputePipelineState(function, &pipeline_error);
       function->release();
     } else {
-      XELOGE("Metal: resolve refresh compilation failed: {}", error);
-    }
-  } else {
-    std::vector<uint8_t> dxil = SpirvToDxilCompiler::Translate(
-        spirv.data(), spirv.size(), SpirvToDxilCompiler::Stage::kCompute);
-    if (dxil.empty()) {
-      XELOGE(
-          "MetalRenderTargetCache: failed to translate the dump shader "
-          "0x{:08X}",
-          key.key);
-    } else {
-      MetalShaderConversionResult conversion =
-          command_processor_.metal_shader_converter().ConvertInternalCompute(
-              dxil);
-      if (!conversion.success) {
-        XELOGE(
-            "MetalRenderTargetCache: failed to convert the dump shader "
-            "0x{:08X}: {}",
-            key.key, conversion.error_message);
-      } else {
-        pipeline = CreateComputePipelineFromEmbeddedLibrary(
-            device_, conversion.metallib.data(), conversion.metallib.size(),
-            "edram_dump", conversion.entry_point_name.c_str());
-      }
+      XELOGE("MetalRenderTargetCache: dump shader 0x{:08X} compile failed: {}",
+             key.key, error);
     }
   }
   if (!pipeline) {
@@ -5096,9 +5065,6 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       encode_failed = true;
     }
   }
-  const MetalShaderConverter& converter =
-      command_processor_.metal_shader_converter();
-
   EdramDumpShaderPitches pitches;
   pitches.dest_pitch = dump_pitch;
 
@@ -5144,44 +5110,12 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
     MTL::Texture* source_texture = sources[rectangle_index].texture;
     MTL::Texture* stencil_texture = sources[rectangle_index].stencil_texture;
 
-    MTL::Buffer* heap_buffer = nullptr;
-    NS::UInteger heap_offset = 0;
-    if (!refresh_texture &&
-        !command_processor_.AcquireSpirvArgumentBufferSlice(
-            sizeof(IRDescriptorTableEntry) * 2, kInternalComputeSliceAlignment,
-            &heap_buffer, &heap_offset)) {
-      encode_failed = true;
-      break;
-    }
-    if (!refresh_texture) {
-      auto* heap_entries = reinterpret_cast<IRDescriptorTableEntry*>(
-          static_cast<uint8_t*>(heap_buffer->contents()) + heap_offset);
-      std::memset(heap_entries, 0, sizeof(IRDescriptorTableEntry) * 2);
-      IRDescriptorTableSetTexture(&heap_entries[0], source_texture, 0.0f, 0);
-      if (stencil_texture) {
-        IRDescriptorTableSetTexture(&heap_entries[1], stencil_texture, 0.0f, 0);
-      }
-    }
-
     encoder->setComputePipelineState(sources[rectangle_index].pipeline);
-    if (!refresh_texture) {
-      encoder->setBuffer(heap_buffer, heap_offset,
-                         NS::UInteger(kIRDescriptorHeapBindPoint));
-    }
-    // Nothing reached by GPU address is resident just from being written into
-    // the argument buffer.
-    encoder->useResource(dest_buffer, MTL::ResourceUsageWrite);
-    encoder->useResource(source_texture, MTL::ResourceUsageRead);
-    if (refresh_texture) {
-      encoder->setTexture(source_texture, 0);
-      if (stencil_texture) {
-        encoder->setTexture(stencil_texture, 2);
-      }
-      encoder->setBuffer(dest_buffer, 0, 1);
-    }
+    encoder->setTexture(source_texture, 0);
     if (stencil_texture) {
-      encoder->useResource(stencil_texture, MTL::ResourceUsageRead);
+      encoder->setTexture(stencil_texture, 2);
     }
+    encoder->setBuffer(dest_buffer, 0, 1);
 
     pitches.source_pitch = rt_key.GetPitchTiles();
     push_constants[kEdramDumpShaderPushConstantPitches] = pitches.pitches;
@@ -5222,53 +5156,7 @@ bool MetalRenderTargetCache::DirectResolveRenderTargets(
       push_constants[kEdramDumpShaderPushConstantResolveDispatchTile] =
           dispatch_tile.packed;
 
-      // A dispatch gets its own push constants and argument buffer: the GPU
-      // reads them when it runs, so rewriting either between dispatches
-      // already encoded into this pass would corrupt them.
-      MTL::Buffer* push_constant_buffer = nullptr;
-      NS::UInteger push_constant_offset = 0;
-      MTL::Buffer* argument_buffer = nullptr;
-      NS::UInteger argument_buffer_offset = 0;
-      if (!command_processor_.AcquireSpirvArgumentBufferSlice(
-              sizeof(push_constants), kInternalComputeSliceAlignment,
-              &push_constant_buffer, &push_constant_offset) ||
-          (!refresh_texture &&
-           !command_processor_.AcquireSpirvArgumentBufferSlice(
-               converter.internal_compute_argument_buffer_size(),
-               kInternalComputeSliceAlignment, &argument_buffer,
-               &argument_buffer_offset))) {
-        encode_failed = true;
-        break;
-      }
-      std::memcpy(static_cast<uint8_t*>(push_constant_buffer->contents()) +
-                      push_constant_offset,
-                  push_constants, sizeof(push_constants));
-
-      if (refresh_texture) {
-        encoder->setBuffer(push_constant_buffer, push_constant_offset, 0);
-      } else {
-        auto* argument_buffer_data =
-            static_cast<uint8_t*>(argument_buffer->contents()) +
-            argument_buffer_offset;
-        std::memset(argument_buffer_data, 0,
-                    converter.internal_compute_argument_buffer_size());
-        auto write_root_parameter =
-            [&](MetalInternalComputeRootParameter parameter, uint64_t address) {
-              std::memcpy(argument_buffer_data +
-                              converter.internal_compute_root_parameter_offset(
-                                  parameter),
-                          &address, sizeof(address));
-            };
-        write_root_parameter(MetalInternalComputeRootParameter::kDestUav,
-                             uint64_t(dest_buffer->gpuAddress()));
-        write_root_parameter(MetalInternalComputeRootParameter::kSourceTable,
-                             uint64_t(heap_buffer->gpuAddress()) + heap_offset);
-        write_root_parameter(MetalInternalComputeRootParameter::kPushConstants,
-                             uint64_t(push_constant_buffer->gpuAddress()) +
-                                 push_constant_offset);
-        encoder->setBuffer(argument_buffer, argument_buffer_offset,
-                           NS::UInteger(kIRArgumentBufferBindPoint));
-      }
+      encoder->setBytes(push_constants, sizeof(push_constants), 0);
 
       uint32_t threads_x =
           (dispatch.width_tiles * tile_pixels_x + (pixels_per_thread - 1)) /
@@ -6608,8 +6496,6 @@ void MetalRenderTargetCache::DumpRenderTargets(
     return;
   }
 
-  const MetalShaderConverter& converter =
-      command_processor_.metal_shader_converter();
   const uint32_t scale_x = draw_resolution_scale_x();
   const uint32_t scale_y = draw_resolution_scale_y();
 
@@ -6664,36 +6550,12 @@ void MetalRenderTargetCache::DumpRenderTargets(
       continue;
     }
 
-    // The source textures reach the shader through a descriptor heap, and the
-    // EDRAM buffer and push constants through the top-level argument buffer.
-    MTL::Buffer* heap_buffer = nullptr;
-    NS::UInteger heap_offset = 0;
-    if (!command_processor_.AcquireSpirvArgumentBufferSlice(
-            sizeof(IRDescriptorTableEntry) * 2, kInternalComputeSliceAlignment,
-            &heap_buffer, &heap_offset)) {
-      XELOGE(
-          "MetalRenderTargetCache::DumpRenderTargets: failed to allocate the "
-          "descriptor heap");
-      break;
-    }
-    auto* heap_entries = reinterpret_cast<IRDescriptorTableEntry*>(
-        static_cast<uint8_t*>(heap_buffer->contents()) + heap_offset);
-    std::memset(heap_entries, 0, sizeof(IRDescriptorTableEntry) * 2);
-    IRDescriptorTableSetTexture(&heap_entries[0], source_texture, 0.0f, 0);
-    if (stencil_texture) {
-      IRDescriptorTableSetTexture(&heap_entries[1], stencil_texture, 0.0f, 0);
-    }
-
     encoder->setComputePipelineState(dump_pipeline);
-    encoder->setBuffer(heap_buffer, heap_offset,
-                       NS::UInteger(kIRDescriptorHeapBindPoint));
-    // Nothing reached by GPU address is resident just from being written into
-    // the argument buffer.
-    encoder->useResource(edram_buffer_, MTL::ResourceUsageWrite);
-    encoder->useResource(source_texture, MTL::ResourceUsageRead);
+    encoder->setTexture(source_texture, 0);
     if (stencil_texture) {
-      encoder->useResource(stencil_texture, MTL::ResourceUsageRead);
+      encoder->setTexture(stencil_texture, 2);
     }
+    encoder->setBuffer(edram_buffer_, 0, 1);
 
     pitches.source_pitch = rt_key.GetPitchTiles();
 
@@ -6708,54 +6570,10 @@ void MetalRenderTargetCache::DumpRenderTargets(
           rt_key.GetNonWrappedTileIndex(dump_base + dispatch.offset);
       offsets.source_base_tiles = rt_key.base_tiles;
 
-      // A dispatch gets its own push constants and argument buffer: the GPU
-      // reads them when it runs, so rewriting either between dispatches
-      // already encoded into this pass would corrupt them.
-      MTL::Buffer* push_constant_buffer = nullptr;
-      NS::UInteger push_constant_offset = 0;
-      MTL::Buffer* argument_buffer = nullptr;
-      NS::UInteger argument_buffer_offset = 0;
-      if (!command_processor_.AcquireSpirvArgumentBufferSlice(
-              sizeof(uint32_t) * kEdramDumpShaderPushConstantCount,
-              kInternalComputeSliceAlignment, &push_constant_buffer,
-              &push_constant_offset) ||
-          !command_processor_.AcquireSpirvArgumentBufferSlice(
-              converter.internal_compute_argument_buffer_size(),
-              kInternalComputeSliceAlignment, &argument_buffer,
-              &argument_buffer_offset)) {
-        XELOGE(
-            "MetalRenderTargetCache::DumpRenderTargets: failed to allocate the "
-            "shader arguments");
-        break;
-      }
-
-      auto* push_constant_data = reinterpret_cast<uint32_t*>(
-          static_cast<uint8_t*>(push_constant_buffer->contents()) +
-          push_constant_offset);
-      push_constant_data[kEdramDumpShaderPushConstantPitches] = pitches.pitches;
-      push_constant_data[kEdramDumpShaderPushConstantOffsets] = offsets.offsets;
-
-      auto* argument_buffer_data =
-          static_cast<uint8_t*>(argument_buffer->contents()) +
-          argument_buffer_offset;
-      std::memset(argument_buffer_data, 0,
-                  converter.internal_compute_argument_buffer_size());
-      auto write_root_parameter =
-          [&](MetalInternalComputeRootParameter parameter, uint64_t address) {
-            std::memcpy(
-                argument_buffer_data +
-                    converter.internal_compute_root_parameter_offset(parameter),
-                &address, sizeof(address));
-          };
-      write_root_parameter(MetalInternalComputeRootParameter::kDestUav,
-                           uint64_t(edram_buffer_->gpuAddress()));
-      write_root_parameter(MetalInternalComputeRootParameter::kSourceTable,
-                           uint64_t(heap_buffer->gpuAddress()) + heap_offset);
-      write_root_parameter(
-          MetalInternalComputeRootParameter::kPushConstants,
-          uint64_t(push_constant_buffer->gpuAddress()) + push_constant_offset);
-      encoder->setBuffer(argument_buffer, argument_buffer_offset,
-                         NS::UInteger(kIRArgumentBufferBindPoint));
+      uint32_t push_constants[kEdramDumpShaderPushConstantCount] = {};
+      push_constants[kEdramDumpShaderPushConstantPitches] = pitches.pitches;
+      push_constants[kEdramDumpShaderPushConstantOffsets] = offsets.offsets;
+      encoder->setBytes(push_constants, sizeof(push_constants), 0);
 
       encoder->dispatchThreadgroups(
           MTL::Size::Make((scale_x *
@@ -9779,8 +9597,6 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             last_transfer_depth_state = state;
           }
         };
-        const bool transfer_uses_spirv_cross =
-            cvars::metal_transfer_spirv_cross;
         MTL::Texture* set_textures[2][2] = {};
         MTL::Buffer* host_depth_buffer = nullptr;
         auto bind_transfer_source_texture = [&](uint32_t set, uint32_t binding,
@@ -9790,19 +9606,9 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
         auto bind_transfer_host_depth_buffer = [&](MTL::Buffer* buffer) {
           host_depth_buffer = buffer;
         };
-        // A draw reads its heap, push constants and argument buffer when it
-        // runs, so every sample's draw needs its own copy of whatever differs
-        // between them rather than one rewritten between draws already encoded
-        // into this pass. Only the push constants do differ, so they and the
-        // argument buffers pointing at them are laid out for all the samples in
-        // one allocation each, and the heap, the residency and the textures are
-        // bound once for the whole group.
         uint32_t transfer_push_constants[kTransferSampleDrawMax]
                                         [kTransferPushConstantDwordMax];
         uint32_t transfer_push_constant_count = 0;
-        MTL::Buffer* transfer_argument_buffer = nullptr;
-        NS::UInteger transfer_argument_buffer_offset = 0;
-        uint32_t transfer_argument_buffer_stride = 0;
         auto bind_transfer_fragment_resources =
             [&](const EdramTransferShaderKey& shader_key,
                 const EdramTransferAddressConstant& address,
@@ -9853,152 +9659,19 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
             }
           }
 
-          if (transfer_uses_spirv_cross) {
-            MTL::Texture* textures[kTransferMslTextureCount] = {};
-            for (uint32_t set = 0; set < kTransferDescriptorSetCount; ++set) {
-              for (uint32_t binding = 0; binding < kTransferBindingsPerSet;
-                   ++binding) {
-                textures[TransferMslTextureIndex(set, binding)] =
-                    set_textures[set][binding];
-              }
-            }
-            encoder->setFragmentTextures(
-                textures, NS::Range::Make(0, kTransferMslTextureCount));
-            if (host_depth_buffer) {
-              encoder->setFragmentBuffer(host_depth_buffer, 0,
-                                         kTransferMslHostDepthBufferIndex);
-            }
-            mark_encoder_mutation(
-                kDrawPassTransferEncoderMutationFragmentTextures |
-                kDrawPassTransferEncoderMutationFragmentSlot0 |
-                kDrawPassTransferEncoderMutationFragmentSlot1);
-            return true;
-          }
-
-          const MetalShaderConverter& converter =
-              command_processor_.metal_shader_converter();
-          const uint32_t push_constant_stride =
-              xe::align(std::max<uint32_t>(
-                            sizeof(uint32_t) * transfer_push_constant_count,
-                            sizeof(uint32_t)),
-                        kInternalComputeSliceAlignment);
-          transfer_argument_buffer_stride =
-              xe::align(converter.internal_graphics_argument_buffer_size(),
-                        kInternalComputeSliceAlignment);
-          MTL::Buffer* push_constant_buffer = nullptr;
-          NS::UInteger push_constant_offset = 0;
-          if (!command_processor_.AcquireSpirvArgumentBufferSlice(
-                  push_constant_stride * sample_draw_count,
-                  kInternalComputeSliceAlignment, &push_constant_buffer,
-                  &push_constant_offset) ||
-              !command_processor_.AcquireSpirvArgumentBufferSlice(
-                  transfer_argument_buffer_stride * sample_draw_count,
-                  kInternalComputeSliceAlignment, &transfer_argument_buffer,
-                  &transfer_argument_buffer_offset)) {
-            return false;
-          }
-
-          // One heap slice per set the layout declares, in the dense order the
-          // emitter numbers them.
-          static const MetalInternalGraphicsRootParameter kTableParameters[2] =
-              {
-                  MetalInternalGraphicsRootParameter::kSourceTable0,
-                  MetalInternalGraphicsRootParameter::kSourceTable1,
-              };
-          MTL::Buffer* heap_buffer = nullptr;
-          NS::UInteger heap_offset = 0;
-          auto set_used = [&](uint32_t set) {
-            return set_textures[set][0] || set_textures[set][1];
-          };
-          uint32_t table_count = 0;
-          for (uint32_t set = 0; set < 2; ++set) {
-            if (set_used(set)) {
-              ++table_count;
+          MTL::Texture* textures[kTransferMslTextureCount] = {};
+          for (uint32_t set = 0; set < kTransferDescriptorSetCount; ++set) {
+            for (uint32_t binding = 0; binding < kTransferBindingsPerSet;
+                 ++binding) {
+              textures[TransferMslTextureIndex(set, binding)] =
+                  set_textures[set][binding];
             }
           }
-          uint64_t table_addresses[2] = {};
-          if (table_count) {
-            if (!command_processor_.AcquireSpirvArgumentBufferSlice(
-                    sizeof(IRDescriptorTableEntry) * 2 * table_count,
-                    kInternalComputeSliceAlignment, &heap_buffer,
-                    &heap_offset)) {
-              return false;
-            }
-            auto* heap_entries = reinterpret_cast<IRDescriptorTableEntry*>(
-                static_cast<uint8_t*>(heap_buffer->contents()) + heap_offset);
-            std::memset(heap_entries, 0,
-                        sizeof(IRDescriptorTableEntry) * 2 * table_count);
-            uint32_t table_index = 0;
-            for (uint32_t set = 0; set < 2; ++set) {
-              if (!set_used(set)) {
-                continue;
-              }
-              IRDescriptorTableEntry* entries =
-                  heap_entries + size_t(table_index) * 2;
-              for (uint32_t binding = 0; binding < 2; ++binding) {
-                MTL::Texture* texture = set_textures[set][binding];
-                if (!texture) {
-                  continue;
-                }
-                IRDescriptorTableSetTexture(&entries[binding], texture, 0.0f,
-                                            0);
-                encoder->useResource(texture, MTL::ResourceUsageRead,
-                                     MTL::RenderStageFragment);
-              }
-              table_addresses[table_index] =
-                  uint64_t(heap_buffer->gpuAddress()) + heap_offset +
-                  sizeof(IRDescriptorTableEntry) * 2 * table_index;
-              ++table_index;
-            }
-            encoder->setFragmentBuffer(
-                heap_buffer, heap_offset,
-                NS::UInteger(kIRDescriptorHeapBindPoint));
-          }
+          encoder->setFragmentTextures(
+              textures, NS::Range::Make(0, kTransferMslTextureCount));
           if (host_depth_buffer) {
-            encoder->useResource(host_depth_buffer, MTL::ResourceUsageRead,
-                                 MTL::RenderStageFragment);
-          }
-
-          for (uint32_t sample_draw = 0; sample_draw < sample_draw_count;
-               ++sample_draw) {
-            NS::UInteger sample_push_constant_offset =
-                push_constant_offset + push_constant_stride * sample_draw;
-            if (transfer_push_constant_count) {
-              std::memcpy(
-                  static_cast<uint8_t*>(push_constant_buffer->contents()) +
-                      sample_push_constant_offset,
-                  transfer_push_constants[sample_draw],
-                  sizeof(uint32_t) * transfer_push_constant_count);
-            }
-            auto* argument_buffer_data =
-                static_cast<uint8_t*>(transfer_argument_buffer->contents()) +
-                transfer_argument_buffer_offset +
-                transfer_argument_buffer_stride * sample_draw;
-            std::memset(argument_buffer_data, 0,
-                        converter.internal_graphics_argument_buffer_size());
-            auto write_root_parameter =
-                [&](MetalInternalGraphicsRootParameter parameter,
-                    uint64_t address_value) {
-                  std::memcpy(
-                      argument_buffer_data +
-                          converter.internal_graphics_root_parameter_offset(
-                              parameter),
-                      &address_value, sizeof(address_value));
-                };
-            for (uint32_t table_index = 0; table_index < table_count;
-                 ++table_index) {
-              write_root_parameter(kTableParameters[table_index],
-                                   table_addresses[table_index]);
-            }
-            if (host_depth_buffer) {
-              write_root_parameter(
-                  MetalInternalGraphicsRootParameter::kHostDepthBufferUav,
-                  uint64_t(host_depth_buffer->gpuAddress()));
-            }
-            write_root_parameter(
-                MetalInternalGraphicsRootParameter::kPushConstants,
-                uint64_t(push_constant_buffer->gpuAddress()) +
-                    sample_push_constant_offset);
+            encoder->setFragmentBuffer(host_depth_buffer, 0,
+                                       kTransferMslHostDepthBufferIndex);
           }
           mark_encoder_mutation(
               kDrawPassTransferEncoderMutationFragmentTextures |
@@ -10007,20 +9680,12 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return true;
         };
         auto bind_transfer_fragment_sample = [&](uint32_t sample_draw) {
-          if (transfer_uses_spirv_cross) {
-            if (transfer_push_constant_count) {
-              encoder->setFragmentBytes(
-                  transfer_push_constants[sample_draw],
-                  sizeof(uint32_t) * transfer_push_constant_count,
-                  kTransferMslPushConstantBufferIndex);
-            }
-            return;
+          if (transfer_push_constant_count) {
+            encoder->setFragmentBytes(
+                transfer_push_constants[sample_draw],
+                sizeof(uint32_t) * transfer_push_constant_count,
+                kTransferMslPushConstantBufferIndex);
           }
-          encoder->setFragmentBuffer(
-              transfer_argument_buffer,
-              transfer_argument_buffer_offset +
-                  transfer_argument_buffer_stride * sample_draw,
-              NS::UInteger(kIRArgumentBufferBindPoint));
         };
         auto bind_transfer_stencil_reference = [&](uint32_t reference) {
           if (!last_transfer_stencil_reference_valid ||
@@ -10670,7 +10335,7 @@ MTL::Function* MetalRenderTargetCache::GetOrCreateTransferFragmentFunction(
     XELOGE(
         "MetalRenderTargetCache: failed to emit the transfer shader 0x{:08X}",
         key.key);
-  } else if (cvars::metal_transfer_spirv_cross) {
+  } else {
     std::string error;
     function = CompileTransferFragmentFunctionMsl(device_, spirv, &error);
     if (!function) {
@@ -10678,49 +10343,6 @@ MTL::Function* MetalRenderTargetCache::GetOrCreateTransferFragmentFunction(
           "MetalRenderTargetCache: failed to compile the MSL transfer shader "
           "0x{:08X}: {}",
           key.key, error);
-    }
-  } else {
-    std::vector<uint8_t> dxil = SpirvToDxilCompiler::Translate(
-        spirv.data(), spirv.size(), SpirvToDxilCompiler::Stage::kPixel);
-    if (dxil.empty()) {
-      XELOGE(
-          "MetalRenderTargetCache: failed to translate the transfer shader "
-          "0x{:08X}",
-          key.key);
-    } else {
-      MetalShaderConversionResult conversion =
-          command_processor_.metal_shader_converter().ConvertInternalGraphics(
-              MetalShaderStage::kFragment, dxil);
-      if (!conversion.success) {
-        XELOGE(
-            "MetalRenderTargetCache: failed to convert the transfer shader "
-            "0x{:08X}: {}",
-            key.key, conversion.error_message);
-      } else {
-        NS::Error* error = nullptr;
-        dispatch_data_t data = dispatch_data_create(
-            conversion.metallib.data(), conversion.metallib.size(), nullptr,
-            DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-        MTL::Library* library = device_->newLibrary(data, &error);
-        dispatch_release(data);
-        if (!library) {
-          XELOGE(
-              "MetalRenderTargetCache: transfer shader 0x{:08X} metallib "
-              "rejected: {}",
-              key.key,
-              error ? error->localizedDescription()->utf8String() : "unknown");
-        } else {
-          function = library->newFunction(NS::String::string(
-              conversion.entry_point_name.c_str(), NS::UTF8StringEncoding));
-          if (!function) {
-            XELOGE(
-                "MetalRenderTargetCache: transfer shader 0x{:08X} has no "
-                "function named {}",
-                key.key, conversion.entry_point_name);
-          }
-          library->release();
-        }
-      }
     }
   }
   // A failed key is cached as null so it is not retried on every transfer.

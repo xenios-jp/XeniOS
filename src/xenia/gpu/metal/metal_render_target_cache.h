@@ -688,9 +688,9 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   std::unordered_map<TransferPipelineKey, MTL::RenderPipelineState*,
                      TransferPipelineKey::Hasher>
       transfer_pipelines_;
-  // The fragment half comes from the shared SPIR-V emitter, through either
-  // spirv_to_dxil and the Metal Shader Converter or SPIRV-Cross. A key that
-  // failed is kept as null so it is not retried on every transfer.
+  // The fragment half comes from the shared SPIR-V emitter through
+  // SPIRV-Cross. A key that failed is kept as null so it is not retried on
+  // every transfer.
   std::unordered_map<EdramTransferShaderKey, MTL::Function*,
                      EdramTransferShaderKey::Hasher>
       transfer_fragment_functions_;
