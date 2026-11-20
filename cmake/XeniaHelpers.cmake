@@ -292,11 +292,11 @@ endfunction()
 # xe_shader_rules_metal(target shader_dir)
 #
 # Metal counterpart to xe_shader_rules_spirv. Runs
-# xenia-shader-cc --msl on each cs/ps/vs-stage *.xesl file under shader_dir,
-# emitting to the build tree under ${PROJECT_BINARY_DIR}/generated/<src-
-# relative>/bytecode/metal/ with the metallib bytes embedded as
-# `const uint8_t <id>_metallib[]`. .glsl / .hlsl / fxaa / ffx_ sources are
-# skipped (no MSL branch in those polyglots).
+# xenia-shader-cc --msl on each cs/ps/vs-stage *.xesl and *.metal file under
+# shader_dir, emitting to the build tree under
+# ${PROJECT_BINARY_DIR}/generated/<src-relative>/bytecode/metal/ with the
+# metallib bytes embedded as `const uint8_t <id>_metallib[]`. .glsl / .hlsl /
+# fxaa / ffx_ sources are skipped (no MSL branch in those polyglots).
 function(xe_shader_rules_metal target shader_dir)
   if(NOT APPLE)
     return()
@@ -306,7 +306,8 @@ function(xe_shader_rules_metal target shader_dir)
     set(_metal_platform_args --ios "${CMAKE_OSX_DEPLOYMENT_TARGET}")
   endif()
   get_filename_component(shader_dir "${shader_dir}" ABSOLUTE)
-  file(GLOB _sources "${shader_dir}/*.xesl" "${shader_dir}/*.xesli")
+  file(GLOB _sources
+       "${shader_dir}/*.xesl" "${shader_dir}/*.xesli" "${shader_dir}/*.metal")
   file(RELATIVE_PATH _rel_dir "${PROJECT_SOURCE_DIR}/src" "${shader_dir}")
   set(_generated_root "${PROJECT_BINARY_DIR}/generated")
   set(_bytecode_dir "${_generated_root}/${_rel_dir}/bytecode/metal")
