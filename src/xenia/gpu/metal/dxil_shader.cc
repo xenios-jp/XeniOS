@@ -103,11 +103,14 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
       spirv2air::translate(reinterpret_cast<const uint32_t*>(spirv.data()),
                            spirv.size() / sizeof(uint32_t), options);
   if (!result.ok()) {
-    XELOGD(
-        "DxilShader: spirv2air can't translate {} shader {:016X} modification "
-        "{:016X} ({})",
+    static std::atomic<uint64_t> spirv2air_reject_count{0};
+    const uint64_t reject_index =
+        spirv2air_reject_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    XELOGW(
+        "DxilShader: spirv2air rejected {} shader {:016X} modification "
+        "{:016X} (fallback #{}: {})",
         shader().type() == xenos::ShaderType::kVertex ? "vertex" : "pixel",
-        shader().ucode_data_hash(), modification(), result.error);
+        shader().ucode_data_hash(), modification(), reject_index, result.error);
     return false;
   }
   conversion.success = true;
