@@ -813,7 +813,7 @@ MTL::BlendFactor ToMetalBlendFactorAlpha(xenos::BlendFactor blend_factor) {
 MetalCommandProcessor::MetalCommandProcessor(
     MetalGraphicsSystem* graphics_system, kernel::KernelState* kernel_state)
     : CommandProcessor(graphics_system, kernel_state),
-      dxil_binder_(*this, metal_shader_converter_) {}
+      dxil_binder_(*this) {}
 
 std::string MetalCommandProcessor::MakeTitleStateSuffix() const {
   if (!render_target_cache_) {
@@ -6390,16 +6390,6 @@ bool MetalCommandProcessor::IssueDrawDxil(
     uint32_t normalized_color_mask, const RegisterFile& regs) {
   SCOPE_profile_cpu_f("gpu");
   assert_not_null(vertex_shader);
-  if (!metal_shader_converter_.is_available()) {
-    static bool converter_unavailable_logged = false;
-    if (!converter_unavailable_logged) {
-      converter_unavailable_logged = true;
-      XELOGE(
-          "DXIL: the Metal Shader Converter is unavailable, no draws can be "
-          "issued");
-    }
-    return false;
-  }
   auto* dxil_vertex_shader = static_cast<DxilShader*>(vertex_shader);
   auto* dxil_pixel_shader = static_cast<DxilShader*>(pixel_shader);
 
@@ -6564,7 +6554,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
   const uint32_t pixel_buffer_mask =
       pixel_translation && !bound_placeholder
           ? pixel_translation->used_buffer_mask()
-          : uint32_t(1) << kIRArgumentBufferBindPoint;
+          : uint32_t(1) << MetalDxilBinder::kArgumentBufferIndex;
   if (stand_in_wait_start_ticks) {
     double wait_ms = double(xe::Clock::QueryHostTickCount() -
                             stand_in_wait_start_ticks) *
@@ -6699,8 +6689,7 @@ bool MetalCommandProcessor::IssueDrawDxil(
                      dxil_guest_constant_versions_[3]};
   if (!dxil_binder_.Bind(current_render_encoder_, dxil_vertex_shader,
                          bind_pixel_shader, constants, memexport_used,
-                         /*tessellated=*/false, vertex_buffer_mask,
-                         pixel_buffer_mask)) {
+                         vertex_buffer_mask, pixel_buffer_mask)) {
     return false;
   }
 
@@ -7642,20 +7631,6 @@ void MetalCommandProcessor::SetRenderEncoderBuffer(RenderEncoderStage stage,
         current_render_encoder_->setFragmentBufferOffset(offset, index);
       } else {
         current_render_encoder_->setFragmentBuffer(buffer, offset, index);
-      }
-      break;
-    case RenderEncoderStage::kObject:
-      if (offset_only) {
-        current_render_encoder_->setObjectBufferOffset(offset, index);
-      } else {
-        current_render_encoder_->setObjectBuffer(buffer, offset, index);
-      }
-      break;
-    case RenderEncoderStage::kMesh:
-      if (offset_only) {
-        current_render_encoder_->setMeshBufferOffset(offset, index);
-      } else {
-        current_render_encoder_->setMeshBuffer(buffer, offset, index);
       }
       break;
     default:

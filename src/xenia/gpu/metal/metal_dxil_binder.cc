@@ -12,14 +12,11 @@
 #include <algorithm>
 #include <cstring>
 
-#include "metal_irconverter_runtime.h"
-
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/profiling.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
-#include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 
@@ -27,9 +24,8 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
-MetalDxilBinder::MetalDxilBinder(MetalCommandProcessor& command_processor,
-                                 const MetalShaderConverter& converter)
-    : command_processor_(command_processor), converter_(converter) {}
+MetalDxilBinder::MetalDxilBinder(MetalCommandProcessor& command_processor)
+    : command_processor_(command_processor) {}
 
 MetalDxilBinder::~MetalDxilBinder() = default;
 
@@ -98,8 +94,8 @@ bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
              uint32_t(binding.fetch_constant));
       return false;
     }
-    IRDescriptorTableEntry entry = {};
-    IRDescriptorTableSetTexture(&entry, texture, 0.0f, 0);
+    DescriptorEntry entry = {};
+    entry.texture_view_id = texture->gpuResourceID()._impl;
     texture_heap_entries_.push_back(entry);
     resident_textures_.push_back(texture);
   }
@@ -118,8 +114,8 @@ bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
              uint32_t(binding.fetch_constant));
       return false;
     }
-    IRDescriptorTableEntry entry = {};
-    IRDescriptorTableSetSampler(&entry, sampler, 0.0f);
+    DescriptorEntry entry = {};
+    entry.gpu_va = sampler->gpuResourceID()._impl;
     sampler_heap_entries_.push_back(entry);
   }
   range_out.sampler_count =
@@ -131,10 +127,10 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
                            const SpirvShader* vertex_shader,
                            const SpirvShader* pixel_shader,
                            const Constants& constants, bool memexport_used,
-                           bool tessellated, uint32_t vertex_buffer_mask,
+                           uint32_t vertex_buffer_mask,
                            uint32_t pixel_buffer_mask) {
   SCOPE_profile_cpu_i("gpu", "MetalDxilBinder::Bind");
-  if (!encoder || !converter_.is_available()) {
+  if (!encoder) {
     return false;
   }
   MetalTextureCache* texture_cache = command_processor_.texture_cache();
@@ -213,12 +209,12 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   }
 
   Slice texture_heap, sampler_heap;
-  auto entries_equal = [](const std::vector<IRDescriptorTableEntry>& a,
-                          const std::vector<IRDescriptorTableEntry>& b) {
+  auto entries_equal = [](const std::vector<DescriptorEntry>& a,
+                          const std::vector<DescriptorEntry>& b) {
     return a.size() == b.size() &&
            (a.empty() ||
             std::memcmp(a.data(), b.data(),
-                        a.size() * sizeof(IRDescriptorTableEntry)) == 0);
+                        a.size() * sizeof(DescriptorEntry)) == 0);
   };
   if (descriptor_heap_slices_valid_ &&
       entries_equal(texture_heap_entries_, cached_texture_heap_entries_) &&
@@ -228,11 +224,11 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   } else {
     if (!Upload(texture_heap_entries_.data(),
                 uint32_t(texture_heap_entries_.size() *
-                         sizeof(IRDescriptorTableEntry)),
+                         sizeof(DescriptorEntry)),
                 texture_heap) ||
         !Upload(sampler_heap_entries_.data(),
                 uint32_t(sampler_heap_entries_.size() *
-                         sizeof(IRDescriptorTableEntry)),
+                         sizeof(DescriptorEntry)),
                 sampler_heap)) {
       XELOGE("MetalDxilBinder: failed to allocate the descriptor heaps");
       return false;
@@ -274,14 +270,14 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   }
 
   const struct {
-    MetalRootParameter parameter;
+    ArgumentSlot slot;
     const ConstantBlock& block;
   } constant_bindings[kConstantCount] = {
-      {MetalRootParameter::kSystemConstants, constants.system},
-      {MetalRootParameter::kFloatConstantsVertex, constants.float_vertex},
-      {MetalRootParameter::kFloatConstantsPixel, constants.float_pixel},
-      {MetalRootParameter::kBoolLoopConstants, constants.bool_loop},
-      {MetalRootParameter::kFetchConstants, constants.fetch},
+      {ArgumentSlot::kSystemConstants, constants.system},
+      {ArgumentSlot::kFloatConstantsVertex, constants.float_vertex},
+      {ArgumentSlot::kFloatConstantsPixel, constants.float_pixel},
+      {ArgumentSlot::kBoolLoopConstants, constants.bool_loop},
+      {ArgumentSlot::kFetchConstants, constants.fetch},
   };
   Slice constant_slices[kConstantCount];
   for (size_t i = 0; i < kConstantCount; ++i) {
@@ -297,84 +293,58 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   }
 
   Slice argument_buffer;
-  uint32_t argument_buffer_size = converter_.argument_buffer_size();
   auto slice_address = [](const Slice& slice) -> uint64_t {
     return slice.gpu_address;
   };
   ArgumentBufferKey argument_key{};
-  auto set_argument = [&](MetalRootParameter parameter, uint64_t address) {
-    argument_key[size_t(parameter)] = address;
+  auto set_argument = [&](ArgumentSlot slot, uint64_t address) {
+    argument_key[size_t(slot)] = address;
   };
   for (size_t i = 0; i < kConstantCount; ++i) {
-    set_argument(constant_bindings[i].parameter,
-                 slice_address(constant_slices[i]));
+    set_argument(constant_bindings[i].slot, slice_address(constant_slices[i]));
   }
-  set_argument(MetalRootParameter::kRuntimeData,
+  set_argument(ArgumentSlot::kRuntimeData,
                uint64_t(runtime_data_buffer->gpuAddress()));
   uint64_t shared_memory_address = uint64_t(shared_memory_buffer->gpuAddress());
-  set_argument(MetalRootParameter::kSharedMemorySrv, shared_memory_address);
-  set_argument(MetalRootParameter::kSharedMemoryUav, shared_memory_address);
-  set_argument(MetalRootParameter::kTextureIndicesVertex,
+  set_argument(ArgumentSlot::kSharedMemorySrv, shared_memory_address);
+  set_argument(ArgumentSlot::kSharedMemoryUav, shared_memory_address);
+  set_argument(ArgumentSlot::kTextureIndicesVertex,
                slice_address(stage_index_buffers[kStageVertex]));
-  set_argument(MetalRootParameter::kTextureIndicesPixel,
+  set_argument(ArgumentSlot::kTextureIndicesPixel,
                slice_address(stage_index_buffers[kStagePixel]));
   // The lowered shader indexes the heaps directly and never dereferences these
-  // tables, but their slots still have to be valid.
+  // tables, but their slots still have to be valid for MSC fallback shaders.
   uint64_t texture_heap_address = slice_address(texture_heap);
   uint64_t sampler_heap_address = slice_address(sampler_heap);
-  set_argument(MetalRootParameter::kTextureRangeVertex, texture_heap_address);
-  set_argument(MetalRootParameter::kTextureRangePixel, texture_heap_address);
-  set_argument(MetalRootParameter::kSamplerRangeVertex, sampler_heap_address);
-  set_argument(MetalRootParameter::kSamplerRangePixel, sampler_heap_address);
+  set_argument(ArgumentSlot::kTextureRangeVertex, texture_heap_address);
+  set_argument(ArgumentSlot::kTextureRangePixel, texture_heap_address);
+  set_argument(ArgumentSlot::kSamplerRangeVertex, sampler_heap_address);
+  set_argument(ArgumentSlot::kSamplerRangePixel, sampler_heap_address);
   auto upload_argument_buffer = [&](Slice& out) {
-    if (!Upload(nullptr, argument_buffer_size, out)) {
-      return false;
-    }
-    uint8_t* mapping =
-        static_cast<uint8_t*>(out.buffer->contents()) + out.offset;
-    for (size_t i = 0; i < argument_key.size(); ++i) {
-      auto parameter = MetalRootParameter(i);
-      uint32_t offset = converter_.root_parameter_offset(parameter);
-      assert_true(offset != UINT32_MAX &&
-                  offset + sizeof(uint64_t) <= argument_buffer_size);
-      std::memcpy(mapping + offset, &argument_key[i], sizeof(uint64_t));
-    }
-    return true;
+    return Upload(argument_key.data(), uint32_t(sizeof(argument_key)), out);
   };
   if (!argument_buffer_slices_.GetOrUpload(argument_key, upload_argument_buffer,
                                            argument_buffer)) {
     XELOGE("MetalDxilBinder: failed to allocate the argument buffer");
     return false;
   }
-  // Tessellation emulation runs the hull stage as an object shader and the
-  // tessellator as a mesh shader, so the pre-rasterization bindings go to those
-  // stages instead of the vertex stage.
   using Stage = MetalCommandProcessor::RenderEncoderStage;
-  auto bind = [&](Stage stage, const Slice& slice, uint64_t bind_point) {
+  auto bind = [&](Stage stage, const Slice& slice, uint32_t bind_point) {
     command_processor_.SetRenderEncoderBuffer(stage, slice.buffer, slice.offset,
                                               NS::UInteger(bind_point));
   };
-  auto bind_all_stages = [&](const Slice& slice, uint64_t bind_point) {
+  auto bind_all_stages = [&](const Slice& slice, uint32_t bind_point) {
     // Only to a stage whose function can read the bind point.
-    if (tessellated) {
-      bind(Stage::kObject, slice, bind_point);
-      bind(Stage::kMesh, slice, bind_point);
-    } else if ((vertex_buffer_mask >> bind_point) & 1) {
+    if ((vertex_buffer_mask >> bind_point) & 1) {
       bind(Stage::kVertex, slice, bind_point);
     }
     if ((pixel_buffer_mask >> bind_point) & 1) {
       bind(Stage::kFragment, slice, bind_point);
     }
   };
-  bind_all_stages(texture_heap, kIRDescriptorHeapBindPoint);
-  bind_all_stages(sampler_heap, kIRSamplerHeapBindPoint);
-  bind_all_stages(argument_buffer, kIRArgumentBufferBindPoint);
-  if (tessellated) {
-    // The hull and domain stages read the same root parameters from their own
-    // bind point.
-    bind(Stage::kObject, argument_buffer, kIRArgumentBufferHullDomainBindPoint);
-    bind(Stage::kMesh, argument_buffer, kIRArgumentBufferHullDomainBindPoint);
-  }
+  bind_all_stages(texture_heap, kDescriptorHeapBufferIndex);
+  bind_all_stages(sampler_heap, kSamplerHeapBufferIndex);
+  bind_all_stages(argument_buffer, kArgumentBufferIndex);
   // Binding covers only the three buffers above; everything the shaders reach
   // through a GPU address has to be made resident explicitly.
   auto use_slice = [&](const Slice& slice) {

@@ -387,6 +387,13 @@ bool MetalShaderConverter::QueryRootParameterOffsets() {
           uint32_t(key.type), key.space, key.slot);
       return false;
     }
+    if (location.topLevelOffset != i * sizeof(uint64_t)) {
+      XELOGE(
+          "MetalShaderConverter: root parameter {} at offset {}, expected {} "
+          "(MetalDxilBinder fixed spirv2air layout)",
+          i, location.topLevelOffset, i * sizeof(uint64_t));
+      return false;
+    }
     root_parameter_offsets_[i] = location.topLevelOffset;
     argument_buffer_size_ =
         std::max(argument_buffer_size_,

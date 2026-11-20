@@ -15,12 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include "xenia/gpu/metal/metal_shader_converter.h"
 #include "xenia/gpu/metal/metal_upload_cache.h"
 #include "xenia/gpu/spirv_shader.h"
 #include "xenia/ui/metal/metal_api.h"
-
-struct IRDescriptorTableEntry;
 
 namespace xe {
 namespace gpu {
@@ -28,12 +25,48 @@ namespace metal {
 
 class MetalCommandProcessor;
 
-// Binds one draw's resources for the SPIR-V -> DXIL -> AIR path. Metal Shader
-// Converter shaders take every root parameter from a top-level argument buffer
-// and reach textures and samplers by indexing two descriptor heaps, so nothing
-// lands in a Metal texture or sampler slot.
+// Binds one draw's resources for the spirv2air (and MSC fallback) guest path.
+// Shaders take every root parameter from a top-level argument buffer at
+// buffer(2) and reach textures and samplers by indexing two descriptor heaps
+// at buffer(0) and buffer(1), so nothing lands in a Metal texture or sampler
+// slot.
 class MetalDxilBinder {
  public:
+  // Buffer bind points shared by spirv2air's default graphics layout and MSC.
+  static constexpr uint32_t kDescriptorHeapBufferIndex = 0;
+  static constexpr uint32_t kSamplerHeapBufferIndex = 1;
+  static constexpr uint32_t kArgumentBufferIndex = 2;
+
+  // Top-level argument buffer slots (each an 8-byte GPU virtual address at
+  // byte offset index * 8), matching spirv2air/docs/bindings.md and MSC's
+  // guest root signature.
+  enum class ArgumentSlot : uint32_t {
+    kSystemConstants = 0,       // byte 0  (CBV b0, space1)
+    kFloatConstantsVertex = 1,  // byte 8  (CBV b1, space1)
+    kFloatConstantsPixel = 2,   // byte 16 (CBV b2, space1)
+    kBoolLoopConstants = 3,     // byte 24 (CBV b3, space1)
+    kFetchConstants = 4,        // byte 32 (CBV b4, space1)
+    kRuntimeData = 5,           // byte 40 (CBV b0, space31)
+    kSharedMemorySrv = 6,       // byte 48 (SRV t0, space0)
+    kSharedMemoryUav = 7,       // byte 56 (UAV u0, space0)
+    kTextureIndicesVertex = 8,  // byte 64 (SRV t2, space0)
+    kTextureIndicesPixel = 9,   // byte 72 (SRV t3, space0)
+    kTextureRangeVertex = 10,   // byte 80 (SRV table, space2)
+    kTextureRangePixel = 11,    // byte 88 (SRV table, space3)
+    kSamplerRangeVertex = 12,   // byte 96 (Sampler table, space2)
+    kSamplerRangePixel = 13,    // byte 104 (Sampler table, space3)
+    kCount = 14,
+  };
+
+  // 24-byte descriptor heap record shared by spirv2air and MSC.
+  struct DescriptorEntry {
+    uint64_t gpu_va = 0;
+    uint64_t texture_view_id = 0;
+    uint64_t metadata = 0;
+  };
+  static_assert(sizeof(DescriptorEntry) == 24,
+                "DescriptorEntry must match spirv2air/MSC 24-byte record");
+
   // One constant buffer's contents, copied into a transient slice whose GPU
   // address goes into the argument buffer.
   struct ConstantBlock {
@@ -51,10 +84,7 @@ class MetalDxilBinder {
     ConstantBlock fetch;
   };
 
-  // Out of line so IRDescriptorTableEntry only has to be complete in the
-  // implementation.
-  MetalDxilBinder(MetalCommandProcessor& command_processor,
-                  const MetalShaderConverter& converter);
+  explicit MetalDxilBinder(MetalCommandProcessor& command_processor);
   ~MetalDxilBinder();
 
   // Writes this draw's descriptor heaps, per-stage index buffers and top-level
@@ -62,7 +92,7 @@ class MetalDxilBinder {
   // everything they reference resident.
   bool Bind(MTL::RenderCommandEncoder* encoder,
             const SpirvShader* vertex_shader, const SpirvShader* pixel_shader,
-            const Constants& constants, bool memexport_used, bool tessellated,
+            const Constants& constants, bool memexport_used,
             uint32_t vertex_buffer_mask, uint32_t pixel_buffer_mask);
 
   // Drops every reused upload slice. Call before the transient argument pages
@@ -94,12 +124,12 @@ class MetalDxilBinder {
   std::array<UploadCache<Slice, StageIndexKey>, kStageCount>
       stage_index_slices_;
   bool descriptor_heap_slices_valid_ = false;
-  std::vector<IRDescriptorTableEntry> cached_texture_heap_entries_;
-  std::vector<IRDescriptorTableEntry> cached_sampler_heap_entries_;
+  std::vector<DescriptorEntry> cached_texture_heap_entries_;
+  std::vector<DescriptorEntry> cached_sampler_heap_entries_;
   Slice cached_texture_heap_slice_;
   Slice cached_sampler_heap_slice_;
   using ArgumentBufferKey =
-      std::array<uint64_t, size_t(MetalRootParameter::kCount)>;
+      std::array<uint64_t, size_t(ArgumentSlot::kCount)>;
   UploadCache<Slice, ArgumentBufferKey> argument_buffer_slices_;
 
   // Where a stage's descriptors start in the heaps both stages share.
@@ -132,11 +162,10 @@ class MetalDxilBinder {
   bool GatherStage(const SpirvShader* shader, StageRange& range_out);
 
   MetalCommandProcessor& command_processor_;
-  const MetalShaderConverter& converter_;
 
   // Rebuilt per draw. Members rather than locals to keep the allocations.
-  std::vector<IRDescriptorTableEntry> texture_heap_entries_;
-  std::vector<IRDescriptorTableEntry> sampler_heap_entries_;
+  std::vector<DescriptorEntry> texture_heap_entries_;
+  std::vector<DescriptorEntry> sampler_heap_entries_;
   std::vector<MTL::Texture*> resident_textures_;
   std::vector<uint32_t> stage_indices_;
 };

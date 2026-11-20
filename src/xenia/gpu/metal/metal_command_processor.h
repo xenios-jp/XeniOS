@@ -272,8 +272,6 @@ class MetalCommandProcessor : public CommandProcessor,
   enum class RenderEncoderStage : uint32_t {
     kVertex,
     kFragment,
-    kObject,
-    kMesh,
     kCount,
   };
   // Binds a buffer to a stage of the current render encoder unless it's already
