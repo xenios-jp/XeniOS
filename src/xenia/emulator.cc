@@ -2043,7 +2043,7 @@ void Emulator::MountStandardDrives() {
 
   if (cvars::force_mount_devkit) {
     auto devkit_device =
-        std::make_unique<xe::vfs::HostPathDevice>("\\DEVKIT", "devkit", false);
+        std::make_unique<xe::vfs::HostPathDevice>("\\DEVKIT", storage_root_ / "devkit", false);
 
     if (!devkit_device->Initialize()) {
       XELOGE("Unable to scan devkit path");
@@ -2055,6 +2055,9 @@ void Emulator::MountStandardDrives() {
 
     fs->RegisterSymbolicLink("DEVKIT:", "\\DEVKIT");
     fs->RegisterSymbolicLink("e:", "\\DEVKIT");
+    fs->RegisterSymbolicLink(
+    "\\Device\\Harddisk0\\Partition1\\DEVKIT",
+    "\\DEVKIT");
   }
 }
 
