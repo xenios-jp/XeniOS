@@ -2055,6 +2055,9 @@ void Emulator::MountStandardDrives() {
 
     fs->RegisterSymbolicLink("DEVKIT:", "\\DEVKIT");
     fs->RegisterSymbolicLink("e:", "\\DEVKIT");
+    fs->RegisterSymbolicLink(
+    "\\Device\\Harddisk0\\Partition1\\DEVKIT",
+    "\\DEVKIT");
   }
 }
 
