@@ -131,8 +131,7 @@ class MetalTransferEncoder {
       MTL::CommandBuffer* command_buffer,
       MTL::RenderCommandEncoder* active_render_encoder,
       MTL::RenderPassDescriptor* active_render_pass_descriptor,
-      bool depth_keep_dest_depth,
-      MetalRenderTarget* pre_rotated_depth_target,
+      bool depth_keep_dest_depth, MetalRenderTarget* pre_rotated_depth_target,
       ExecutionOutput* output);
 
   EdramTransferShaderKey GetTransferShaderKey(

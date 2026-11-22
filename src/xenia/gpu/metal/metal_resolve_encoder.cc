@@ -27,7 +27,7 @@
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/metal/metal_transfer_spirv_cross.h"
-#include "xenia/gpu/xenos.h"
+#include "xenia/gpu/metal/metal_util.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_fast_32bpp_1x2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_fast_32bpp_1x2xmsaa_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_fast_32bpp_4xmsaa_cs.h"
@@ -40,12 +40,12 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_128bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_16bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_16bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_1x_direct_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10_4x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_1x_direct_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgb10f_rgba8_2x_cs.h"
@@ -53,39 +53,25 @@
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_rgba8_4x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_32bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_as_rgba16_rgba16f_1x_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_msaa_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16f_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgba16_1x_direct_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgba16_1x_direct_refresh_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_as_rgba16_rgba16f_1x_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16_1x_cs.h"
-#include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_rgb10f_rgba16f_1x_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_64bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_8bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_full_8bpp_scaled_cs.h"
+#include "xenia/gpu/xenos.h"
 
 namespace xe {
 namespace gpu {
 namespace metal {
 
 namespace {
-
-class ScopedAutoreleasePool {
- public:
-  ScopedAutoreleasePool() : pool_(NS::AutoreleasePool::alloc()->init()) {}
-  ~ScopedAutoreleasePool() {
-    if (pool_) {
-      pool_->release();
-    }
-  }
-  ScopedAutoreleasePool(const ScopedAutoreleasePool&) = delete;
-  ScopedAutoreleasePool& operator=(const ScopedAutoreleasePool&) = delete;
-
- private:
-  NS::AutoreleasePool* pool_;
-};
 
 constexpr uint32_t kInternalComputeSliceAlignment = 256;
 
@@ -276,50 +262,6 @@ bool IsFull64RGBA16OneSample(
          key.sample == 0;
 }
 
-MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
-    MTL::Device* device, const void* metallib_data, size_t metallib_size,
-    const char* debug_name, const char* entry_point_name = "entry_xe") {
-  if (!device || !metallib_data || !metallib_size) {
-    return nullptr;
-  }
-
-  NS::Error* error = nullptr;
-
-  dispatch_data_t data = dispatch_data_create(
-      metallib_data, metallib_size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-  MTL::Library* lib = device->newLibrary(data, &error);
-  dispatch_release(data);
-  if (!lib) {
-    XELOGE("Metal: failed to create {} library: {}", debug_name,
-           error ? error->localizedDescription()->utf8String() : "unknown");
-    return nullptr;
-  }
-
-  // XeSL compute entrypoint name used in the embedded metallibs.
-  NS::String* fn_name =
-      NS::String::string(entry_point_name, NS::UTF8StringEncoding);
-  MTL::Function* fn = lib->newFunction(fn_name);
-  if (!fn) {
-    XELOGE("Metal: {} has no function named {}", debug_name, entry_point_name);
-    lib->release();
-    return nullptr;
-  }
-
-  MTL::ComputePipelineState* pipeline =
-      device->newComputePipelineState(fn, &error);
-  fn->release();
-  lib->release();
-
-  if (!pipeline) {
-    XELOGE("Metal: failed to create {} pipeline: {}", debug_name,
-           error ? error->localizedDescription()->utf8String() : "unknown");
-    return nullptr;
-  }
-
-  return pipeline;
-}
-
-
 }  // namespace
 
 MetalResolveEncoder::MetalResolveEncoder(
@@ -412,8 +354,10 @@ bool MetalResolveEncoder::Initialize(MTL::Device* device,
           "resolve_full_64bpp_rgb10f_rgba16_1x_direct");
   resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_pipeline_ =
       CreateComputePipelineFromEmbeddedLibrary(
-          device_, resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_cs_metallib,
-          sizeof(resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_cs_metallib),
+          device_,
+          resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_cs_metallib,
+          sizeof(
+              resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_cs_metallib),
           "resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh");
   resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_ =
       CreateComputePipelineFromEmbeddedLibrary(
@@ -422,8 +366,10 @@ bool MetalResolveEncoder::Initialize(MTL::Device* device,
           "resolve_full_64bpp_rgb10f_rgba16_msaa_direct");
   resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_pipeline_ =
       CreateComputePipelineFromEmbeddedLibrary(
-          device_, resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_cs_metallib,
-          sizeof(resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_cs_metallib),
+          device_,
+          resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_cs_metallib,
+          sizeof(
+              resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_cs_metallib),
           "resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh");
   resolve_specialized_pipelines_.clear();
   for (const ResolveSpecialization& specialization : kResolveSpecializations) {
@@ -795,8 +741,8 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
       MetalRenderTargetCache::ResolveCopyDumpRectangle;
   using RenderTargetKey = MetalRenderTargetCache::RenderTargetKey;
   std::vector<ResolveCopyDumpRectangle> rectangles;
-  render_target_cache_.GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
-                                 dump_pitch, rectangles);
+  render_target_cache_.GetResolveCopyRectanglesToDump(
+      dump_base, dump_row_length_used, dump_rows, dump_pitch, rectangles);
   if (rectangles.empty()) {
     return false;
   }
@@ -814,11 +760,11 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
       IsFull32RGB10FourSampleAverage(copy_shader, copy_shader_constants);
   // The same 2_10_10_10_FLOAT pixels also go into 16_16_16_16 with the
   // arithmetic of the generic 64bpp copy.
-  const bool rgb10f_rgba16_1x = IsFull64RGB10FloatToRGBA16OneSample(
-      copy_shader, copy_shader_constants);
+  const bool rgb10f_rgba16_1x =
+      IsFull64RGB10FloatToRGBA16OneSample(copy_shader, copy_shader_constants);
   // And so are their 2x and 4x averages, from the multisampled render target.
-  const bool rgb10f_rgba16_average = IsFull64RGB10FloatToRGBA16Average(
-      copy_shader, copy_shader_constants);
+  const bool rgb10f_rgba16_average =
+      IsFull64RGB10FloatToRGBA16Average(copy_shader, copy_shader_constants);
   const bool rgb10f_1x =
       !rgb10_4x_average &&
       (rgb10f_rgba16_1x ||
@@ -826,16 +772,16 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
   // Any other conversion of one 8_8_8_8, 2_10_10_10 or 2_10_10_10_FLOAT sample
   // into a 32bpp destination goes the same way, with the arithmetic of the
   // generic 32bpp copy.
-  const bool full32_1x = !rgb10_4x_average && !rgb10f_1x &&
-                         IsFull32OneSampleConversion(copy_shader,
-                                                     copy_shader_constants);
+  const bool full32_1x =
+      !rgb10_4x_average && !rgb10f_1x &&
+      IsFull32OneSampleConversion(copy_shader, copy_shader_constants);
   // So is the 16_16_16_16 to 16_16_16_16 conversion, with that of the generic
   // 64bpp copy, from the render target's integer ownership transfer view.
   const bool rgba16_1x =
       IsFull64RGBA16OneSample(copy_shader, copy_shader_constants);
-  const bool copy_from_render_target =
-      rgb10_4x_average || rgb10f_1x || rgba16_1x || rgb10f_rgba16_average ||
-      full32_1x;
+  const bool copy_from_render_target = rgb10_4x_average || rgb10f_1x ||
+                                       rgba16_1x || rgb10f_rgba16_average ||
+                                       full32_1x;
   // Only the dump shader writes raw aliases of a depth refresh.
   if (refresh_raw_count &&
       (copy_from_render_target || !resolve_info.IsCopyingDepth() ||
@@ -856,8 +802,9 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
   if (copy_from_render_target) {
     if (rgba16_1x) {
       rgb10_pipeline =
-          refresh_texture ? resolve_full_64bpp_rgba16_1x_direct_refresh_pipeline_
-                          : resolve_full_64bpp_rgba16_1x_direct_pipeline_;
+          refresh_texture
+              ? resolve_full_64bpp_rgba16_1x_direct_refresh_pipeline_
+              : resolve_full_64bpp_rgba16_1x_direct_pipeline_;
     } else if (rgb10f_rgba16_average) {
       rgb10_pipeline =
           refresh_texture
@@ -886,7 +833,8 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
         !rgb10_pipeline || !group_count_x || !group_count_y) {
       return false;
     }
-    auto* rt = static_cast<MetalRenderTargetCache::MetalRenderTarget*>(rectangles[0].render_target);
+    auto* rt = static_cast<MetalRenderTargetCache::MetalRenderTarget*>(
+        rectangles[0].render_target);
     const RenderTargetKey rt_key = rt->key();
     rgb10_source = rgba16_1x ? rt->transfer_texture() : rt->texture();
     const draw_util::ResolveEdramInfo& edram_info =
@@ -903,16 +851,16 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
                                 : xenos::MsaaSamples::k1X;
     // 2x render targets are 4x where the device has no 2x.
     const NS::UInteger source_sample_count =
-        source_msaa_samples == xenos::MsaaSamples::k1X   ? 1
-        : source_msaa_samples == xenos::MsaaSamples::k2X ? (render_target_cache_.msaa_2x_supported_
-                                                                ? 2
-                                                                : 4)
-                                                         : 4;
+        source_msaa_samples == xenos::MsaaSamples::k1X ? 1
+        : source_msaa_samples == xenos::MsaaSamples::k2X
+            ? (render_target_cache_.msaa_2x_supported_ ? 2 : 4)
+            : 4;
     if (source_msaa_samples == xenos::MsaaSamples::k2X) {
-      rgb10_host_samples =
-          draw_util::GetD3D10SampleIndexForGuest2xMSAA(0, render_target_cache_.msaa_2x_supported_) |
-          (draw_util::GetD3D10SampleIndexForGuest2xMSAA(1, render_target_cache_.msaa_2x_supported_)
-           << 8);
+      rgb10_host_samples = draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+                               0, render_target_cache_.msaa_2x_supported_) |
+                           (draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+                                1, render_target_cache_.msaa_2x_supported_)
+                            << 8);
     } else if (source_msaa_samples == xenos::MsaaSamples::k4X) {
       // The guest 4x sample numbering matches the host one.
       rgb10_host_samples = 0x03020100u;
@@ -942,7 +890,8 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
         rgba16_1x ? MTL::PixelFormatRGBA16Uint
         : rgb10_4x_average || (full32_1x && is_rgb10(source_format))
             ? MTL::PixelFormatRGB10A2Unorm
-        : full32_1x && source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8
+        : full32_1x &&
+                source_format == xenos::ColorRenderTargetFormat::k_8_8_8_8
             ? MTL::PixelFormatRGBA8Unorm
             : MTL::PixelFormatRGBA16Float;
     if (!rgb10_source || rt_key.is_depth ||
@@ -1002,7 +951,8 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
     if (copy_from_render_target) {
       break;
     }
-    auto* rt = static_cast<MetalRenderTargetCache::MetalRenderTarget*>(rectangle.render_target);
+    auto* rt = static_cast<MetalRenderTargetCache::MetalRenderTarget*>(
+        rectangle.render_target);
     if (!rt) {
       return false;
     }
@@ -1035,8 +985,8 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
       }
     } else {
       bool source_is_uint = false;
-      render_target_cache_.GetColorOwnershipTransferPixelFormat(rt_key.GetColorFormat(),
-                                           &source_is_uint);
+      render_target_cache_.GetColorOwnershipTransferPixelFormat(
+          rt_key.GetColorFormat(), &source_is_uint);
       source.texture = source_is_uint ? rt->transfer_texture() : rt->texture();
     }
     if (!source.pipeline || !source.texture) {
@@ -1200,7 +1150,9 @@ bool MetalResolveEncoder::DirectResolveRenderTargets(
        ++rectangle_index) {
     const ResolveCopyDumpRectangle& rect = rectangles[rectangle_index];
     RenderTargetKey rt_key =
-        static_cast<MetalRenderTargetCache::MetalRenderTarget*>(rect.render_target)->key();
+        static_cast<MetalRenderTargetCache::MetalRenderTarget*>(
+            rect.render_target)
+            ->key();
     MTL::Texture* source_texture = sources[rectangle_index].texture;
     MTL::Texture* stencil_texture = sources[rectangle_index].stencil_texture;
 
@@ -1802,12 +1754,19 @@ XE_TILE_RESOLVE_ALL_INDICES(RGB10FloatToRGB10, float4,
                             XE_TILE_RESOLVE_READ_PIXEL)
 )METAL";
 
-const char* const kTileResolveKernelNames[] = {
-    "8888",        "16_16Float",  "32Float",
-    "16_16_16_16Float", "32_32Float", "16_16_16_16",
-    "8888Average4", "8888GammaAverage4", "RGB10Average4",
-    "8888Gamma",    "RGB10",      "RGB10Float",
-    "RGB10FloatToRGB10"};
+const char* const kTileResolveKernelNames[] = {"8888",
+                                               "16_16Float",
+                                               "32Float",
+                                               "16_16_16_16Float",
+                                               "32_32Float",
+                                               "16_16_16_16",
+                                               "8888Average4",
+                                               "8888GammaAverage4",
+                                               "RGB10Average4",
+                                               "8888Gamma",
+                                               "RGB10",
+                                               "RGB10Float",
+                                               "RGB10FloatToRGB10"};
 
 // The largest tile area Metal allows at each sample count (Metal feature set
 // tables) - a 4x pass with 32x32 tiles hung the GPU without validation.
@@ -1827,8 +1786,7 @@ uint32_t GetMaxTileArea(uint32_t sample_count) {
 
 }  // namespace
 
-MTL::RenderPipelineState*
-MetalResolveEncoder::GetOrCreateTileResolvePipeline(
+MTL::RenderPipelineState* MetalResolveEncoder::GetOrCreateTileResolvePipeline(
     MTL::RenderPassDescriptor* pass_descriptor, uint32_t color_index,
     TileResolveKernel kernel, uint32_t sample_count, uint32_t refresh_count) {
   // The pass's color formats, 10 bits each, then the color index (2 bits),
@@ -1866,10 +1824,9 @@ MetalResolveEncoder::GetOrCreateTileResolvePipeline(
   }
   MTL::RenderPipelineState* pipeline = nullptr;
   if (tile_resolve_library_) {
-    std::string function_name =
-        std::string("xe_tile_resolve_") +
-        kTileResolveKernelNames[uint32_t(kernel)] + "_" +
-        std::to_string(color_index);
+    std::string function_name = std::string("xe_tile_resolve_") +
+                                kTileResolveKernelNames[uint32_t(kernel)] +
+                                "_" + std::to_string(color_index);
     MTL::FunctionConstantValues* constant_values =
         MTL::FunctionConstantValues::alloc()->init();
     constant_values->setConstantValue(&refresh_count, MTL::DataTypeUInt,
@@ -1969,8 +1926,8 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
       MetalRenderTargetCache::ResolveCopyDumpRectangle;
   using RenderTargetKey = MetalRenderTargetCache::RenderTargetKey;
   std::vector<ResolveCopyDumpRectangle> rectangles;
-  render_target_cache_.GetResolveCopyRectanglesToDump(dump_base, dump_row_length_used, dump_rows,
-                                 dump_pitch, rectangles);
+  render_target_cache_.GetResolveCopyRectanglesToDump(
+      dump_base, dump_row_length_used, dump_rows, dump_pitch, rectangles);
   if (rectangles.size() != 1 || !rectangles[0].render_target) {
     return "rectangles";
   }
@@ -1980,7 +1937,8 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
       rectangle.row_last_end != dump_row_length_used) {
     return "partial_owner";
   }
-  auto* rt = static_cast<MetalRenderTargetCache::MetalRenderTarget*>(rectangle.render_target);
+  auto* rt = static_cast<MetalRenderTargetCache::MetalRenderTarget*>(
+      rectangle.render_target);
   const RenderTargetKey rt_key = rt->key();
   if (rt_key.is_depth) {
     return "depth";
@@ -2129,8 +2087,7 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
       case xenos::ColorRenderTargetFormat::k_2_10_10_10:
       case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
       case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
-      case xenos::ColorRenderTargetFormat::
-          k_2_10_10_10_FLOAT_AS_16_16_16_16:
+      case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
         constants.swap = 2;
         break;
       case xenos::ColorRenderTargetFormat::k_16_16_16_16:
@@ -2155,8 +2112,7 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
   if (kernel == TileResolveKernel::kRGB10Average4) {
     // The kernel's average is times 1/4 alone, and its pack the unsigned
     // fraction's.
-    if (constants.exp_bias_factor_bits != 0x3F800000u ||
-        constants.num_format) {
+    if (constants.exp_bias_factor_bits != 0x3F800000u || constants.num_format) {
       return "rgb10_bias";
     }
   }
@@ -2170,10 +2126,10 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
       return "rgba16_bias";
     }
   }
-  constants.swap_bytes_in_16 = endian == xenos::Endian128::k8in16 ||
-                               endian == xenos::Endian128::k8in32;
-  constants.swap_halves_in_32 = endian == xenos::Endian128::k8in32 ||
-                                endian == xenos::Endian128::k16in32;
+  constants.swap_bytes_in_16 =
+      endian == xenos::Endian128::k8in16 || endian == xenos::Endian128::k8in32;
+  constants.swap_halves_in_32 =
+      endian == xenos::Endian128::k8in32 || endian == xenos::Endian128::k16in32;
   // The dump shader stores whole 16-byte blocks from this base.
   if (constants.dest_base & 0xF) {
     return "dest_align";
@@ -2347,7 +2303,8 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
           refresh_storage[i]->write_view;
     }
   } else if (sampled_refresh_count) {
-    refresh_scratch = render_target_cache_.AcquireRefreshScratch(refresh_textures[0]);
+    refresh_scratch =
+        render_target_cache_.AcquireRefreshScratch(refresh_textures[0]);
     if (!refresh_scratch) {
       return "refresh_scratch";
     }
@@ -2370,16 +2327,14 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
     copy.scratch = refresh_scratch;
     copy.origin_x = refresh_offset_x;
     copy.origin_y = refresh_offset_y;
-    copy.width =
-        refresh_offset_x < constants.refresh_size[0]
-            ? std::min(constants.size[0],
-                       constants.refresh_size[0] - refresh_offset_x)
-            : 0;
-    copy.height =
-        refresh_offset_y < constants.refresh_size[1]
-            ? std::min(constants.size[1],
-                       constants.refresh_size[1] - refresh_offset_y)
-            : 0;
+    copy.width = refresh_offset_x < constants.refresh_size[0]
+                     ? std::min(constants.size[0],
+                                constants.refresh_size[0] - refresh_offset_x)
+                     : 0;
+    copy.height = refresh_offset_y < constants.refresh_size[1]
+                      ? std::min(constants.size[1],
+                                 constants.refresh_size[1] - refresh_offset_y)
+                      : 0;
     for (uint32_t i = 0; i < sampled_refresh_count; ++i) {
       copy.destinations.push_back(NS::RetainPtr(sampled_refresh[i]));
     }
@@ -2409,8 +2364,7 @@ const char* MetalResolveEncoder::TileResolveInOpenPass(
     hazards->Access(resolve_info.copy_dest_extent_start,
                     resolve_info.copy_dest_extent_length, true);
   }
-  encoder->dispatchThreadsPerTile(
-      MTL::Size::Make(tile_width, tile_height, 1));
+  encoder->dispatchThreadsPerTile(MTL::Size::Make(tile_width, tile_height, 1));
   command_processor_.SetRenderEncoderTileMemberClass(member_class);
   return nullptr;
 }

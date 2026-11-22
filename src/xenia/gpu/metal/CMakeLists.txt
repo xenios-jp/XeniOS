@@ -30,6 +30,7 @@ add_library(xenia-gpu-metal STATIC
   metal_transfer_spirv_cross.cc
   metal_transfer_spirv_cross.h
   metal_upload_cache.h
+  metal_util.h
   metal_zpd_visibility_pool.cc
   metal_zpd_visibility_pool.h
 )

@@ -30,6 +30,7 @@
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/metal/metal_transfer_encoder.h"
+#include "xenia/gpu/metal/metal_util.h"
 #include "xenia/gpu/strip_merge.h"
 
 #include "xenia/gpu/edram_dump_shader.h"
@@ -81,26 +82,6 @@ DEFINE_int32(metal_memory_log_rate, 0,
 namespace xe {
 namespace gpu {
 namespace metal {
-
-namespace {
-
-class ScopedAutoreleasePool {
- public:
-  ScopedAutoreleasePool() : pool_(NS::AutoreleasePool::alloc()->init()) {}
-  ~ScopedAutoreleasePool() {
-    if (pool_) {
-      pool_->release();
-    }
-  }
-
-  ScopedAutoreleasePool(const ScopedAutoreleasePool&) = delete;
-  ScopedAutoreleasePool& operator=(const ScopedAutoreleasePool&) = delete;
-
- private:
-  NS::AutoreleasePool* pool_;
-};
-
-}  // namespace
 
 // MetalRenderTarget implementation
 MetalRenderTargetCache::MetalRenderTarget::~MetalRenderTarget() {
@@ -1839,11 +1820,12 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
       return false;
     }
     RenderTargetKey source_key = source_rt->key();
-    // Keep depth-to-color ownership transfers in a standalone pass (matching
-    // PendingDrawPassTransfersPrepareable): running depth+stencil sampling
-    // transfers at the head of a long color draw pass showed stochastic 8x4
-    // pixel dropouts in Halo 3 on Apple Silicon.
-    if (source_key.is_depth && !dest_key.is_depth) {
+    // Halo 3 (and possibly other games) drops 8x4 pixel blocks stochastically
+    // when depth-to-color transfers run at the head of a draw pass targeting
+    // color attachment 1+ (render_target_index >= 2). Keep the exact narrow
+    // workaround so color attachment 0 doesn't pay extra standalone passes
+    // until root-caused.
+    if (source_key.is_depth && !dest_key.is_depth && render_target_index >= 2) {
       return false;
     }
     if (transfer.host_depth_source) {
