@@ -576,10 +576,29 @@ void MetalPipelineCache::InitializeAsyncCompilation() {
     async_compile_thread_limit_ = thread_count;
   }
 
-  async_compile_threads_.reserve(thread_count);
-  for (size_t i = 0; i < thread_count; ++i) {
-    async_compile_threads_.emplace_back([this, i]() { AsyncCompileThread(i); });
-  }
+  creation_queue_.Initialize(
+      "Metal Shaders",
+      [this](const CompileTask& task, WorkerThreadContext* context) {
+        return ExecuteCompileTask(task, context);
+      },
+      [this](const CompileTask& task, CompileResult result) {
+        StoreCompileResult(task, result);
+      },
+      [this]() -> std::unique_ptr<WorkerThreadContext> {
+        if (cvars::metal_compile_thread_qos == "user-initiated") {
+          pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+        } else if (cvars::metal_compile_thread_qos == "utility") {
+          pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+        }
+        auto ctx = std::make_unique<WorkerThreadContext>();
+        ctx->translator = guest_spirv_shader_cache_->CreateWorkerTranslator();
+        return ctx;
+      },
+      [this](bool busy) {
+        command_processor_.graphics_system()->on_shader_compilation(busy);
+      });
+  creation_queue_.SetActiveThreadLimit(thread_count);
+  creation_queue_.SetThreadCount(thread_count);
   {
     // A boost asked for before the pool existed.
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
@@ -607,47 +626,17 @@ void MetalPipelineCache::ShutdownAsyncCompilation() {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     async_compile_shutdown_ = true;
   }
-  async_compile_cv_.notify_all();
-  async_compile_boost_cv_.notify_all();
-
-  for (std::thread& thread : async_compile_threads_) {
-    if (thread.joinable()) {
-      thread.join();
-    }
-  }
-  async_compile_threads_.clear();
-  std::vector<std::thread> boost_threads;
-  {
-    std::lock_guard<std::mutex> lock(async_compile_mutex_);
-    boost_threads.swap(async_compile_boost_threads_);
-  }
-  for (std::thread& thread : boost_threads) {
-    if (thread.joinable()) {
-      thread.join();
+  for (auto& [task, result] : creation_queue_.Shutdown()) {
+    if (result.pipeline) {
+      result.pipeline->release();
     }
   }
 
   std::lock_guard<std::mutex> lock(async_compile_mutex_);
-  std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
-                      ShaderCompileRequestCompare>
-      empty_queue;
-  std::swap(async_shader_queue_, empty_queue);
-  for (auto& [order, request] : async_pipeline_queue_) {
-    if (request.vertex_function) {
-      request.vertex_function->release();
-    }
-    if (request.fragment_function) {
-      request.fragment_function->release();
-    }
-  }
-  async_pipeline_queue_.clear();
-  async_pipeline_queued_.clear();
-  async_pipeline_queue_arrivals_ = 0;
   async_shader_pending_.clear();
   async_shader_failed_.clear();
   async_pipeline_pending_.clear();
   async_pipeline_failed_.clear();
-  async_compile_busy_ = 0;
   async_compile_shutdown_ = false;
   async_compile_base_thread_count_ = 0;
   async_compile_thread_limit_ = 0;
@@ -833,33 +822,34 @@ MetalPipelineCache::GetShaderCompileStatus(Shader::Translation* translation) {
 bool MetalPipelineCache::EnqueueShaderCompilation(
     Shader::Translation* translation, uint8_t priority) {
   if (!translation || !cvars::async_shader_compilation ||
-      async_compile_threads_.empty()) {
+      !creation_queue_.has_threads()) {
     return false;
   }
 
+  ShaderCompileRequest request;
+  request.translation = translation;
+  request.shader_hash = translation->shader().ucode_data_hash();
+  request.modification = translation->modification();
+  request.priority = priority;
+  request.storage = queueing_storage_requests_;
+  const size_t lane =
+      priority >= 2 ? kQueuePriorityShaderVertex : kQueuePriorityShaderPixel;
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
-    ShaderCompileRequest request;
-    request.translation = translation;
-    request.shader_hash = translation->shader().ucode_data_hash();
-    request.modification = translation->modification();
-    request.priority = priority;
-    request.storage = queueing_storage_requests_;
     async_shader_pending_.insert(translation);
-    async_shader_queue_.push(request);
     compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
     if (request.storage) {
       ++storage_shader_requests_;
       PublishStorageRequestsLocked();
     }
+    creation_queue_.PushUnordered(CompileTask(std::move(request)), lane);
   }
-  async_compile_cv_.notify_one();
   return true;
 }
 
 bool MetalPipelineCache::EnqueuePipelineCompilation(
     const PipelineCompileRequest& request) {
-  if (!cvars::async_shader_compilation || async_compile_threads_.empty()) {
+  if (!cvars::async_shader_compilation || !creation_queue_.has_threads()) {
     return false;
   }
   // A vertex shader that bakes only has no vertex_function until
@@ -870,7 +860,17 @@ bool MetalPipelineCache::EnqueuePipelineCompilation(
     return false;
   }
 
-  PipelineCompileRequest queued_request = request;
+  QueuedPipelineRequest queued;
+  queued.request = request;
+  if (queued.request.vertex_function) {
+    queued.owned_vertex_function =
+        NS::RetainPtr(queued.request.vertex_function);
+  }
+  if (queued.request.fragment_function) {
+    queued.owned_fragment_function =
+        NS::RetainPtr(queued.request.fragment_function);
+  }
+  const size_t lane = PipelinePriorityToQueueLane(request.priority);
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     if (async_pipeline_cache_.find(request.pipeline_key) !=
@@ -886,21 +886,10 @@ bool MetalPipelineCache::EnqueuePipelineCompilation(
       return true;
     }
 
-    if (queued_request.vertex_function) {
-      queued_request.vertex_function->retain();
-    }
-    if (queued_request.fragment_function) {
-      queued_request.fragment_function->retain();
-    }
     async_pipeline_pending_.insert(request.pipeline_key);
-    PipelineQueueOrder order(-int(queued_request.priority),
-                             async_pipeline_queue_arrivals_++);
-    async_pipeline_queue_.emplace(order, std::move(queued_request));
-    async_pipeline_queued_.emplace(request.pipeline_key, order);
     compile_activity.queued.fetch_add(1, std::memory_order_relaxed);
+    creation_queue_.PushUnordered(CompileTask(std::move(queued)), lane);
   }
-
-  async_compile_cv_.notify_one();
   return true;
 }
 
@@ -1766,148 +1755,94 @@ MTL::RenderPipelineState* MetalPipelineCache::CreatePipelineState(
   return pipeline;
 }
 
-void MetalPipelineCache::AsyncCompileThread(size_t thread_index) {
-  xe::threading::set_name(fmt::format("Metal Shaders {}", thread_index));
-  if (cvars::metal_compile_thread_qos == "user-initiated") {
-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
-  } else if (cvars::metal_compile_thread_qos == "utility") {
-    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+MetalPipelineCache::CompileResult MetalPipelineCache::ExecuteCompileTask(
+    const CompileTask& task, WorkerThreadContext* context) {
+  ScopedAutoreleasePool autorelease_pool;
+  CompileResult result;
+  if (const auto* queued_pipeline = std::get_if<QueuedPipelineRequest>(&task)) {
+    result.pipeline =
+        CreatePipelineState(queued_pipeline->request, &result.error);
+  } else {
+    const auto& shader_request = std::get<ShaderCompileRequest>(task);
+    result.shader_status =
+        shader_request.translation && context && context->translator
+            ? TranslateAndCompileHostShader(shader_request.translation,
+                                            *context->translator)
+            : ShaderCompileStatus::kFailed;
   }
-  std::unique_ptr<SpirvShaderTranslator> worker_translator =
-      guest_spirv_shader_cache_->CreateWorkerTranslator();
-  while (true) {
-    enum class RequestKind { kPipeline, kShader };
-    RequestKind request_kind = RequestKind::kPipeline;
-    ShaderCompileRequest shader_request;
-    PipelineCompileRequest pipeline_request;
+  return result;
+}
+
+void MetalPipelineCache::StoreCompileResult(const CompileTask& task,
+                                            const CompileResult& result) {
+  if (const auto* queued_pipeline = std::get_if<QueuedPipelineRequest>(&task)) {
+    const PipelineCompileRequest& pipeline_request = queued_pipeline->request;
+    const bool compiled = result.pipeline != nullptr;
     {
-      std::unique_lock<std::mutex> lock(async_compile_mutex_);
-      async_compile_boost_cv_.wait(lock, [this, thread_index]() {
-        return async_compile_shutdown_ ||
-               thread_index < async_compile_thread_limit_;
-      });
-      async_compile_cv_.wait(lock, [this, thread_index]() {
-        return async_compile_shutdown_ ||
-               thread_index >= async_compile_thread_limit_ ||
-               !async_shader_queue_.empty() || !async_pipeline_queue_.empty();
-      });
-      if (async_compile_shutdown_) {
-        return;
-      }
-      if (thread_index >= async_compile_thread_limit_) {
-        // The boost ended: park.
-        continue;
-      }
-      // Pipelines first: they are the nearly finished work, and everything
-      // else exists to unblock one. Except the stored ones a launch rebuilds:
-      // the shaders draws are waiting for go first.
-      if (!async_pipeline_queue_.empty() &&
-          (async_pipeline_queue_.begin()->second.priority >
-               kPipelinePriorityStored ||
-           async_shader_queue_.empty())) {
-        request_kind = RequestKind::kPipeline;
-        auto queue_it = async_pipeline_queue_.begin();
-        pipeline_request = std::move(queue_it->second);
-        async_pipeline_queued_.erase(pipeline_request.pipeline_key);
-        async_pipeline_queue_.erase(queue_it);
+      std::lock_guard<std::mutex> lock(async_compile_mutex_);
+      async_pipeline_pending_.erase(pipeline_request.pipeline_key);
+      NoteStoredPipelineDoneLocked(pipeline_request.pipeline_key);
+      if (compiled) {
+        auto insert_result = async_pipeline_cache_.emplace(
+            pipeline_request.pipeline_key, result.pipeline);
+        if (!insert_result.second && result.pipeline) {
+          result.pipeline->release();
+        }
+        async_pipeline_failed_.erase(pipeline_request.pipeline_key);
       } else {
-        request_kind = RequestKind::kShader;
-        shader_request = async_shader_queue_.top();
-        async_shader_queue_.pop();
+        async_pipeline_failed_.insert(pipeline_request.pipeline_key);
       }
-      ++async_compile_busy_;
+      FinishAsyncCompileTaskLocked();
     }
-
-    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    if (request_kind == RequestKind::kPipeline) {
-      std::string pipeline_error;
-      MTL::RenderPipelineState* pipeline =
-          CreatePipelineState(pipeline_request, &pipeline_error);
-      bool compiled = pipeline != nullptr;
-
-      {
-        std::lock_guard<std::mutex> lock(async_compile_mutex_);
-        async_pipeline_pending_.erase(pipeline_request.pipeline_key);
-        NoteStoredPipelineDoneLocked(pipeline_request.pipeline_key);
-        if (compiled) {
-          auto insert_result = async_pipeline_cache_.emplace(
-              pipeline_request.pipeline_key, pipeline);
-          if (!insert_result.second && pipeline) {
-            pipeline->release();
-          }
-          async_pipeline_failed_.erase(pipeline_request.pipeline_key);
-        } else {
-          async_pipeline_failed_.insert(pipeline_request.pipeline_key);
-        }
-        FinishAsyncCompileTaskLocked();
-      }
-
-      if (pipeline_request.vertex_function) {
-        pipeline_request.vertex_function->release();
-      }
-      if (pipeline_request.fragment_function) {
-        pipeline_request.fragment_function->release();
-      }
-
-      if (!compiled && ShouldLogRateLimited(async_pipeline_failure_last_log_ns_,
-                                            kAsyncCompileLogIntervalNs)) {
-        if (!pipeline_error.empty()) {
-          XELOGE(
-              "Metal: async pipeline compile failed on worker {} "
-              "(VS {:016X} mod {:016X}, PS {:016X} mod {:016X}): {}",
-              thread_index, pipeline_request.description.vertex_shader_hash,
-              pipeline_request.description.vertex_shader_modification,
-              pipeline_request.description.pixel_shader_hash,
-              pipeline_request.description.pixel_shader_modification,
-              pipeline_error);
-        } else {
-          XELOGE(
-              "Metal: async pipeline compile failed on worker {} "
-              "(VS {:016X} mod {:016X}, PS {:016X} mod {:016X})",
-              thread_index, pipeline_request.description.vertex_shader_hash,
-              pipeline_request.description.vertex_shader_modification,
-              pipeline_request.description.pixel_shader_hash,
-              pipeline_request.description.pixel_shader_modification);
-        }
-      }
-    } else {
-      ShaderCompileStatus translation_status =
-          shader_request.translation
-              ? TranslateAndCompileHostShader(shader_request.translation,
-                                              *worker_translator)
-              : ShaderCompileStatus::kFailed;
-      bool compiled = translation_status == ShaderCompileStatus::kReady;
-      // Nothing queues a translation twice and the draw thread only translates
-      // one that is not queued, so losing the claim here shouldn't happen.
-      // Leave it unqueued for a later draw to retry rather than fail it
-      // forever, which would black out the shader for the whole run.
-      bool contended = translation_status == ShaderCompileStatus::kPending;
-
-      {
-        std::lock_guard<std::mutex> lock(async_compile_mutex_);
-        if (shader_request.translation) {
-          async_shader_pending_.erase(shader_request.translation);
-          if (!compiled && !contended) {
-            async_shader_failed_.insert(shader_request.translation);
-          }
-        }
-        if (shader_request.storage) {
-          NoteStorageRequestDoneLocked();
-        }
-        FinishAsyncCompileTaskLocked();
-      }
-
-      if (!compiled && !contended &&
-          ShouldLogRateLimited(async_shader_failure_last_log_ns_,
-                               kAsyncCompileLogIntervalNs)) {
+    if (!compiled && ShouldLogRateLimited(async_pipeline_failure_last_log_ns_,
+                                          kAsyncCompileLogIntervalNs)) {
+      if (!result.error.empty()) {
         XELOGE(
-            "Metal: async shader compile failed on worker {} (shader "
-            "{:016X}, mod {:016X})",
-            thread_index, shader_request.shader_hash,
-            shader_request.modification);
+            "Metal: async pipeline compile failed "
+            "(VS {:016X} mod {:016X}, PS {:016X} mod {:016X}): {}",
+            pipeline_request.description.vertex_shader_hash,
+            pipeline_request.description.vertex_shader_modification,
+            pipeline_request.description.pixel_shader_hash,
+            pipeline_request.description.pixel_shader_modification,
+            result.error);
+      } else {
+        XELOGE(
+            "Metal: async pipeline compile failed "
+            "(VS {:016X} mod {:016X}, PS {:016X} mod {:016X})",
+            pipeline_request.description.vertex_shader_hash,
+            pipeline_request.description.vertex_shader_modification,
+            pipeline_request.description.pixel_shader_hash,
+            pipeline_request.description.pixel_shader_modification);
       }
     }
-    pool->release();
+  } else {
+    const auto& shader_request = std::get<ShaderCompileRequest>(task);
+    const bool compiled = result.shader_status == ShaderCompileStatus::kReady;
+    // Nothing queues a translation twice and the draw thread only translates
+    // one that is not queued, so losing the claim here shouldn't happen.
+    // Leave it unqueued for a later draw to retry rather than fail it forever,
+    // which would black out the shader for the whole run.
+    const bool contended =
+        result.shader_status == ShaderCompileStatus::kPending;
+    {
+      std::lock_guard<std::mutex> lock(async_compile_mutex_);
+      if (shader_request.translation) {
+        async_shader_pending_.erase(shader_request.translation);
+        if (!compiled && !contended) {
+          async_shader_failed_.insert(shader_request.translation);
+        }
+      }
+      if (shader_request.storage) {
+        NoteStorageRequestDoneLocked();
+      }
+      FinishAsyncCompileTaskLocked();
+    }
+    if (!compiled && !contended &&
+        ShouldLogRateLimited(async_shader_failure_last_log_ns_,
+                             kAsyncCompileLogIntervalNs)) {
+      XELOGE("Metal: async shader compile failed (shader {:016X}, mod {:016X})",
+             shader_request.shader_hash, shader_request.modification);
+    }
   }
 }
 
@@ -2024,7 +1959,7 @@ void MetalPipelineCache::TranslateShadersForStorage(
   {
     std::lock_guard<std::mutex> lock(async_compile_mutex_);
     storage_stats_expected_pipelines_ =
-        async_compile_threads_.empty() ? 0 : stored_count;
+        creation_queue_.has_threads() ? stored_count : 0;
     PublishStorageRequestsLocked();
   }
   // Queue every modification the stored pipelines reference. Falls back to this
@@ -2339,9 +2274,7 @@ void MetalPipelineCache::InitializeShaderStorage(
 }
 
 bool MetalPipelineCache::IsAsyncCompileIdleLocked() const {
-  return async_compile_busy_ == 0 && async_shader_queue_.empty() &&
-         async_pipeline_queue_.empty() && async_shader_pending_.empty() &&
-         async_pipeline_pending_.empty();
+  return async_shader_pending_.empty() && async_pipeline_pending_.empty();
 }
 
 void MetalPipelineCache::RecordStorageRebuildStatsLocked() {
@@ -2404,9 +2337,6 @@ void MetalPipelineCache::FinishStorageRebuildLocked() {
 
 void MetalPipelineCache::FinishAsyncCompileTaskLocked() {
   CountAsyncCompileTaskFinishedLocked();
-  if (async_compile_busy_) {
-    --async_compile_busy_;
-  }
   // A waiter may be after this task rather than the whole queue.
   if (async_compile_awaiters_ || IsAsyncCompileIdleLocked()) {
     async_compile_idle_cv_.notify_all();
@@ -2427,48 +2357,26 @@ void MetalPipelineCache::UpdateCompileThreadLimitLocked() {
     return;
   }
   async_compile_thread_limit_ = limit;
-  for (size_t i = async_compile_base_thread_count_ +
-                  async_compile_boost_threads_.size();
-       i < limit; ++i) {
-    async_compile_boost_threads_.emplace_back(
-        [this, i]() { AsyncCompileThread(i); });
-  }
-  // Wakes the parked threads when the limit rises, and sends the extra ones
-  // back to park when it falls.
-  async_compile_boost_cv_.notify_all();
-  async_compile_cv_.notify_all();
+  creation_queue_.SetActiveThreadLimit(limit);
 }
 
 void MetalPipelineCache::PromoteQueuedPipelineLocked(uint64_t key,
                                                      uint8_t priority) {
-  auto queued_it = async_pipeline_queued_.find(key);
-  if (queued_it == async_pipeline_queued_.end() ||
-      -queued_it->second.first >= int(priority)) {
-    return;
-  }
-  auto node = async_pipeline_queue_.extract(queued_it->second);
-  node.key() =
-      PipelineQueueOrder(-int(priority), async_pipeline_queue_arrivals_++);
-  node.mapped().priority = priority;
-  queued_it->second = node.key();
-  async_pipeline_queue_.insert(std::move(node));
+  creation_queue_.Promote(
+      [key](const CompileTask& task) {
+        const auto* queued = std::get_if<QueuedPipelineRequest>(&task);
+        return queued && queued->request.pipeline_key == key;
+      },
+      PipelinePriorityToQueueLane(priority));
 }
 
 bool MetalPipelineCache::TakeQueuedPipelineLocked(uint64_t key) {
-  auto queued_it = async_pipeline_queued_.find(key);
-  if (queued_it == async_pipeline_queued_.end()) {
+  if (!creation_queue_.TakeQueued([key](const CompileTask& task) {
+        const auto* queued = std::get_if<QueuedPipelineRequest>(&task);
+        return queued && queued->request.pipeline_key == key;
+      })) {
     return false;
   }
-  auto queue_it = async_pipeline_queue_.find(queued_it->second);
-  PipelineCompileRequest& request = queue_it->second;
-  if (request.vertex_function) {
-    request.vertex_function->release();
-  }
-  if (request.fragment_function) {
-    request.fragment_function->release();
-  }
-  async_pipeline_queue_.erase(queue_it);
-  async_pipeline_queued_.erase(queued_it);
   async_pipeline_pending_.erase(key);
   NoteStoredPipelineDoneLocked(key);
   CountAsyncCompileTaskFinishedLocked();
@@ -2509,7 +2417,7 @@ void MetalPipelineCache::SetCompileThreadBoostAllowed(bool allowed) {
 
 template <typename Done>
 void MetalPipelineCache::AwaitAsyncCompilesUntil(const Done& done) {
-  if (async_compile_threads_.empty()) {
+  if (!creation_queue_.has_threads()) {
     return;
   }
   SCOPE_profile_cpu_i("gpu", "MetalPipelineCache::AwaitAsyncCompilesUntil");

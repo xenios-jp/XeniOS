@@ -19,7 +19,6 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <set>
 #include <string>
 #include <thread>
@@ -27,6 +26,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "xenia/base/mutex.h"
@@ -37,6 +37,7 @@
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_pipeline_archive.h"
 #include "xenia/gpu/metal/metal_shader_library_cache.h"
+#include "xenia/gpu/pipeline_creation_queue.h"
 #include "xenia/gpu/primitive_processor.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/shader_storage.h"
@@ -275,6 +276,34 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
   static constexpr uint8_t kPipelinePriorityDraw = 4;
   static constexpr uint8_t kPipelinePriorityAwaited = 5;
 
+  // Priority lanes in PipelineCreationQueue (highest dequeued first).
+  // Matches draw pipelines > draw shaders > stored pipelines.
+  enum CompileQueuePriority : size_t {
+    kQueuePriorityStoredDepthOnly = 0,
+    kQueuePriorityStored = 1,
+    kQueuePriorityShaderPixel = 2,
+    kQueuePriorityShaderVertex = 3,
+    kQueuePriorityDrawDepthOnly = 4,
+    kQueuePriorityDraw = 5,
+    kQueuePriorityAwaited = 6,
+    kQueuePriorityCount = 7,
+  };
+  static size_t PipelinePriorityToQueueLane(uint8_t priority) {
+    switch (priority) {
+      case kPipelinePriorityStoredDepthOnly:
+        return kQueuePriorityStoredDepthOnly;
+      case kPipelinePriorityStored:
+        return kQueuePriorityStored;
+      case kPipelinePriorityDrawDepthOnly:
+        return kQueuePriorityDrawDepthOnly;
+      case kPipelinePriorityDraw:
+        return kQueuePriorityDraw;
+      case kPipelinePriorityAwaited:
+      default:
+        return kQueuePriorityAwaited;
+    }
+  }
+
   struct ShaderCompileRequest {
     Shader::Translation* translation = nullptr;
     uint64_t shader_hash = 0;
@@ -283,11 +312,24 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
     // Queued by the shader storage load, so it counts toward its progress.
     bool storage = false;
   };
-  struct ShaderCompileRequestCompare {
-    bool operator()(const ShaderCompileRequest& a,
-                    const ShaderCompileRequest& b) const {
-      return a.priority < b.priority;
-    }
+
+  struct QueuedPipelineRequest {
+    PipelineCompileRequest request;
+    // Retain vertex/fragment functions for the lifetime of the queued request.
+    NS::SharedPtr<MTL::Function> owned_vertex_function;
+    NS::SharedPtr<MTL::Function> owned_fragment_function;
+  };
+
+  using CompileTask = std::variant<ShaderCompileRequest, QueuedPipelineRequest>;
+
+  struct CompileResult {
+    MTL::RenderPipelineState* pipeline = nullptr;
+    ShaderCompileStatus shader_status = ShaderCompileStatus::kFailed;
+    std::string error;
+  };
+
+  struct WorkerThreadContext {
+    std::unique_ptr<SpirvShaderTranslator> translator;
   };
 
   struct RecentShaderLoad {
@@ -336,7 +378,6 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
 
   using SpecializedFunctionKey =
       std::tuple<uintptr_t, std::string, std::vector<uint32_t>>;
-  using PipelineQueueOrder = std::pair<int, uint64_t>;
 
   static void AddressShaderLoadWatchCallback(
       const global_unique_lock_type& global_lock, void* context, void* data,
@@ -421,7 +462,9 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
       const PipelineCompileRequest& request, std::string* error_out);
   MTL::Function* GetPipelineFragmentFunction(
       const PipelineCompileRequest& request, std::string* error_out);
-  void AsyncCompileThread(size_t thread_index);
+  CompileResult ExecuteCompileTask(const CompileTask& task,
+                                   WorkerThreadContext* context);
+  void StoreCompileResult(const CompileTask& task, const CompileResult& result);
   uint64_t PopulatePipelineCompileRequest(
       const RegisterFile& regs, const Shader::Translation* vertex_translation,
       const Shader::Translation* pixel_translation,
@@ -482,29 +525,21 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
            std::pair<MTL::Library*, std::string>>
       generic_fallback_libraries_;
 
-  std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
-                      ShaderCompileRequestCompare>
-      async_shader_queue_;
-  std::map<PipelineQueueOrder, PipelineCompileRequest> async_pipeline_queue_;
-  std::unordered_map<uint64_t, PipelineQueueOrder> async_pipeline_queued_;
-  uint64_t async_pipeline_queue_arrivals_ = 0;
+  PipelineCreationQueue<CompileTask, CompileResult, WorkerThreadContext,
+                        kQueuePriorityCount>
+      creation_queue_;
   std::unordered_set<Shader::Translation*> async_shader_pending_;
   std::unordered_set<Shader::Translation*> async_shader_failed_;
   std::unordered_set<uint64_t> async_pipeline_pending_;
   std::unordered_set<uint64_t> async_pipeline_failed_;
   std::mutex async_compile_mutex_;
-  std::condition_variable async_compile_cv_;
   std::condition_variable async_compile_idle_cv_;
-  std::vector<std::thread> async_compile_threads_;
-  std::vector<std::thread> async_compile_boost_threads_;
-  std::condition_variable async_compile_boost_cv_;
   size_t async_compile_base_thread_count_ = 0;
   size_t async_compile_thread_limit_ = 0;
   bool async_compile_hold_boost_ = false;
   bool async_compile_boost_allowed_ = true;
   size_t async_compile_awaiters_ = 0;
   uint64_t last_pending_pipeline_key_ = 0;
-  size_t async_compile_busy_ = 0;
   bool async_compile_shutdown_ = false;
 
   std::atomic<int64_t> async_shader_failure_last_log_ns_{0};

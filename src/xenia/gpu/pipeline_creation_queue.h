@@ -11,6 +11,7 @@
 #define XENIA_GPU_PIPELINE_CREATION_QUEUE_H_
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -36,8 +37,11 @@ namespace gpu {
 // backend supplies the request, the handle creating it produces, the state a
 // creation thread needs to do the work, and the two functions that create and
 // store one pipeline.
-template <typename TRequest, typename THandle, typename TThreadContext>
+template <typename TRequest, typename THandle, typename TThreadContext,
+          size_t kPriorityCount = 1>
 class PipelineCreationQueue {
+  static_assert(kPriorityCount >= 1, "At least one priority lane is required");
+
  public:
   using Publication = std::pair<TRequest, THandle>;
   // Creates one pipeline, returning a null handle if it failed. Runs on a
@@ -84,6 +88,7 @@ class PipelineCreationQueue {
     threads_busy_ = 0;
     completion_set_event_ = false;
     threads_shutdown_from_ = SIZE_MAX;
+    active_thread_limit_ = SIZE_MAX;
     completion_event_ = xe::threading::Event::CreateManualResetEvent(true);
     assert_not_null(completion_event_);
   }
@@ -105,54 +110,105 @@ class PipelineCreationQueue {
     }
     {
       std::lock_guard<std::mutex> lock(lock_);
-      queue_.clear();
+      for (auto& lane : queues_) {
+        lane.clear();
+      }
       taken_.clear();
       completion_callback_ = nullptr;
       awaiting_completion_.store(false, std::memory_order_release);
       completion_set_event_ = false;
+      active_thread_limit_ = SIZE_MAX;
     }
     return held;
   }
 
-  bool has_threads() const { return !threads_.empty(); }
+  bool has_threads() const {
+    return has_threads_.load(std::memory_order_acquire);
+  }
 
   // Grows or shrinks the pool. Shrink with the queue drained - a thread only
   // leaves between requests, so anything still queued would be stranded.
   void SetThreadCount(size_t count) {
-    if (count < threads_.size()) {
-      {
-        std::lock_guard<std::mutex> lock(lock_);
-        threads_shutdown_from_ = count;
+    std::lock_guard<std::mutex> threads_lock(threads_lock_);
+    SetThreadCountLocked(count);
+  }
+
+  // Limits how many threads may take new work, parking threads at indices >=
+  // |limit| on a separate condition variable and lazily spawning extra threads
+  // if |limit| exceeds the current pool size (when the pool has threads and
+  // |limit| != SIZE_MAX). Thread-safe.
+  void SetActiveThreadLimit(size_t limit) {
+    if (limit != SIZE_MAX) {
+      std::lock_guard<std::mutex> threads_lock(threads_lock_);
+      if (!threads_.empty() && limit > threads_.size()) {
+        SetThreadCountLocked(limit);
       }
-      cond_.notify_all();
-      while (threads_.size() > count) {
-        xe::threading::Wait(threads_.back().get(), false);
-        threads_.pop_back();
-      }
-      // So threads can be added again later.
+    }
+    {
       std::lock_guard<std::mutex> lock(lock_);
-      threads_shutdown_from_ = SIZE_MAX;
-      return;
+      active_thread_limit_ = limit;
     }
-    while (threads_.size() < count) {
-      size_t thread_index = threads_.size();
-      std::unique_ptr<xe::threading::Thread> thread =
-          xe::threading::Thread::Create(
-              {}, [this, thread_index]() { ThreadMain(thread_index); });
-      assert_not_null(thread);
-      thread->set_name(thread_name_);
-      threads_.push_back(std::move(thread));
-    }
+    park_cond_.notify_all();
+    cond_.notify_all();
   }
 
   // Queues a pipeline the game is drawing now - it is stored once every request
   // queued before it has been.
-  void Push(TRequest request) { PushRequest(std::move(request), true); }
+  void Push(TRequest request) { PushRequest(std::move(request), true, 0); }
 
   // Queues one nothing is drawing yet (the storage warm-up), stored as soon as
-  // it is built.
-  void PushUnordered(TRequest request) {
-    PushRequest(std::move(request), false);
+  // it is built. Higher |priority| lanes are dequeued first
+  // (0..kPriorityCount-1).
+  void PushUnordered(TRequest request, size_t priority = 0) {
+    PushRequest(std::move(request), false, priority);
+  }
+
+  // Moves the first queued request matching |match| from any lane below
+  // |priority| to |priority|. No-op if not queued or already at >= |priority|.
+  template <typename Match>
+  bool Promote(Match match, size_t priority) {
+    const size_t target = std::min(priority, kPriorityCount - 1);
+    bool promoted = false;
+    {
+      std::lock_guard<std::mutex> lock(lock_);
+      for (size_t lane = 0; lane < target; ++lane) {
+        auto it = std::find_if(queues_[lane].begin(), queues_[lane].end(),
+                               [&](const std::pair<uint32_t, TRequest>& entry) {
+                                 return match(entry.second);
+                               });
+        if (it != queues_[lane].end()) {
+          queues_[target].push_back(std::move(*it));
+          queues_[lane].erase(it);
+          promoted = true;
+          break;
+        }
+      }
+    }
+    if (promoted) {
+      cond_.notify_one();
+    }
+    return promoted;
+  }
+
+  // Removes the first queued request matching |match| so the caller can build
+  // it synchronously instead. Returns false if it was not queued (already
+  // taken by a worker or not present).
+  template <typename Match>
+  bool TakeQueued(Match match) {
+    std::lock_guard<std::mutex> lock(lock_);
+    for (size_t lane = kPriorityCount; lane > 0; --lane) {
+      auto& q = queues_[lane - 1];
+      auto it = std::find_if(q.begin(), q.end(),
+                             [&](const std::pair<uint32_t, TRequest>& entry) {
+                               return match(entry.second);
+                             });
+      if (it != q.end()) {
+        q.erase(it);
+        ReportBusyLocked();
+        return true;
+      }
+    }
+    return false;
   }
 
   // Wakes a creation thread without waiting for it.
@@ -164,7 +220,7 @@ class PipelineCreationQueue {
   // queued is created, and left with the caller if that already is.
   void FinishWarmUp(bool blocking, TThreadContext* context,
                     std::function<void()>& completion_callback) {
-    if (blocking || threads_.empty()) {
+    if (blocking || !has_threads()) {
       DrainOnCallingThread(context);
       AwaitCompletion();
       return;
@@ -187,15 +243,18 @@ class PipelineCreationQueue {
       return match(entry.second);
     };
     std::unique_lock<std::mutex> lock(lock_);
-    auto queued = std::find_if(queue_.begin(), queue_.end(), matches);
-    if (queued != queue_.end()) {
-      auto taken = taken_.insert(taken_.end(), std::move(*queued));
-      queue_.erase(queued);
-      ++threads_busy_;
-      lock.unlock();
-      publish_order_.Expedite(taken->first, StoreCreated());
-      Create(taken, context);
-      return;
+    for (size_t lane = kPriorityCount; lane > 0; --lane) {
+      auto& q = queues_[lane - 1];
+      auto queued = std::find_if(q.begin(), q.end(), matches);
+      if (queued != q.end()) {
+        auto taken = taken_.insert(taken_.end(), std::move(*queued));
+        q.erase(queued);
+        ++threads_busy_;
+        lock.unlock();
+        publish_order_.Expedite(taken->first, StoreCreated());
+        Create(taken, context);
+        return;
+      }
     }
     auto taken = std::find_if(taken_.begin(), taken_.end(), matches);
     if (taken == taken_.end()) {
@@ -218,11 +277,52 @@ class PipelineCreationQueue {
     THandle handle;
   };
 
-  bool IsBusyLocked() const { return !queue_.empty() || threads_busy_ != 0; }
+  bool QueuesEmptyLocked() const {
+    for (const auto& lane : queues_) {
+      if (!lane.empty()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool IsBusyLocked() const {
+    return !QueuesEmptyLocked() || threads_busy_ != 0;
+  }
+
+  void SetThreadCountLocked(size_t count) {
+    if (count < threads_.size()) {
+      {
+        std::lock_guard<std::mutex> lock(lock_);
+        threads_shutdown_from_ = count;
+      }
+      park_cond_.notify_all();
+      cond_.notify_all();
+      while (threads_.size() > count) {
+        xe::threading::Wait(threads_.back().get(), false);
+        threads_.pop_back();
+      }
+      has_threads_.store(!threads_.empty(), std::memory_order_release);
+      // So threads can be added again later.
+      std::lock_guard<std::mutex> lock(lock_);
+      threads_shutdown_from_ = SIZE_MAX;
+      return;
+    }
+    while (threads_.size() < count) {
+      size_t thread_index = threads_.size();
+      std::unique_ptr<xe::threading::Thread> thread =
+          xe::threading::Thread::Create(
+              {}, [this, thread_index]() { ThreadMain(thread_index); });
+      assert_not_null(thread);
+      thread->set_name(thread_name_);
+      threads_.push_back(std::move(thread));
+    }
+    has_threads_.store(!threads_.empty(), std::memory_order_release);
+  }
 
   // Blocks until everything queued has been created.
   void AwaitCompletion() {
-    if (threads_.empty()) {
+    if (!has_threads()) {
       return;
     }
     bool await;
@@ -276,16 +376,33 @@ class PipelineCreationQueue {
     }
   }
 
-  void PushRequest(TRequest request, bool ordered) {
+  void PushRequest(TRequest request, bool ordered, size_t priority) {
+    const size_t lane = std::min(priority, kPriorityCount - 1);
     {
       std::lock_guard<std::mutex> lock(lock_);
       // Numbered under the lock that orders the push, so the publish order
       // matches the queue order.
-      queue_.emplace_back(ordered ? publish_order_.NextSequence() : 0,
-                          std::move(request));
+      queues_[lane].emplace_back(ordered ? publish_order_.NextSequence() : 0,
+                                 std::move(request));
       ReportBusyLocked();
     }
     cond_.notify_one();
+  }
+
+  bool PopFrontLocked(typename TakenList::iterator& taken_out) {
+    for (size_t lane = kPriorityCount; lane > 0; --lane) {
+      auto& q = queues_[lane - 1];
+      if (!q.empty()) {
+        // Busy until the pipeline is created rather than just dequeued: other
+        // threads must be able to take requests, but must not report completion
+        // while this one is still building.
+        taken_out = taken_.insert(taken_.end(), std::move(q.front()));
+        q.pop_front();
+        ++threads_busy_;
+        return true;
+      }
+    }
+    return false;
   }
 
   // Creates the next queued pipeline, or returns false with nothing queued.
@@ -293,15 +410,9 @@ class PipelineCreationQueue {
     typename TakenList::iterator taken;
     {
       std::lock_guard<std::mutex> lock(lock_);
-      if (queue_.empty()) {
+      if (!PopFrontLocked(taken)) {
         return false;
       }
-      // Busy until the pipeline is created rather than just dequeued: other
-      // threads must be able to take requests, but must not report completion
-      // while this one is still building.
-      taken = taken_.insert(taken_.end(), std::move(queue_.front()));
-      queue_.pop_front();
-      ++threads_busy_;
     }
     Create(taken, context);
     return true;
@@ -357,11 +468,16 @@ class PipelineCreationQueue {
     std::unique_ptr<TThreadContext> context =
         context_factory_ ? context_factory_() : nullptr;
     for (;;) {
+      typename TakenList::iterator taken;
       {
         std::unique_lock<std::mutex> lock(lock_);
+        while (thread_index < threads_shutdown_from_ &&
+               thread_index >= active_thread_limit_) {
+          park_cond_.wait(lock);
+        }
         // A thread being shut down stops taking work, leaving the rest of the
         // queue to whoever is left.
-        if (thread_index >= threads_shutdown_from_ || queue_.empty()) {
+        if (thread_index >= threads_shutdown_from_ || !PopFrontLocked(taken)) {
           // Also the path a thread woken only to report completion takes.
           SignalCompletionLocked(lock);
           if (thread_index >= threads_shutdown_from_) {
@@ -371,7 +487,7 @@ class PipelineCreationQueue {
           continue;
         }
       }
-      CreateOneQueued(context.get());
+      Create(taken, context.get());
     }
   }
 
@@ -387,10 +503,11 @@ class PipelineCreationQueue {
 
   std::mutex lock_;
   std::condition_variable cond_;
+  std::condition_variable park_cond_;
   // Pipelines are never evicted - games have a finite set that should all stay
-  // cached - so this holds nothing but requests waiting for a thread. FIFO, so
-  // they build in the order the game first drew them, unless one is expedited.
-  std::deque<std::pair<uint32_t, TRequest>> queue_;
+  // cached - so this holds nothing but requests waiting for a thread. FIFO per
+  // priority lane, higher lanes dequeued first.
+  std::array<std::deque<std::pair<uint32_t, TRequest>>, kPriorityCount> queues_;
   // Requests taken off the queue and not stored yet. Guarded by lock_.
   TakenList taken_;
   // Notified when one of taken_ is stored.
@@ -407,9 +524,14 @@ class PipelineCreationQueue {
   std::function<void()> completion_callback_;
   // Set while a non-blocking wait is pending, written under lock_.
   std::atomic<bool> awaiting_completion_{false};
-  // Threads with this index or above leave as soon as they are idle. Guarded
-  // by lock_, notify_all cond_ when set.
+  // Threads with this index or above leave as soon as they are idle. Guarded by
+  // lock_, notify_all cond_ and park_cond_ when set.
   size_t threads_shutdown_from_ = SIZE_MAX;
+  // Threads with this index or above park on park_cond_ until the limit rises
+  // or shutdown begins. Guarded by lock_.
+  size_t active_thread_limit_ = SIZE_MAX;
+  std::mutex threads_lock_;
+  std::atomic<bool> has_threads_{false};
   std::vector<std::unique_ptr<xe::threading::Thread>> threads_;
 };
 
