@@ -333,17 +333,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::Texture* GetDepthTargetForDraw() const;
   MTL::Texture* GetDummyColorTargetForDraw() const;
 
-  // Get the last REAL (non-dummy) render targets for capture
-  MTL::Texture* GetLastRealColorTarget(uint32_t index) const;
-  MTL::Texture* GetLastRealDepthTarget() const;
-
   // Look up a render target texture by key for debug/trace viewer use.
   MTL::Texture* GetRenderTargetTexture(RenderTargetKey key) const;
-  // Look up a color render target texture by key components for the trace
-  // viewer without exposing RenderTargetKey.
-  MTL::Texture* GetColorRenderTargetTexture(
-      uint32_t pitch, xenos::MsaaSamples samples, uint32_t base,
-      xenos::ColorRenderTargetFormat format) const;
 
   // Restore EDRAM contents from snapshot (for trace playback), matching
   // D3D12RenderTargetCache::RestoreEdramSnapshot.
@@ -480,10 +471,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                           uint32_t min_height) const;
   void RecordRenderTargetViewCreated();
 
-  MTL::Library* GetOrCreateEdramLoadLibrary(bool msaa);
-  MTL::RenderPipelineState* GetOrCreateEdramLoadPipeline(
-      MTL::PixelFormat dest_format, uint32_t sample_count);
-
   MetalCommandProcessor& command_processor_;
   TraceWriter* trace_writer_;
 
@@ -500,16 +487,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::Buffer* edram_buffer_ = nullptr;
   MTL::Buffer* edram_snapshot_download_buffer_ = nullptr;
 
-  // EDRAM compute shaders for tile operations
-  MTL::ComputePipelineState* edram_load_pipeline_ = nullptr;   // Tiled → Linear
-  MTL::ComputePipelineState* edram_store_pipeline_ = nullptr;  // Linear → Tiled
-  std::unordered_map<uint64_t, MTL::RenderPipelineState*> edram_load_pipelines_;
-  MTL::Library* edram_load_library_ = nullptr;
-  MTL::Library* edram_load_library_msaa_ = nullptr;
-
   // EDRAM dump compute shaders for host render target -> EDRAM copies, built
-  // on demand from the shared SPIR-V emitter by way of DXIL and the Metal
-  // Shader Converter.
+  // on demand from the shared SPIR-V emitter via SPIRV-Cross.
   std::unordered_map<EdramDumpShaderKey, MTL::ComputePipelineState*,
                      EdramDumpShaderKey::Hasher>
       dump_pipelines_;
@@ -707,10 +686,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   MTL::DepthStencilState* transfer_stencil_bit_states_[8] = {};
   bool native_stencil_output_probed_ = false;
   MTL::Buffer* transfer_dummy_buffer_ = nullptr;
-  MTL::Texture* transfer_dummy_color_float_[3] = {};
-  MTL::Texture* transfer_dummy_color_uint_[3] = {};
-  MTL::Texture* transfer_dummy_depth_[3] = {};
-  MTL::Texture* transfer_dummy_stencil_[3] = {};
   bool msaa_2x_supported_ = true;
 
   // Current render targets - updated by base class Update() call
@@ -983,12 +958,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       MTL::PixelFormat depth_attachment_format = MTL::PixelFormatInvalid,
       MTL::PixelFormat stencil_attachment_format = MTL::PixelFormatInvalid);
   MTL::Library* GetOrCreateTransferLibrary();
-  MTL::Texture* GetTransferDummyTexture(MTL::PixelFormat format,
-                                        uint32_t sample_count);
-  MTL::Texture* GetTransferDummyColorFloatTexture(uint32_t sample_count);
-  MTL::Texture* GetTransferDummyColorUintTexture(uint32_t sample_count);
-  MTL::Texture* GetTransferDummyDepthTexture(uint32_t sample_count);
-  MTL::Texture* GetTransferDummyStencilTexture(uint32_t sample_count);
   MTL::Buffer* GetTransferDummyBuffer();
   MTL::DepthStencilState* GetTransferDepthStencilState(bool depth_write);
   MTL::DepthStencilState* GetTransferDepthAndStencilOutputState();
@@ -1000,16 +969,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool UseNativeStencilOutputInTransfers() const;
   bool ProbeNativeStencilOutputSupport();
   MTL::DepthStencilState* GetTransferStencilBitState(uint32_t bit);
-
-  // EDRAM tile operations
-
-  void LoadTiledData(MTL::CommandBuffer* command_buffer, MTL::Texture* texture,
-                     uint32_t edram_base, uint32_t pitch_tiles,
-                     uint32_t height_tiles, bool is_depth);
-
-  void StoreTiledData(MTL::CommandBuffer* command_buffer, MTL::Texture* texture,
-                      uint32_t edram_base, uint32_t pitch_tiles,
-                      uint32_t height_tiles, bool is_depth);
 
   // Ownership transfer support - copies data between render targets when
   // EDRAM regions are aliased between different RT configurations.

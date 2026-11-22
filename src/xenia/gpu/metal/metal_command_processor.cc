@@ -415,34 +415,6 @@ void ClampScissorToBounds(draw_util::Scissor& scissor, uint32_t width,
   scissor.extent[1] = std::min(scissor.extent[1], max_scissor_height);
 }
 
-void LogMetalErrorDetails(const char* label, NS::Error* error) {
-  if (!error) {
-    return;
-  }
-  const char* desc = error->localizedDescription()
-                         ? error->localizedDescription()->utf8String()
-                         : nullptr;
-  const char* failure = error->localizedFailureReason()
-                            ? error->localizedFailureReason()->utf8String()
-                            : nullptr;
-  const char* recovery =
-      error->localizedRecoverySuggestion()
-          ? error->localizedRecoverySuggestion()->utf8String()
-          : nullptr;
-  const char* domain =
-      error->domain() ? error->domain()->utf8String() : nullptr;
-  int64_t code = error->code();
-  XELOGE("{}: domain={} code={} desc='{}' failure='{}' recovery='{}'", label,
-         domain ? domain : "<null>", code, desc ? desc : "<null>",
-         failure ? failure : "<null>", recovery ? recovery : "<null>");
-  NS::Dictionary* user_info = error->userInfo();
-  if (user_info) {
-    auto* info_desc = user_info->description();
-    XELOGE("{}: userInfo={}", label,
-           info_desc ? info_desc->utf8String() : "<null>");
-  }
-}
-
 constexpr int64_t kAsyncCompileLogIntervalNs =
     int64_t(std::chrono::nanoseconds(std::chrono::seconds(1)).count());
 
@@ -600,95 +572,6 @@ void EnsureDepthFormatForDepthWritingFragment(const char* pipeline_name,
         "using Depth32Float pipeline fallback",
         pipeline_name);
   }
-}
-
-MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
-    MTL::Device* device, const void* metallib_data, size_t metallib_size,
-    const char* debug_name) {
-  if (!device || !metallib_data || !metallib_size) {
-    return nullptr;
-  }
-
-  NS::Error* error = nullptr;
-  dispatch_data_t data = dispatch_data_create(
-      metallib_data, metallib_size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-  MTL::Library* lib = device->newLibrary(data, &error);
-  dispatch_release(data);
-  if (!lib) {
-    XELOGE("Metal: failed to create {} library: {}", debug_name,
-           error ? error->localizedDescription()->utf8String() : "unknown");
-    return nullptr;
-  }
-
-  // XeSL compute entrypoint name used in the embedded metallibs.
-  NS::String* fn_name = NS::String::string("entry_xe", NS::UTF8StringEncoding);
-  MTL::Function* fn = lib->newFunction(fn_name);
-  if (!fn) {
-    XELOGE("Metal: {} missing entry_xe", debug_name);
-    lib->release();
-    return nullptr;
-  }
-
-  MTL::ComputePipelineState* pipeline =
-      device->newComputePipelineState(fn, &error);
-  fn->release();
-  lib->release();
-
-  if (!pipeline) {
-    XELOGE("Metal: failed to create {} pipeline: {}", debug_name,
-           error ? error->localizedDescription()->utf8String() : "unknown");
-    return nullptr;
-  }
-
-  return pipeline;
-}
-
-constexpr uint32_t kPipelineDiskCacheMagic = 0x43504D58;  // 'XMPC'
-constexpr uint32_t kPipelineDiskCacheVersion = 3;
-constexpr size_t kPipelineDiskCacheMaxEntrySize = 1 << 20;
-
-XEPACKEDSTRUCT(PipelineDiskCacheHeader, {
-  uint32_t magic;
-  uint32_t version;
-  uint32_t reserved[2];
-});
-
-XEPACKEDSTRUCT(PipelineDiskCacheEntryHeader, {
-  uint32_t entry_size;
-  uint32_t reserved;
-});
-
-XEPACKEDSTRUCT(PipelineDiskCacheEntryBase, {
-  uint64_t pipeline_key;
-  uint64_t vertex_shader_cache_key;
-  uint64_t pixel_shader_cache_key;
-  uint32_t sample_count;
-  uint32_t depth_format;
-  uint32_t stencil_format;
-  uint32_t color_formats[4];
-  uint32_t normalized_color_mask;
-  uint32_t blendcontrol[4];
-  uint32_t vertex_attribute_count;
-  uint32_t vertex_layout_count;
-});
-
-static_assert(sizeof(PipelineDiskCacheHeader) == 16,
-              "Unexpected pipeline disk cache header size.");
-static_assert(sizeof(PipelineDiskCacheEntryHeader) == 8,
-              "Unexpected pipeline disk cache entry header size.");
-
-bool ShaderUsesVertexFetch(const Shader& shader) {
-  if (!shader.vertex_bindings().empty()) {
-    return true;
-  }
-  const Shader::ConstantRegisterMap& constant_map =
-      shader.constant_register_map();
-  for (uint32_t i = 0; i < xe::countof(constant_map.vertex_fetch_bitmap); ++i) {
-    if (constant_map.vertex_fetch_bitmap[i] != 0) {
-      return true;
-    }
-  }
-  return false;
 }
 
 MTL::CompareFunction ToMetalCompareFunction(xenos::CompareFunction compare) {
