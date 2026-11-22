@@ -25,6 +25,8 @@ add_library(xenia-gpu-metal STATIC
   metal_shared_memory.h
   metal_texture_cache.cc
   metal_texture_cache.h
+  metal_transfer_encoder.cc
+  metal_transfer_encoder.h
   metal_transfer_spirv_cross.cc
   metal_transfer_spirv_cross.h
   metal_upload_cache.h
