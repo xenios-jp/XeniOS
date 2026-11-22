@@ -36,18 +36,14 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/draw_util.h"
-#include "xenia/gpu/memexport_format_profile.h"
 #include "xenia/gpu/metal/dxil_shader.h"
 #include "xenia/gpu/metal/metal_buffer_hazards.h"
 #include "xenia/gpu/metal/metal_dxil_binder.h"
-#include "xenia/gpu/metal/metal_pipeline_archive.h"
 #include "xenia/gpu/metal/metal_primitive_processor.h"
 #include "xenia/gpu/metal/metal_render_target_cache.h"
-#include "xenia/gpu/metal/metal_shader_library_cache.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/metal/metal_zpd_visibility_pool.h"
-#include "xenia/gpu/shader_storage.h"
 #include "xenia/gpu/spirv_shader_translator.h"
 #include "xenia/ui/metal/metal_api.h"
 #include "xenia/ui/metal/metal_provider.h"
@@ -62,10 +58,12 @@ namespace gpu {
 namespace metal {
 
 class MetalGraphicsSystem;
+class MetalPipelineCache;
 
 class MetalCommandProcessor : public CommandProcessor,
                               public StripMerge::Backend {
   friend class MetalRegisterWriteTest;
+  friend class MetalPipelineCache;
 
  protected:
 #define OVERRIDING_BASE_CMDPROCESSOR
@@ -409,9 +407,6 @@ class MetalCommandProcessor : public CommandProcessor,
                                  uint32_t num_registers);
 
  private:
-  // Initialize shader translation pipeline
-  bool InitializeShaderTranslation();
-
   // Command buffer management
   void BeginCommandBuffer();
   // next_kind attributes the submission this forces to be started.
@@ -424,13 +419,6 @@ class MetalCommandProcessor : public CommandProcessor,
   // draws overwrote while sharing the guest's render encoder.
   void InvalidateRenderEncoderStateAfterDrawPassTransfers(
       MetalRenderTargetCache::DrawPassTransferEncoderMutationMask mutations);
-  // Blocks until the compile threads have drained. For work that needs the
-  // guest's exact shaders rather than a placeholder or a skipped draw.
-  void AwaitAsyncCompiles();
-  // Blocks until the pipeline the last pipeline lookup on this thread found
-  // pending is built or has failed, moving it to the front of the queue. For a
-  // draw that needs the guest's exact shaders.
-  void AwaitPendingPipeline();
   // Blocks until the given submission's command buffer has completed. The
   // submission must already be committed.
   void AwaitSubmissionCompletion(uint64_t submission);
@@ -526,194 +514,12 @@ class MetalCommandProcessor : public CommandProcessor,
                                   reg::RB_DEPTHCONTROL normalized_depth_control,
                                   uint32_t normalized_color_mask);
 
-  // SPIRV-Cross (MSL) path - shader modification and pipeline helpers.
-  SpirvShaderTranslator::Modification GetCurrentSpirvVertexShaderModification(
-      const Shader& shader,
-      Shader::HostVertexShaderType host_vertex_shader_type,
-      uint32_t interpolator_mask, bool ps_param_gen_used) const;
-  SpirvShaderTranslator::Modification GetCurrentSpirvPixelShaderModification(
-      const Shader& shader, uint32_t interpolator_mask, uint32_t param_gen_pos,
-      reg::RB_DEPTHCONTROL normalized_depth_control,
-      uint32_t normalized_color_mask) const;
   void UpdateSpirvSystemConstantValues(
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       bool primitive_polygonal, uint32_t line_loop_closing_index,
       xenos::Endian index_endian, const draw_util::ViewportInfo& viewport_info,
       uint32_t used_texture_mask, reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask);
-  enum class ShaderCompileStatus {
-    kReady,
-    kPending,
-    kFailed,
-    kNotQueued,
-  };
-  enum class PipelineCompileStatus {
-    kReady,
-    kPending,
-    kFailed,
-  };
-  struct PipelineCompileRequest;
-  struct PipelineDescription;
-  void InitializeAsyncCompilation();
-  void ShutdownAsyncCompilation();
-  ShaderCompileStatus GetShaderCompileStatus(Shader::Translation* translation);
-  // For a translation the caller has just read as kNotQueued. False means there
-  // is no worker pool, so the caller has to compile it itself.
-  bool EnqueueShaderCompilation(Shader::Translation* translation,
-                                uint8_t priority);
-  // Records a translation the draw thread could not translate to SPIR-V, so
-  // the failure is reported once rather than retried by every later draw.
-  void NoteShaderCompileFailed(Shader::Translation* translation);
-  // Claimed so only one thread translates it. kPending means another holds the
-  // claim and the caller should retry rather than wait.
-  ShaderCompileStatus EnsureTranslationSpirv(Shader::Translation* translation,
-                                             SpirvShaderTranslator& translator);
-  // The translation itself, for a caller that holds the claim.
-  ShaderCompileStatus TranslateClaimedSpirv(Shader::Translation* translation,
-                                            SpirvShaderTranslator& translator);
-  // Builds the Metal AIR library/function of one translation.
-  bool CompileHostShader(Shader::Translation* translation,
-                         std::vector<uint8_t>* metallib_out = nullptr);
-  // EnsureTranslationSpirv then CompileHostShader, or neither when the title's
-  // shader library cache has what they would make (the library and the
-  // shader's bindings). kPending as for EnsureTranslationSpirv.
-  ShaderCompileStatus TranslateAndCompileHostShader(
-      Shader::Translation* translation, SpirvShaderTranslator& translator);
-  std::unique_ptr<SpirvShaderTranslator> CreateSpirvShaderTranslator() const;
-  // The compiled function of a translation on the active path, null until
-  // CompileHostShader has succeeded for it.
-  static MTL::Function* GetHostShaderFunction(
-      const Shader::Translation* translation);
-  // Whether pipelines can be made of |translation|: it has its function, or
-  // its functions are made per pipeline (DxilTranslation::bakes_only).
-  static bool IsHostShaderReady(const Shader::Translation* translation);
-  bool EnqueuePipelineCompilation(const PipelineCompileRequest& request);
-  // Rate-limited "draw skipped, still compiling" logging, shared by both guest
-  // shader paths.
-  void LogShaderCompilePending(const Shader::Translation* translation,
-                               const char* stage_tag);
-  void LogPipelineCompilePending(const Shader::Translation* vertex_translation,
-                                 const Shader::Translation* pixel_translation);
-  void LogPlaceholderDraw(const Shader::Translation* vertex_translation,
-                          const Shader::Translation* pixel_translation);
-  // All require async_compile_mutex_ held.
-  bool IsAsyncCompileIdleLocked() const;
-  void FinishAsyncCompileTaskLocked();
-  // Counts a request as finished for the progress and the rebuild record.
-  void CountAsyncCompileTaskFinishedLocked();
-  // Blocks until |done|, checked under async_compile_mutex_ after each finished
-  // task, holds. The compile threads may use every core meanwhile.
-  template <typename Done>
-  void AwaitAsyncCompilesUntil(const Done& done);
-  // Sets the compile thread limit from the configured count and whatever waits
-  // on the threads.
-  void UpdateCompileThreadLimitLocked();
-  // Raises a queued pipeline to |priority| if that's higher. Does nothing to
-  // one a thread is building or that isn't queued.
-  void PromoteQueuedPipelineLocked(uint64_t key, uint8_t priority);
-  // Takes a queued pipeline out of the queue for the caller to build. False if
-  // it isn't queued.
-  bool TakeQueuedPipelineLocked(uint64_t key);
-  // Writes how long the stored pipelines took to rebuild, once, when the last of
-  // them has finished. Under async_compile_mutex_.
-  void RecordStorageRebuildStatsLocked();
-  // A pipeline task that ended (compiled, failed or taken by a draw), for the
-  // rebuild timing record.
-  void NoteStoredPipelineDoneLocked(uint64_t pipeline_key);
-  // The storage load's progress in compile_activity: publishes the requests it
-  // has queued (with each stored description not yet queued counted as one),
-  // counts one of them done, and ends the load once all are done. Under
-  // async_compile_mutex_.
-  void PublishStorageRequestsLocked();
-  void NoteStorageRequestDoneLocked();
-  void FinishStorageRebuildLocked();
-  // Formats, write masks and blend state, shared by the render and mesh
-  // pipeline descriptors.
-  static void ApplyColorAttachmentState(
-      MTL::RenderPipelineColorAttachmentDescriptorArray* attachments,
-      const PipelineCompileRequest& request);
-  MTL::RenderPipelineState* CreatePipelineState(
-      const PipelineCompileRequest& request, std::string* error_out);
-  bool UsesVertexFetchStateFunctionConstants(
-      const Shader::Translation* translation) const;
-  bool UsesPixelFetchStateFunctionConstants(
-      const Shader::Translation* translation) const;
-  // Whether every function of |translation| is made with its fetch-state
-  // constants compiled in (GetBakedFunction): then no pipeline uses its
-  // generic library, and TranslateAndCompileHostShader doesn't compile one.
-  bool BakesFetchState(const Shader::Translation* translation) const;
-  struct FiniteMultiplyInfo {
-    uint64_t required = 0;
-    uint64_t direct_constants[4] = {};
-  };
-  const FiniteMultiplyInfo& GetFiniteMultiplyInfo(const Shader& shader) const;
-  uint64_t GetFiniteMultiplyRequirements(const Shader& shader) const;
-  // The general variant of a pipeline's finite multiply state: every input the
-  // stages' shaders need proven is taken as possibly not finite, so the guarded
-  // product is used throughout, which is right for any draw. Returns whether
-  // either stage has requirements.
-  bool SetGeneralFiniteMultiplyState(const Shader::Translation* vertex,
-                                     const Shader::Translation* pixel,
-                                     PipelineDescription& description) const;
-  bool HasFiniteMultiplyRequirements(const Shader::Translation* vertex,
-                                     const Shader::Translation* pixel,
-                                     const PipelineDescription& description)
-      const;
-  MTL::RenderPipelineState* FindBuiltPipelineState(uint64_t key);
-  void GetFiniteMultiplyState(const Shader::Translation* translation,
-                              const RegisterFile& regs, uint32_t* state) const;
-  const SpirvShaderTranslator::DrawExactAnalysis& GetDrawExactAnalysis(
-      const Shader& shader) const;
-  // Evaluates the DrawExactAnalysis flags and estimates of the vertex shader
-  // for the draw.
-  void UpdateDrawExactness(
-      const Shader& vertex_shader,
-      const PrimitiveProcessor::ProcessingResult& primitive_processing_result);
-  void SetPipelineFunctionConstants(PipelineCompileRequest& request,
-                                    const Shader::Translation* vertex,
-                                    const Shader::Translation* pixel);
-  // The function of |translation| (whose generic library is |library|) with
-  // the fetch-state function constants |states|. Preferably one with the
-  // constants compiled in (see metal_bake_fetch_state), else the generic
-  // function specialized by Metal.
-  MTL::Function* GetSpecializedFunction(
-      const DxilShader::DxilTranslation* translation, MTL::Library* library,
-      const std::string& function_name, const uint32_t* states,
-      uint32_t binding_count, std::string* error_out);
-  MTL::Function* GetPipelineVertexFunction(
-      const PipelineCompileRequest& request, std::string* error_out);
-  MTL::Function* GetPipelineFragmentFunction(
-      const PipelineCompileRequest& request, std::string* error_out);
-  void AsyncCompileThread(size_t thread_index);
-  // Fills a request's attachment formats and blend state from the active render
-  // pass and the registers, returning the pipeline cache key. The translations
-  // only identify the shaders within that key.
-  uint64_t PopulatePipelineCompileRequest(
-      const RegisterFile& regs, const Shader::Translation* vertex_translation,
-      const Shader::Translation* pixel_translation,
-      PipelineCompileRequest& request);
-  MTL::RenderPipelineState* GetOrCreatePipelineState(
-      const Shader::Translation* vertex_translation,
-      const Shader::Translation* pixel_translation, const RegisterFile& regs,
-      PipelineCompileStatus* compile_status_out = nullptr);
-  // Shared by every pipeline kind. A compile thread can reach neither the
-  // register file nor the render pass, so the request must carry it all.
-  MTL::RenderPipelineState* AcquirePipelineState(
-      const PipelineCompileRequest& request, bool allow_async,
-      PipelineCompileStatus* compile_status_out);
-  // Stands in for a pipeline whose pixel shader isn't compiled yet: the vertex
-  // shader alone, color writes off. Shared across that shader's pipelines.
-  MTL::RenderPipelineState* GetOrCreatePlaceholderPipelineState(
-      const Shader::Translation* vertex_translation, const RegisterFile& regs);
-
-  // Never null - an unbuildable one reports kFailed, so later draws don't retry
-  // it. allow_async false builds it here and waits for one already queued.
-  // TODO(macos): translate the guest ucode to SPIR-V on the compile threads
-  // too, instead of on the draw thread.
-  Shader::Translation* GetOrCreateHostTranslation(
-      SpirvShader& shader, uint64_t modification, bool allow_async,
-      ShaderCompileStatus* compile_status_out,
-      std::shared_ptr<const Shader::Specialization> specialization = {});
 
   // Per-draw buffers prepared for native Metal drawPatches + spirv2air
   // TessellationEvaluation (buffer(6) control points and half-float factors).
@@ -906,392 +712,21 @@ class MetalCommandProcessor : public CommandProcessor,
     return render_target_cache_.get();
   }
   MetalTextureCache* texture_cache() const { return texture_cache_.get(); }
-  bool primitive_fragment_helpers_enabled() const {
-    return spirv_translator_features_.primitive_fragment_helpers;
-  }
+  bool primitive_fragment_helpers_enabled() const;
 
  private:
   // Shader ucode disassembly buffer (used by AnalyzeUcode).
   StringBuffer ucode_disasm_buffer_;
 
-  // The cache holds DxilShader instances (derived from SpirvShader) sharing
-  // this translator's output. The translator is not thread safe, so each
-  // compile thread builds its own.
-  std::unique_ptr<SpirvShaderTranslator> spirv_shader_translator_;
-  SpirvShaderTranslator::Features spirv_translator_features_{false};
-  bool spirv_translator_native_2x_msaa_ = false;
-  uint32_t spirv_translator_resolution_scale_x_ = 1;
-  uint32_t spirv_translator_resolution_scale_y_ = 1;
-  std::unordered_map<uint64_t, std::unique_ptr<SpirvShader>>
-      guest_shader_cache_;
-  // The guest loads the same few shaders draw after draw. The most recently
-  // loaded ones, most recent first, keep the guest words they were loaded
-  // from, so a repeat is found by comparing the words instead of hashing them.
-  // A shader stays in guest_shader_cache_ under the hash of its own words.
-  struct RecentShaderLoad {
-    SpirvShader* shader = nullptr;
-    std::vector<uint32_t> ucode;
-  };
-  std::array<RecentShaderLoad, 8> recent_shader_loads_;
-  // IM_LOAD by guest address (zero-copy shared memory only): the shader an
-  // address held when it was last loaded, trusted until a shared memory watch
-  // sees a write to its pages. Most loads reload
-  // what the stage had loaded from the same address a few draws before.
-  struct AddressShaderLoad {
-    // Command processor thread only.
-    SpirvShader* shader = nullptr;
-    uint32_t dword_count = 0;
-    xenos::ShaderType shader_type = xenos::ShaderType::kVertex;
-    // Reloads after a watch fired that found the same shader. A page written
-    // often for other reasons stops being watched, so its writes don't keep
-    // faulting.
-    uint32_t same_reloads = 0;
-    bool unwatchable = false;
-    // A watch was placed and not yet seen cancelled.
-    bool watch_installed = false;
-    // Under the global critical region.
-    SharedMemory::WatchHandle watch = nullptr;
-    // Cleared by the watch (any thread) before the write it reports.
-    std::atomic<bool> valid{false};
-  };
-  static void AddressShaderLoadWatchCallback(
-      const global_unique_lock_type& global_lock, void* context, void* data,
-      uint64_t argument, bool invalidated_by_gpu);
-  void ClearAddressShaderLoads();
-  std::unordered_map<uint32_t, std::unique_ptr<AddressShaderLoad>>
-      address_shader_loads_;
-  // The last entry each stage loaded through (vertex, pixel).
-  std::array<std::pair<uint32_t, AddressShaderLoad*>, 2>
-      last_address_shader_loads_{};
+  // Shader translation, pipeline compilation, and on-disk shader/pipeline
+  // cache + archive.
+  std::unique_ptr<MetalPipelineCache> pipeline_cache_;
   MetalDxilBinder dxil_binder_;
   MTL::ComputePipelineState* tess_prep_pipeline_ = nullptr;
   std::vector<TessPrepDispatch> tess_prep_ahead_;
   uint32_t max_tessellation_factor_ = 64;
   // Includes user clip planes and tessellation constants.
   SpirvShaderTranslator::SystemConstants spirv_system_constants_ = {};
-  struct ShaderCompileRequest {
-    Shader::Translation* translation = nullptr;
-    uint64_t shader_hash = 0;
-    uint64_t modification = 0;
-    uint8_t priority = 0;
-    // Queued by the shader storage load, so it counts toward its progress.
-    bool storage = false;
-  };
-  // What a queued pipeline request builds. Each kind reads a different subset
-  // of the request, but all of them are captured on the draw thread.
-  // Explicit values preserve on-disk .metal.xpso compatibility (1 was the
-  // removed MSL tessellation kind, 2 was the removed MSC mesh tessellation
-  // kind).
-  enum class PipelineKind : uint32_t {
-    kRender = 0,
-    kPatchTessellation = 3,
-  };
-  // Everything that distinguishes one pipeline, in a form that survives to
-  // disk. Its hash is the cache key, so replay lands where a draw looks.
-  // Update kVersion if anything here changes!
-  XEPACKEDSTRUCT(PipelineDescription, {
-    uint64_t vertex_shader_hash;
-    uint64_t vertex_shader_modification;
-    // 0 with no pixel shader - the depth-only and placeholder pipelines.
-    uint64_t pixel_shader_hash;
-    uint64_t pixel_shader_modification;
-
-    uint32_t color_formats[4];  // MTL::PixelFormat
-    uint32_t depth_format;
-    uint32_t stencil_format;
-    uint32_t blendcontrol[4];  // RB_BLENDCONTROL, zeroed for unwritten targets
-    uint32_t normalized_color_mask;
-    uint32_t sample_count;
-    // Potentially non-finite sampled textures and fixed float constants.
-    uint32_t vertex_finite_multiply_state[2];
-    uint32_t pixel_finite_multiply_state[2];
-    // Only constants the shader reads contribute to its pipeline identity.
-    // Texture arithmetic other than the fetch constant decoding and system
-    // flags stay dynamic.
-    uint32_t vertex_fetch_endians
-        [SpirvShaderTranslator::kVertexFetchEndianBindingCount * 4];
-    uint32_t vertex_bool_constants[256 / 32];
-    uint32_t pixel_bool_constants[256 / 32];
-    uint32_t vertex_loop_constants[32];
-    uint32_t pixel_loop_constants[32];
-    // TextureCache::GetIntegerScaleBits of the fetch constants the shader
-    // samples, selecting the fetch conversions it needs.
-    uint32_t vertex_texture_scale_bits[32];
-    uint32_t pixel_texture_scale_bits[32];
-    // TextureCache::GetFetchDecodeBits of the fetch constants the shader
-    // samples: the signednesses and the exponent bias.
-    uint32_t vertex_texture_decode_bits[32];
-    uint32_t pixel_texture_decode_bits[32];
-
-    PipelineKind kind : 2;                          // 2
-    xenos::TessellationMode tessellation_mode : 2;  // 4
-    Shader::HostVertexShaderType host_vertex_shader_type
-        : Shader::kHostVertexShaderTypeBitCount;  // 8
-    uint32_t vertex_fetch_states_specialized : 1;
-    uint32_t fragment_fetch_states_specialized : 1;
-    uint32_t finite_multiply_enabled : 1;
-    // 8_8_8_8_GAMMA, 16_16 and 16_16_16_16 color targets the pixel shader
-    // blends itself, with fixed-function blending off.
-    uint32_t shader_blend_mask : 4;
-    // Set when a stage has finite multiply requirements and they come from
-    // the one-sided analysis. Taken from the padding, so a description stored
-    // by a build without it reads 0: its finite multiply state then belongs to
-    // another analysis, and it's rebuilt as the general variant.
-    uint32_t finite_multiply_one_sided : 1;
-    uint32_t padding : 16;  // 32
-
-    // Increment when the layout or its meaning changes.
-    static constexpr uint32_t kVersion = 0x20261110;
-
-    // Copied whole, padding included, because the hash covers every byte.
-    PipelineDescription() { Reset(); }
-    PipelineDescription(const PipelineDescription& other) {
-      std::memcpy(this, &other, sizeof(*this));
-    }
-    PipelineDescription& operator=(const PipelineDescription& other) {
-      std::memcpy(this, &other, sizeof(*this));
-      return *this;
-    }
-    void Reset() { std::memset(this, 0, sizeof(*this)); }
-    uint64_t GetHash() const { return XXH3_64bits(this, sizeof(*this)); }
-    bool operator==(const PipelineDescription& other) const {
-      return std::memcmp(this, &other, sizeof(*this)) == 0;
-    }
-  });
-  XEPACKEDSTRUCT(PipelineStoredDescription, {
-    uint64_t description_hash;
-    PipelineDescription description;
-  });
-  static constexpr uint32_t kPipelineStorageAPIMagicMetal = 'MTLP';
-  // Pipeline compile priorities, highest first. What a draw needs goes before
-  // what a launch rebuilds from storage, so a game isn't left skipping draws
-  // until the whole rebuild is done, and what a draw blocks on goes first.
-  // Pipelines with a pixel shader first within each.
-  static constexpr uint8_t kPipelinePriorityStoredDepthOnly = 1;
-  static constexpr uint8_t kPipelinePriorityStored = 2;
-  static constexpr uint8_t kPipelinePriorityDrawDepthOnly = 3;
-  static constexpr uint8_t kPipelinePriorityDraw = 4;
-  static constexpr uint8_t kPipelinePriorityAwaited = 5;
-
-  struct PipelineCompileRequest {
-    PipelineDescription description;
-    // description.GetHash(), the key into async_pipeline_cache_.
-    uint64_t pipeline_key = 0;
-    MTL::Function* vertex_function = nullptr;
-    MTL::Function* fragment_function = nullptr;
-    uint8_t priority = 0;
-    MTL::Library* vertex_library = nullptr;
-    const DxilShader::DxilTranslation* vertex_translation = nullptr;
-    std::string vertex_function_name;
-    bool vertex_fetch_states_specialized = false;
-    bool fragment_fetch_states_specialized = false;
-    MTL::Library* fragment_library = nullptr;
-    const DxilShader::DxilTranslation* fragment_translation = nullptr;
-    std::string fragment_function_name;
-  };
-  struct ShaderCompileRequestCompare {
-    bool operator()(const ShaderCompileRequest& a,
-                    const ShaderCompileRequest& b) const {
-      return a.priority < b.priority;
-    }
-  };
-  memexport_format_profile::ProfilePool memexport_format_profiles_;
-  // Accessed on both the command thread and async compile workers (via
-  // TranslateAndCompileHostShader -> BakesFetchState). Guarded by
-  // shader_analysis_mutex_. Elements of an unordered_map keep their address
-  // across insert/rehash, and maps are only cleared after workers join in
-  // ShutdownContext().
-  mutable std::mutex shader_analysis_mutex_;
-  mutable std::unordered_map<const Shader*, FiniteMultiplyInfo>
-      finite_multiply_requirements_;
-  mutable const Shader* finite_multiply_last_shader_[2] = {};
-  mutable const FiniteMultiplyInfo* finite_multiply_last_info_[2] = {};
-  mutable std::unordered_map<const Shader*,
-                             SpirvShaderTranslator::DrawExactAnalysis>
-      draw_exact_analyses_;
-  mutable const Shader* draw_exact_last_shader_ = nullptr;
-  mutable const SpirvShaderTranslator::DrawExactAnalysis*
-      draw_exact_last_analysis_ = nullptr;
-  // Of the draw being issued, for draw_exact_shader_ only.
-  const Shader* draw_exact_shader_ = nullptr;
-  uint32_t draw_exact_flags_ = 0;
-  // The flags the pipeline of the draw is asked for with: those of
-  // draw_exact_flags_ that every draw of the shader has had, once that has
-  // settled. A flag only permits leaving work out, so a pipeline with fewer
-  // flags than the draw has is as exact, and one with none always is.
-  uint32_t draw_exact_key_flags_ = 0;
-  struct DrawExactStableFlags {
-    uint32_t flags = UINT32_MAX;
-    uint32_t settled_draws = 0;
-  };
-  // By the ucode hash of the vertex shader. Also given the flags of the stored
-  // pipelines while those are read, which may be on another thread.
-  std::unordered_map<uint64_t, DrawExactStableFlags> draw_exact_stable_flags_;
-  std::mutex draw_exact_stable_flags_mutex_;
-  float draw_exact_estimates_
-      [SpirvShaderTranslator::DrawExactAnalysis::kMaxEstimates] = {};
-  std::mutex specialized_functions_mutex_;
-  // Compare the complete specialization identity; a hash alone may collide.
-  using SpecializedFunctionKey =
-      std::tuple<uintptr_t, std::string, std::vector<uint32_t>>;
-  std::map<SpecializedFunctionKey, MTL::Function*> specialized_functions_;
-  // Libraries with fetch-state constants compiled in, behind functions in
-  // specialized_functions_.
-  std::vector<MTL::Library*> baked_libraries_;
-  // The function GetSpecializedFunction wants as a library with the constants
-  // compiled in (cached, or made now from the translation's SPIR-V) and
-  // registers it under |key|. Null when there is no such library.
-  MTL::Function* GetBakedFunction(
-      const DxilShader::DxilTranslation* translation, const uint32_t* states,
-      uint32_t binding_count, const SpecializedFunctionKey& key);
-  // Has the SPIR-V of |translation| at hand, translating it now if it was made
-  // ready from the library cache. False if it can't be translated.
-  bool EnsureBakeSpirv(const DxilShader::DxilTranslation* translation);
-  std::mutex bake_translate_mutex_;
-  // The generic library of a translation that bakes only, and its function's
-  // name, for constant values that can't be compiled in (not expected): made
-  // on first use, then specialized by Metal. Null if it couldn't be made.
-  MTL::Library* GetGenericFallbackLibrary(
-      const DxilShader::DxilTranslation* translation,
-      std::string& entry_point_name_out);
-  std::mutex generic_fallback_mutex_;
-  std::map<const DxilShader::DxilTranslation*,
-           std::pair<MTL::Library*, std::string>>
-      generic_fallback_libraries_;
-  std::priority_queue<ShaderCompileRequest, std::vector<ShaderCompileRequest>,
-                      ShaderCompileRequestCompare>
-      async_shader_queue_;
-  // Queued pipelines in the order the compile threads take them: by priority,
-  // highest first (the order's first is the negated priority), then by when
-  // they reached it. Indexed by key so a draw can promote or take one.
-  using PipelineQueueOrder = std::pair<int, uint64_t>;
-  std::map<PipelineQueueOrder, PipelineCompileRequest> async_pipeline_queue_;
-  std::unordered_map<uint64_t, PipelineQueueOrder> async_pipeline_queued_;
-  uint64_t async_pipeline_queue_arrivals_ = 0;
-  std::unordered_set<Shader::Translation*> async_shader_pending_;
-  std::unordered_set<Shader::Translation*> async_shader_failed_;
-  std::unordered_set<uint64_t> async_pipeline_pending_;
-  std::unordered_set<uint64_t> async_pipeline_failed_;
-  std::mutex async_compile_mutex_;
-  std::condition_variable async_compile_cv_;
-  // Signalled when the last in-flight task finishes, for AwaitAsyncCompiles.
-  std::condition_variable async_compile_idle_cv_;
-  std::vector<std::thread> async_compile_threads_;
-  // Threads past the configured count, started by SetCompileThreadBoost. They
-  // park on their own condition variable while the limit excludes them, so they
-  // never take a wakeup meant for a thread that may work. The limit is the
-  // number of threads that may take work. All guarded by async_compile_mutex_.
-  std::vector<std::thread> async_compile_boost_threads_;
-  std::condition_variable async_compile_boost_cv_;
-  size_t async_compile_base_thread_count_ = 0;
-  size_t async_compile_thread_limit_ = 0;
-  // What raises the limit to every core: the guest held for a rebuild
-  // (SetCompileThreadBoost), and threads blocked on the compile threads.
-  bool async_compile_hold_boost_ = false;
-  bool async_compile_boost_allowed_ = true;
-  size_t async_compile_awaiters_ = 0;
-  // The last pipeline AcquirePipelineState reported pending, for
-  // AwaitPendingPipeline. Command processor thread only.
-  uint64_t last_pending_pipeline_key_ = 0;
-  size_t async_compile_busy_ = 0;
-  bool async_compile_shutdown_ = false;
-  std::atomic<int64_t> async_shader_failure_last_log_ns_{0};
-  std::atomic<int64_t> async_pipeline_failure_last_log_ns_{0};
-  std::atomic<int64_t> async_shader_pending_last_log_ns_{0};
-  std::atomic<int64_t> async_pipeline_pending_last_log_ns_{0};
-  std::atomic<int64_t> async_placeholder_last_log_ns_{0};
-  std::atomic<int64_t> finite_multiply_general_last_log_ns_{0};
-  uint64_t finite_multiply_general_draws_ = 0;
-  std::atomic<int64_t> async_compile_drain_last_log_ns_{0};
-  // Where compile time goes: totals per stage, logged every few seconds while
-  // anything compiles (LogCompileStages).
-  enum CompileStage : size_t {
-    kCompileStageTranslate,       // Guest ucode to SPIR-V.
-    kCompileStageLibraryCached,   // A metallib from shader_libraries.bin.
-    kCompileStageAir,             // SPIR-V to AIR, and its MTLLibrary.
-    kCompileStageSpecialize,      // newFunction with constant values.
-    kCompileStageBake,            // spirv2air with the constants compiled in.
-    kCompileStageBakedCached,     // A baked library from the cache.
-    kCompileStagePipelineHit,     // A render pipeline found in the archive.
-    kCompileStagePipelineMiss,    // A render pipeline Metal compiled.
-    kCompileStageDrawWait,        // The draw thread waiting for a compile.
-    kCompileStageCount,
-  };
-  struct CompileStageTotal {
-    std::atomic<uint64_t> count{0};
-    std::atomic<uint64_t> ns{0};
-    std::atomic<uint64_t> max_ns{0};
-  };
-  void AddCompileStageTime(CompileStage stage, int64_t start_ns);
-  void LogCompileStages();
-  std::array<CompileStageTotal, kCompileStageCount> compile_stage_totals_;
-  std::array<uint64_t, kCompileStageCount> compile_stage_logged_count_{};
-  std::array<uint64_t, kCompileStageCount> compile_stage_logged_ns_{};
-  std::atomic<int64_t> compile_stage_last_log_ns_{0};
-  // The stored-pipeline rebuild timing record (see InitializeShaderStorage and
-  // RecordStorageRebuildStatsLocked). Guarded by async_compile_mutex_.
-  bool storage_stats_pending_ = false;
-  uint64_t storage_stats_start_ticks_ = 0;
-  uint64_t storage_stats_stored_ = 0;
-  uint32_t storage_stats_version_ = 0;
-  // The guest was held for the rebuild with every core compiling for a while,
-  // so its time would forecast the next one short. Not recorded then.
-  bool storage_stats_boosted_ = false;
-  // The stored pipelines still compiling, and whether all were queued. The
-  // record waits for these alone: compile_activity counts every task, and a
-  // draw's pipelines, which go first, finish within it.
-  std::unordered_set<uint64_t> storage_stats_keys_;
-  bool storage_stats_queued_all_ = false;
-  // The storage load's own requests, queued and done, for compile_activity:
-  // the shaders the stored pipelines need, then the stored pipelines (each key
-  // that went into storage_stats_keys_). Until all are queued, the stored
-  // descriptions not yet queued count as storage_stats_expected_pipelines_.
-  uint64_t storage_shader_requests_ = 0;
-  uint64_t storage_pipeline_requests_ = 0;
-  uint64_t storage_requests_done_ = 0;
-  uint64_t storage_stats_expected_pipelines_ = 0;
-  std::filesystem::path storage_stats_path_;
-  // Guest ucode (.xsh, shared with the other backends) and this backend's
-  // pipeline descriptions (.metal.xpso), replayed at startup.
-  ShaderStorageWriter<PipelineStoredDescription> storage_writer_;
-  // The title's guest shaders as Metal libraries, so a later launch needn't
-  // translate them again (DXIL path).
-  MetalShaderLibraryCache shader_library_cache_;
-  // The title's compiled pipelines and specialized functions. Saved by
-  // archive_save_thread_ once the stored pipelines are rebuilt, then at most
-  // every kPipelineArchiveSaveSeconds while new ones are added.
-  MetalPipelineArchive pipeline_archive_;
-  std::thread archive_save_thread_;
-  std::atomic<bool> archive_save_running_{false};
-  uint64_t archive_saved_ticks_ = 0;
-  static constexpr uint64_t kPipelineArchiveSaveSeconds = 20;
-  void MaybeSavePipelineArchive();
-  void JoinPipelineArchiveSave();
-  bool shader_storage_flush_needed_ = false;
-  bool pipeline_storage_flush_needed_ = false;
-  // Set while rebuilding from storage, so replay doesn't re-record what it
-  // read.
-  bool replaying_stored_pipelines_ = false;
-  // Set while the storage load queues the shaders and tessellation stages the
-  // stored pipelines need, so their requests count toward its progress. Draw
-  // thread only.
-  bool queueing_storage_requests_ = false;
-  // Turns the stored (ucode hash, modification) pairs into compiled shaders.
-  void TranslateShadersForStorage(
-      const std::set<std::pair<uint64_t, uint64_t>>& translations_needed,
-      size_t stored_count);
-  // Rebuilds the stored pipelines.
-  void CreateStoredPipelines(
-      const std::vector<PipelineStoredDescription>& stored_descriptions);
-  SpirvShader* LoadShader(xenos::ShaderType shader_type,
-                          const uint32_t* host_address, uint32_t dword_count,
-                          uint64_t hash);
-  // Queues the creation of a pipeline loaded from storage for
-  // ReplayStoredPipelines. Returns nullptr with |vertex_shader_out| set, or why
-  // it didn't.
-  const char* QueueStoredPipeline(const PipelineStoredDescription& stored,
-                                  Shader*& vertex_shader_out);
-  std::unordered_map<uint64_t, MTL::RenderPipelineState*> async_pipeline_cache_;
 
   struct DepthStencilStateKey {
     uint32_t depth_control;
@@ -1742,10 +1177,6 @@ class MetalCommandProcessor : public CommandProcessor,
 
   bool gamma_ramp_256_entry_table_up_to_date_ = false;
   bool gamma_ramp_pwl_up_to_date_ = false;
-
-  // Separate from the generic MSL/tessellation depth-only fallback: this
-  // fragment applies polygon offset through the converter resource ABI.
-  MTL::Library* exact_float_depth_bias_library_ = nullptr;
 };
 
 }  // namespace metal

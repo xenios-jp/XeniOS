@@ -10,7 +10,9 @@
 #ifndef XENIA_GPU_METAL_METAL_UTIL_H_
 #define XENIA_GPU_METAL_METAL_UTIL_H_
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 
 #include <dispatch/dispatch.h>
 
@@ -21,6 +23,12 @@
 namespace xe {
 namespace gpu {
 namespace metal {
+
+inline int64_t GetSteadyTimeNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
 
 class ScopedAutoreleasePool {
  public:
