@@ -66,6 +66,10 @@ class GuestSpirvShaderCache {
     // subclass (not the shared base, so it can't be read through the base ref).
     virtual bool depth_float24_round() const = 0;
     virtual bool depth_float24_convert_in_pixel_shader() const = 0;
+
+    // Optional capability hooks (defaults match D3D12/Vulkan behavior).
+    virtual bool supports_draw_scale_native() const { return true; }
+    virtual bool allow_early_depth_stencil_hint() const { return false; }
   };
 
   GuestSpirvShaderCache(Host& host, const RegisterFile& register_file,

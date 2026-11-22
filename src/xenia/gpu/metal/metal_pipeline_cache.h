@@ -31,6 +31,7 @@
 
 #include "xenia/base/mutex.h"
 #include "xenia/base/platform.h"
+#include "xenia/gpu/guest_spirv_shader_cache.h"
 #include "xenia/gpu/memexport_format_profile.h"
 #include "xenia/gpu/metal/dxil_shader.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
@@ -51,7 +52,7 @@ namespace metal {
 // baking/specialization, finite-multiply & draw-exactness analysis, pipeline
 // state caching, on-disk shader/pipeline storage & archive persistence, and
 // background shader/pipeline compilation threads.
-class MetalPipelineCache {
+class MetalPipelineCache : private GuestSpirvShaderCache::Host {
  public:
   enum class ShaderCompileStatus {
     kReady,
@@ -353,7 +354,13 @@ class MetalPipelineCache {
                          std::vector<uint8_t>* metallib_out = nullptr);
   ShaderCompileStatus TranslateAndCompileHostShader(
       Shader::Translation* translation, SpirvShaderTranslator& translator);
-  std::unique_ptr<SpirvShaderTranslator> CreateSpirvShaderTranslator() const;
+  // GuestSpirvShaderCache::Host overrides.
+  std::unique_ptr<SpirvShaderTranslator> CreateTranslator() const override;
+  bool depth_float24_round() const override;
+  bool depth_float24_convert_in_pixel_shader() const override;
+  bool supports_draw_scale_native() const override { return false; }
+  bool allow_early_depth_stencil_hint() const override { return true; }
+
   static MTL::Function* GetHostShaderFunction(
       const Shader::Translation* translation);
   static bool IsHostShaderReady(const Shader::Translation* translation);
@@ -433,7 +440,7 @@ class MetalPipelineCache {
 
   MetalCommandProcessor& command_processor_;
 
-  std::unique_ptr<SpirvShaderTranslator> spirv_shader_translator_;
+  std::unique_ptr<GuestSpirvShaderCache> guest_spirv_shader_cache_;
   SpirvShaderTranslator::Features spirv_translator_features_{false};
   bool spirv_translator_native_2x_msaa_ = false;
   uint32_t spirv_translator_resolution_scale_x_ = 1;

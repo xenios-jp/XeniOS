@@ -12,6 +12,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/render_target_cache.h"
 #include "xenia/gpu/spirv_shader_translator.h"
@@ -129,8 +130,10 @@ uint64_t GuestSpirvShaderCache::GetPixelShaderModification(
   if (render_target_cache_.GetPath() ==
       RenderTargetCache::Path::kHostRenderTargets) {
     // Whether this draw is native res due to a scale threshold.
-    modification.pixel.resolution_scale_native =
-        uint32_t(render_target_cache_.IsDrawScaleNative());
+    if (host_.supports_draw_scale_native()) {
+      modification.pixel.resolution_scale_native =
+          uint32_t(render_target_cache_.IsDrawScaleNative());
+    }
 
     using DepthStencilMode =
         SpirvShaderTranslator::Modification::DepthStencilMode;
@@ -146,15 +149,18 @@ uint64_t GuestSpirvShaderCache::GetPixelShaderModification(
               : (host_.depth_float24_round()
                      ? DepthStencilMode::kFloat24Rounding
                      : DepthStencilMode::kFloat24Truncating);
+    } else if (apply_polygon_offset_in_shader) {
+      modification.pixel.depth_stencil_mode = DepthStencilMode::kPolygonOffset;
+    } else if (host_.allow_early_depth_stencil_hint() &&
+               shader.implicit_early_z_write_allowed() &&
+               (!shader.writes_color_target(0) ||
+                !draw_util::DoesCoverageDependOnAlpha(
+                    regs.Get<reg::RB_COLORCONTROL>()))) {
+      modification.pixel.depth_stencil_mode = DepthStencilMode::kEarlyHint;
     } else {
-      if (apply_polygon_offset_in_shader) {
-        modification.pixel.depth_stencil_mode =
-            DepthStencilMode::kPolygonOffset;
-      } else {
-        // kEarlyHint triggers a GPU fault on nvidia (Alan Wake gameplay), so
-        // use the safe alternative.
-        modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
-      }
+      // kEarlyHint triggers a GPU fault on nvidia (Alan Wake gameplay), so
+      // D3D12/Vulkan leave allow_early_depth_stencil_hint() false.
+      modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
     }
 
     // MIN/MAX blend ignores fixed-function factors on the host, but the Xbox

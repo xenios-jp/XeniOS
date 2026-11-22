@@ -538,7 +538,7 @@ void MetalPipelineCache::Shutdown() {
   ClearAddressShaderLoads();
   guest_shader_cache_.clear();
   memexport_format_profiles_.Clear();
-  spirv_shader_translator_.reset();
+  guest_spirv_shader_cache_.reset();
 }
 
 void MetalPipelineCache::InitializeAsyncCompilation() {
@@ -919,8 +919,8 @@ Shader::Translation* MetalPipelineCache::GetOrCreateHostTranslation(
             translation, shader.type() == xenos::ShaderType::kVertex ? 2 : 1)) {
       status = ShaderCompileStatus::kPending;
     } else {
-      status =
-          TranslateAndCompileHostShader(translation, *spirv_shader_translator_);
+      status = TranslateAndCompileHostShader(
+          translation, guest_spirv_shader_cache_->translator());
       if (status == ShaderCompileStatus::kFailed) {
         NoteShaderCompileFailed(translation);
       }
@@ -1253,7 +1253,7 @@ bool MetalPipelineCache::EnsureBakeSpirv(
     // requests see the translation through const; it is the shader's own.
     std::lock_guard<std::mutex> lock(bake_translate_mutex_);
     if (!translation->is_translated()) {
-      auto translator = CreateSpirvShaderTranslator();
+      auto translator = guest_spirv_shader_cache_->CreateWorkerTranslator();
       TranslateClaimedSpirv(
           const_cast<DxilShader::DxilTranslation*>(translation), *translator);
     }
@@ -1774,7 +1774,7 @@ void MetalPipelineCache::AsyncCompileThread(size_t thread_index) {
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
   }
   std::unique_ptr<SpirvShaderTranslator> worker_translator =
-      CreateSpirvShaderTranslator();
+      guest_spirv_shader_cache_->CreateWorkerTranslator();
   while (true) {
     enum class RequestKind { kPipeline, kShader };
     RequestKind request_kind = RequestKind::kPipeline;
@@ -1911,8 +1911,8 @@ void MetalPipelineCache::AsyncCompileThread(size_t thread_index) {
   }
 }
 
-std::unique_ptr<SpirvShaderTranslator>
-MetalPipelineCache::CreateSpirvShaderTranslator() const {
+std::unique_ptr<SpirvShaderTranslator> MetalPipelineCache::CreateTranslator()
+    const {
   return std::make_unique<SpirvShaderTranslator>(
       spirv_translator_features_,
       spirv_translator_native_2x_msaa_,  // native_2x_msaa_with_att
@@ -1920,6 +1920,14 @@ MetalPipelineCache::CreateSpirvShaderTranslator() const {
       false,  // edram_fragment_shader_interlock (host RT path)
       cvars::precise_interpolation, spirv_translator_resolution_scale_x_,
       spirv_translator_resolution_scale_y_);
+}
+
+bool MetalPipelineCache::depth_float24_round() const {
+  return ::cvars::depth_float24_round;
+}
+
+bool MetalPipelineCache::depth_float24_convert_in_pixel_shader() const {
+  return ::cvars::depth_float24_convert_in_pixel_shader;
 }
 
 bool MetalPipelineCache::SupportsHostRenderTargetFeedback() const {
@@ -1989,7 +1997,14 @@ bool MetalPipelineCache::InitializeShaderTranslation() {
       command_processor_.render_target_cache_->draw_resolution_scale_x();
   spirv_translator_resolution_scale_y_ =
       command_processor_.render_target_cache_->draw_resolution_scale_y();
-  spirv_shader_translator_ = CreateSpirvShaderTranslator();
+  guest_spirv_shader_cache_ = std::make_unique<GuestSpirvShaderCache>(
+      static_cast<GuestSpirvShaderCache::Host&>(*this),
+      *command_processor_.register_file_,
+      *command_processor_.render_target_cache_);
+  if (!guest_spirv_shader_cache_->Initialize()) {
+    guest_spirv_shader_cache_.reset();
+    return false;
+  }
 
   XELOGI("SpirvShaderTranslator init: msaa_2x={}, scale={}x{}",
          command_processor_.render_target_cache_->msaa_2x_supported(),
@@ -2723,42 +2738,10 @@ SpirvShaderTranslator::Modification
 MetalPipelineCache::GetCurrentSpirvVertexShaderModification(
     const Shader& shader, Shader::HostVertexShaderType host_vertex_shader_type,
     uint32_t interpolator_mask, bool ps_param_gen_used) const {
-  const auto& regs = *command_processor_.register_file_;
-
-  SpirvShaderTranslator::Modification modification(
-      spirv_shader_translator_->GetDefaultVertexShaderModification(
-          shader.GetDynamicAddressableRegisterCount(
-              regs.Get<reg::SQ_PROGRAM_CNTL>().vs_num_reg),
-          host_vertex_shader_type));
-
-  modification.vertex.interpolator_mask = interpolator_mask;
-
-  if (Shader::IsHostVertexShaderTypeDomain(host_vertex_shader_type)) {
-    modification.vertex.tessellation_mode =
-        regs.Get<reg::VGT_HOS_CNTL>().tess_mode;
-  }
-
-  auto pa_cl_clip_cntl = regs.Get<reg::PA_CL_CLIP_CNTL>();
-  uint32_t user_clip_planes =
-      pa_cl_clip_cntl.clip_disable ? 0 : pa_cl_clip_cntl.ucp_ena;
-  modification.vertex.user_clip_plane_count = xe::bit_count(user_clip_planes);
-  modification.vertex.user_clip_plane_cull =
-      uint32_t(user_clip_planes && pa_cl_clip_cntl.ucp_cull_only_ena);
-  modification.vertex.vertex_kill_and =
-      uint32_t((shader.writes_point_size_edge_flag_kill_vertex() & 0b100) &&
-               !pa_cl_clip_cntl.vtx_kill_or);
-
-  if (host_vertex_shader_type ==
-      Shader::HostVertexShaderType::kPointListAsTriangleStrip) {
-    modification.vertex.output_point_parameters = uint32_t(ps_param_gen_used);
-  } else {
-    modification.vertex.output_point_parameters =
-        uint32_t((shader.writes_point_size_edge_flag_kill_vertex() & 0b001) &&
-                 regs.Get<reg::VGT_DRAW_INITIATOR>().prim_type ==
-                     xenos::PrimitiveType::kPointList);
-  }
-
-  return modification;
+  return SpirvShaderTranslator::Modification(
+      guest_spirv_shader_cache_->GetVertexShaderModification(
+          shader, host_vertex_shader_type, interpolator_mask,
+          ps_param_gen_used));
 }
 
 SpirvShaderTranslator::Modification
@@ -2767,105 +2750,28 @@ MetalPipelineCache::GetCurrentSpirvPixelShaderModification(
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask) const {
   const auto& regs = *command_processor_.register_file_;
+  const bool apply_polygon_offset_in_shader =
+      NeedsExactFloatDepthBias(regs) && !shader.writes_depth();
 
   SpirvShaderTranslator::Modification modification(
-      spirv_shader_translator_->GetDefaultPixelShaderModification(
-          shader.GetDynamicAddressableRegisterCount(
-              regs.Get<reg::SQ_PROGRAM_CNTL>().ps_num_reg)));
+      guest_spirv_shader_cache_->GetPixelShaderModification(
+          shader, interpolator_mask, param_gen_pos, normalized_depth_control,
+          normalized_color_mask, apply_polygon_offset_in_shader));
 
-  modification.pixel.interpolator_mask = interpolator_mask;
-  modification.pixel.interpolators_centroid =
-      interpolator_mask &
-      ~xenos::GetInterpolatorSamplingPattern(
-          regs.Get<reg::RB_SURFACE_INFO>().msaa_samples,
-          regs.Get<reg::SQ_CONTEXT_MISC>().sc_sample_cntl,
-          regs.Get<reg::SQ_INTERPOLATOR_CNTL>().sampling_pattern);
-
-  if (param_gen_pos < xenos::kMaxInterpolators) {
-    modification.pixel.param_gen_enable = 1;
-    modification.pixel.param_gen_interpolator = param_gen_pos;
-    modification.pixel.param_gen_point =
-        uint32_t(regs.Get<reg::VGT_DRAW_INITIATOR>().prim_type ==
-                 xenos::PrimitiveType::kPointList);
-  } else {
-    modification.pixel.param_gen_enable = 0;
-    modification.pixel.param_gen_interpolator = 0;
-    modification.pixel.param_gen_point = 0;
-  }
-
-  using DepthStencilMode =
-      SpirvShaderTranslator::Modification::DepthStencilMode;
-  if (NeedsExactFloatDepthBias(regs) && !shader.writes_depth()) {
-    modification.pixel.depth_stencil_mode = DepthStencilMode::kPolygonOffset;
-  } else if (::cvars::depth_float24_convert_in_pixel_shader &&
-             normalized_depth_control.z_enable &&
-             regs.Get<reg::RB_DEPTH_INFO>().depth_format ==
-                 xenos::DepthRenderTargetFormat::kD24FS8) {
-    modification.pixel.depth_stencil_mode =
-        ::cvars::depth_float24_round ? DepthStencilMode::kFloat24Rounding
-                                     : DepthStencilMode::kFloat24Truncating;
-  } else if (shader.implicit_early_z_write_allowed() &&
-             (!shader.writes_color_target(0) ||
-              !draw_util::DoesCoverageDependOnAlpha(
-                  regs.Get<reg::RB_COLORCONTROL>()))) {
-    modification.pixel.depth_stencil_mode = DepthStencilMode::kEarlyHint;
-  } else {
-    modification.pixel.depth_stencil_mode = DepthStencilMode::kNoModifiers;
-  }
-
-  // Initialize MIN/MAX blend pre-multiply factors to kOne (no pre-multiply).
-  modification.pixel.rt0_blend_rgb_factor_for_premult =
-      xenos::BlendFactor::kOne;
-  modification.pixel.rt0_blend_a_factor_for_premult = xenos::BlendFactor::kOne;
-
-  bool rt0_minmax_premult_rgb_expected = false;
-  bool rt0_minmax_premult_a_expected = false;
   // A gamma or 16-bit fixed point target is encoded by the shader, and if it
-  // blends, blended there with the factors applied before MIN and MAX.
+  // blends, blended there with the factors applied before MIN and MAX —
+  // suppress the fixed-function MIN/MAX premultiply workaround on RT0.
   xenos::ColorRenderTargetFormat rt0_format =
       regs.Get<reg::RB_COLOR_INFO>().color_format;
-  if (shader.writes_color_target(0) &&
-      !(command_processor_.render_target_cache_->gamma_fetch_blend() &&
-        rt0_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) &&
-      !(command_processor_.render_target_cache_->fixed16_fetch_blend() &&
-        (rt0_format == xenos::ColorRenderTargetFormat::k_16_16 ||
-         rt0_format == xenos::ColorRenderTargetFormat::k_16_16_16_16))) {
-    auto blend_control = regs.Get<reg::RB_BLENDCONTROL>(
-        reg::RB_BLENDCONTROL::rt_register_indices[0]);
-    rt0_minmax_premult_rgb_expected =
-        (blend_control.color_comb_fcn == xenos::BlendOp::kMin ||
-         blend_control.color_comb_fcn == xenos::BlendOp::kMax) &&
-        blend_control.color_srcblend == xenos::BlendFactor::kSrcAlpha &&
-        blend_control.color_destblend == xenos::BlendFactor::kOne;
-    rt0_minmax_premult_a_expected =
-        (blend_control.alpha_comb_fcn == xenos::BlendOp::kMin ||
-         blend_control.alpha_comb_fcn == xenos::BlendOp::kMax) &&
-        blend_control.alpha_srcblend == xenos::BlendFactor::kSrcAlpha &&
-        blend_control.alpha_destblend == xenos::BlendFactor::kOne;
-    if (rt0_minmax_premult_rgb_expected) {
-      modification.pixel.rt0_blend_rgb_factor_for_premult =
-          xenos::BlendFactor::kSrcAlpha;
-    }
-    if (rt0_minmax_premult_a_expected) {
-      modification.pixel.rt0_blend_a_factor_for_premult =
-          xenos::BlendFactor::kSrcAlpha;
-    }
+  if ((command_processor_.render_target_cache_->gamma_fetch_blend() &&
+       rt0_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) ||
+      (command_processor_.render_target_cache_->fixed16_fetch_blend() &&
+       IsFixed16Format(rt0_format))) {
+    modification.pixel.rt0_blend_rgb_factor_for_premult =
+        xenos::BlendFactor::kOne;
+    modification.pixel.rt0_blend_a_factor_for_premult =
+        xenos::BlendFactor::kOne;
   }
-  if (rt0_minmax_premult_rgb_expected || rt0_minmax_premult_a_expected) {
-    XELOGD(
-        "SPIRV-Cross PS mod diagnostic: shader={:016X} expected_premult(rgb={},"
-        "a={}) selected(rgb={},a={})",
-        shader.ucode_data_hash(), rt0_minmax_premult_rgb_expected ? 1 : 0,
-        rt0_minmax_premult_a_expected ? 1 : 0,
-        uint32_t(modification.pixel.rt0_blend_rgb_factor_for_premult),
-        uint32_t(modification.pixel.rt0_blend_a_factor_for_premult));
-  }
-
-  // Extract 1 bit per RT from the 4-bits-per-RT normalized_color_mask.
-  // Without this, color_targets_used defaults to 0 and the SPIR-V translator
-  // declares NO fragment color outputs, producing black/transparent rendering.
-  modification.pixel.color_targets_used =
-      GetColorTargetsWritten(normalized_color_mask);
 
   // Only shaders writing a bound 16_16 or 16_16_16_16 target carry the
   // console's fixed point encode, so the others compile as without it.
@@ -3163,7 +3069,7 @@ MTL::RenderPipelineState* MetalPipelineCache::GetOrCreatePipelineState(
   MTL::Function* exact_depth_function = nullptr;
   if (!pixel_translation && NeedsExactFloatDepthBias(regs)) {
     if (!exact_float_depth_bias_library_) {
-      auto translator = CreateSpirvShaderTranslator();
+      auto translator = guest_spirv_shader_cache_->CreateWorkerTranslator();
       auto spirv = translator->CreateDepthOnlyFragmentShader(
           SpirvShaderTranslator::Modification::DepthStencilMode::
               kPolygonOffset);
