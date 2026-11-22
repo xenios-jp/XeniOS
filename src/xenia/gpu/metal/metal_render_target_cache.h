@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -920,9 +921,34 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool last_resolve_kept_pass_ = false;
 
  public:
+  struct PassStats {
+    uint64_t draw_passes = 0;
+    uint64_t load_action_clear = 0;
+    uint64_t load_action_dontcare = 0;
+    uint64_t load_action_load = 0;
+    uint64_t store_action_dontcare = 0;
+    uint64_t store_action_store = 0;
+    uint64_t tile_resolves = 0;
+    uint64_t tile_resolves_kept_pass = 0;
+    uint64_t direct_resolves = 0;
+    uint64_t edram_resolves = 0;
+    uint64_t depth_resolves_deferred = 0;
+    uint64_t transfers_elided = 0;
+    uint64_t stencil_round_trips_kept_depth = 0;
+    uint64_t in_pass_transfer_flushes = 0;
+    uint64_t standalone_transfer_flushes = 0;
+    uint64_t deferred_resolve_clears = 0;
+    // Keyed by static literal reason strings from TileResolveInOpenPass /
+    // GetPostPassResolveConflict / ResolveWithInfo.
+    std::unordered_map<std::string_view, uint64_t> tile_resolve_rejections;
+  };
+  const PassStats& pass_stats() const { return pass_stats_; }
+  void LogPassStats() const;
+
   bool last_resolve_kept_pass() const { return last_resolve_kept_pass_; }
 
  private:
+  PassStats pass_stats_;
   // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,

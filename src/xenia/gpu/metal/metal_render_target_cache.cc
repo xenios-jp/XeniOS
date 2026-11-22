@@ -228,6 +228,11 @@ bool MetalRenderTargetCache::Initialize() {
 }
 
 void MetalRenderTargetCache::Shutdown(bool from_destructor) {
+  if (pass_stats_.draw_passes || pass_stats_.tile_resolves ||
+      pass_stats_.direct_resolves || pass_stats_.edram_resolves) {
+    LogPassStats();
+    pass_stats_ = {};
+  }
   ClearPendingDrawPassTransfers();
   post_pass_resolves_.clear();
   ClearPostPassRefreshCopies();
@@ -471,6 +476,7 @@ void MetalRenderTargetCache::ElideRedundantTransfers() {
       }
       RecordTileTransfer(transfer.start_tiles, transfer.end_tiles, dest,
                          static_cast<MetalRenderTarget*>(transfer.source));
+      ++pass_stats_.transfers_elided;
       return true;
     });
   }
@@ -546,6 +552,7 @@ void MetalRenderTargetCache::KeepDepthOfStencilRoundTrips() {
     transfer.host_depth_source = nullptr;
   }
   update_depth_keep_dest_depth_ = true;
+  ++pass_stats_.stencil_round_trips_kept_depth;
 }
 
 void MetalRenderTargetCache::RecordPerformedTransfers(
@@ -2111,6 +2118,7 @@ bool MetalRenderTargetCache::EncodePendingDrawPassTransfers(
           pending_draw_pass_depth_keep_dest_depth_)) {
     return false;
   }
+  ++pass_stats_.in_pass_transfer_flushes;
   NoteReleasedQuadWrites();
   ClearPendingDrawPassTransfers();
   return true;
@@ -2133,6 +2141,7 @@ bool MetalRenderTargetCache::FlushPendingDrawPassTransfers() {
           pending_draw_pass_depth_keep_dest_depth_)) {
     return false;
   }
+  ++pass_stats_.standalone_transfer_flushes;
   NoteReleasedQuadWrites();
   ClearPendingDrawPassTransfers();
   return true;
@@ -3351,11 +3360,11 @@ bool MetalRenderTargetCache::ResolveWithInfo(
       PerformDeferredClears(command_buffer);
     }
   };
-  // The argument says why, for a debugger.
-  auto end_tile_pass = [&](const char*) {
+  auto end_tile_pass = [&](const char* reason) {
     if (!tile_pass_open) {
       return;
     }
+    ++pass_stats_.tile_resolve_rejections[reason ? reason : "unknown"];
     tile_pass_open = false;
     end_pass();
   };
@@ -3467,6 +3476,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
     written_address = resolve_info.copy_dest_extent_start;
     written_length = resolve_info.copy_dest_extent_length;
     last_resolve_kept_pass_ = true;
+    ++pass_stats_.depth_resolves_deferred;
     return true;
   }
 
@@ -3547,6 +3557,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
       if (tile_fallback) {
         end_tile_pass(tile_fallback);
       } else {
+        ++pass_stats_.tile_resolves;
         if (has_refresh_copy) {
           post_pass_refresh_copies_.push_back(std::move(refresh_copy));
         }
@@ -3565,6 +3576,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
               resolve_info.copy_dest_extent_start,
               resolve_info.copy_dest_extent_length);
           last_resolve_kept_pass_ = true;
+          ++pass_stats_.tile_resolves_kept_pass;
           if (refresh_target || clears) {
             command_processor_.SetRenderEncoderResolveOnly();
             clear_left_to_pass_end = clears;
@@ -3585,6 +3597,9 @@ bool MetalRenderTargetCache::ResolveWithInfo(
               MetalTextureCache::ResolveTextureRefreshTarget::Transform::
                   kDepthFloat24,
           refresh_target.raw_count);
+      if (resolved_directly) {
+        ++pass_stats_.direct_resolves;
+      }
     }
   }
   end_tile_pass(draw_resolution_scaled ? "scaled" : "not_direct");
@@ -3833,6 +3848,7 @@ bool MetalRenderTargetCache::ResolveWithInfo(
             }
             // cmd is autoreleased from commandBuffer() - do not release
 
+            ++pass_stats_.edram_resolves;
             return finish_resolve();
           }
         }
@@ -3936,6 +3952,7 @@ MetalRenderTargetCache::TryPerformPairedResolveClear(
     color->NoteDeferredClearRows(GetRenderTargetOwnedHeight(color_key));
     deferred_clear_targets_.push_back(depth_key);
     deferred_clear_targets_.push_back(color_key);
+    pass_stats_.deferred_resolve_clears += 2;
     MarkContentChanged(depth);
     MarkContentChanged(color);
     render_pass_descriptor_dirty_ = true;
@@ -4722,6 +4739,38 @@ void MetalRenderTargetCache::FlushPostPassResolves(
   flushing_post_pass_resolves_ = false;
 }
 
+void MetalRenderTargetCache::LogPassStats() const {
+  const PassStats& s = pass_stats_;
+  XELOGI(
+      "MetalTBDR: passes={} load(clear={}, dontcare={}, load={}) "
+      "store(dontcare={}, store={}) resolves(tile={}, kept_pass={}, "
+      "direct={}, edram={}, depth_deferred={}) transfers(in_pass={}, "
+      "standalone={}, elided={}, stencil_keep_depth={}) deferred_clears={}",
+      s.draw_passes, s.load_action_clear, s.load_action_dontcare,
+      s.load_action_load, s.store_action_dontcare, s.store_action_store,
+      s.tile_resolves, s.tile_resolves_kept_pass, s.direct_resolves,
+      s.edram_resolves, s.depth_resolves_deferred, s.in_pass_transfer_flushes,
+      s.standalone_transfer_flushes, s.transfers_elided,
+      s.stencil_round_trips_kept_depth, s.deferred_resolve_clears);
+  if (!s.tile_resolve_rejections.empty()) {
+    std::vector<std::pair<std::string_view, uint64_t>> sorted(
+        s.tile_resolve_rejections.begin(), s.tile_resolve_rejections.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+      return a.second != b.second ? a.second > b.second : a.first < b.first;
+    });
+    std::string summary;
+    for (size_t i = 0; i < sorted.size(); ++i) {
+      if (i) {
+        summary += ", ";
+      }
+      summary.append(sorted[i].first.data(), sorted[i].first.size());
+      summary += "=";
+      summary += std::to_string(sorted[i].second);
+    }
+    XELOGI("MetalTBDR: tile_resolve_rejections: {}", summary);
+  }
+}
+
 void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
     MTL::RenderCommandEncoder* encoder,
     MTL::RenderPassDescriptor* pass_descriptor) {
@@ -4729,6 +4778,29 @@ void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
     dead_store_render_targets_.clear();
     return;
   }
+  ++pass_stats_.draw_passes;
+  auto count_load = [&](MTL::LoadAction action) {
+    switch (action) {
+      case MTL::LoadActionClear:
+        ++pass_stats_.load_action_clear;
+        break;
+      case MTL::LoadActionDontCare:
+        ++pass_stats_.load_action_dontcare;
+        break;
+      case MTL::LoadActionLoad:
+        ++pass_stats_.load_action_load;
+        break;
+      default:
+        break;
+    }
+  };
+  auto count_store = [&](MTL::StoreAction action) {
+    if (action == MTL::StoreActionDontCare) {
+      ++pass_stats_.store_action_dontcare;
+    } else {
+      ++pass_stats_.store_action_store;
+    }
+  };
   // Returns whether the contents of the texture are dead, and if so, notes
   // that the backing no longer holds what the round-trip records say.
   auto is_dead = [&](MTL::Texture* texture) {
@@ -4741,29 +4813,43 @@ void MetalRenderTargetCache::FinalizeRenderPassStoreActions(
     return false;
   };
   auto* depth_attachment = pass_descriptor->depthAttachment();
-  if (depth_attachment &&
-      depth_attachment->storeAction() == MTL::StoreActionUnknown) {
-    encoder->setDepthStoreAction(is_dead(depth_attachment->texture())
-                                     ? MTL::StoreActionDontCare
-                                     : MTL::StoreActionStore);
+  if (depth_attachment && depth_attachment->texture()) {
+    count_load(depth_attachment->loadAction());
+    MTL::StoreAction resolved_store = depth_attachment->storeAction();
+    if (resolved_store == MTL::StoreActionUnknown) {
+      resolved_store = is_dead(depth_attachment->texture())
+                           ? MTL::StoreActionDontCare
+                           : MTL::StoreActionStore;
+      encoder->setDepthStoreAction(resolved_store);
+    }
+    count_store(resolved_store);
   }
   auto* stencil_attachment = pass_descriptor->stencilAttachment();
-  if (stencil_attachment &&
-      stencil_attachment->storeAction() == MTL::StoreActionUnknown) {
-    encoder->setStencilStoreAction(is_dead(stencil_attachment->texture())
-                                       ? MTL::StoreActionDontCare
-                                       : MTL::StoreActionStore);
+  if (stencil_attachment && stencil_attachment->texture()) {
+    count_load(stencil_attachment->loadAction());
+    MTL::StoreAction resolved_store = stencil_attachment->storeAction();
+    if (resolved_store == MTL::StoreActionUnknown) {
+      resolved_store = is_dead(stencil_attachment->texture())
+                           ? MTL::StoreActionDontCare
+                           : MTL::StoreActionStore;
+      encoder->setStencilStoreAction(resolved_store);
+    }
+    count_store(resolved_store);
   }
   auto* color_attachments = pass_descriptor->colorAttachments();
   for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
     auto* color_attachment =
         color_attachments ? color_attachments->object(i) : nullptr;
-    if (color_attachment &&
-        color_attachment->storeAction() == MTL::StoreActionUnknown) {
-      encoder->setColorStoreAction(is_dead(color_attachment->texture())
-                                       ? MTL::StoreActionDontCare
-                                       : MTL::StoreActionStore,
-                                   i);
+    if (color_attachment && color_attachment->texture()) {
+      count_load(color_attachment->loadAction());
+      MTL::StoreAction resolved_store = color_attachment->storeAction();
+      if (resolved_store == MTL::StoreActionUnknown) {
+        resolved_store = is_dead(color_attachment->texture())
+                             ? MTL::StoreActionDontCare
+                             : MTL::StoreActionStore;
+        encoder->setColorStoreAction(resolved_store, i);
+      }
+      count_store(resolved_store);
     }
   }
   for (MetalRenderTarget* rt : dead_store_render_targets_) {
@@ -4803,6 +4889,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
   for (const RenderTargetKey& key : output.deferred_clear_targets) {
     deferred_clear_targets_.push_back(key);
   }
+  pass_stats_.deferred_resolve_clears += output.deferred_clear_targets.size();
   return result;
 }
 
