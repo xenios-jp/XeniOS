@@ -371,8 +371,6 @@ void MetalTransferEncoder::DumpRenderTargets(
     uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
     uint32_t dump_pitch, MTL::CommandBuffer* command_buffer) {
   SCOPE_profile_cpu_f("gpu");
-  // The dump reads the backings.
-  render_target_cache_.PerformDeferredClears(command_buffer);
   std::vector<MetalRenderTargetCache::ResolveCopyDumpRectangle> rectangles;
   render_target_cache_.GetResolveCopyRectanglesToDump(
       dump_base, dump_row_length_used, dump_rows, dump_pitch, rectangles);
@@ -808,12 +806,12 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
     const std::vector<Transfer>* render_target_transfers,
     const Transfer::Rectangle* const* transfer_cutouts,
     const uint64_t* render_target_resolve_clear_values,
-    const Transfer::Rectangle* resolve_clear_rectangle,
-    MTL::CommandBuffer* command_buffer,
+    const Transfer::Rectangle* resolve_clear_rectangle, MTL::CommandBuffer* cmd,
     MTL::RenderCommandEncoder* active_render_encoder,
     MTL::RenderPassDescriptor* active_render_pass_descriptor,
-    bool depth_keep_dest_depth, MetalRenderTarget* pre_rotated_depth_target,
-    ExecutionOutput* output) {
+    const TransferAttachmentFormats* active_attachment_formats_in,
+    bool depth_keep_dest_depth, bool host_depth_store_needed,
+    MetalRenderTarget* renamed_depth_dest, ExecutionOutput* output) {
   DrawPassTransferEncoderMutationMask* mutations_out =
       output ? &output->mutations : nullptr;
   SCOPE_profile_cpu_f("gpu");
@@ -834,94 +832,16 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
     return transfer_cutouts ? transfer_cutouts[render_target_index]
                             : resolve_clear_rectangle;
   };
-  // Resolve clears build a pass of their own around a clear load action, which
-  // the guest's already-started pass cannot provide.
-  bool use_active_render_encoder = active_render_encoder != nullptr;
-  if (use_active_render_encoder &&
-      (resolve_clear_needed || !active_render_pass_descriptor)) {
-    return false;
-  }
+  const bool use_active_render_encoder = active_render_encoder != nullptr;
   auto mark_encoder_mutation =
       [&](DrawPassTransferEncoderMutationMask mutations) {
         if (use_active_render_encoder && mutations_out) {
           *mutations_out |= mutations;
         }
       };
-  TransferAttachmentFormats active_attachment_formats;
-  if (use_active_render_encoder &&
-      !GetActiveTransferAttachmentFormats(active_render_pass_descriptor,
-                                          active_attachment_formats)) {
-    return false;
-  }
-  bool any_work = false;
-  bool host_depth_store_needed = false;
-  for (uint32_t i = 0; i < render_target_count; ++i) {
-    RenderTarget* dest_rt = render_targets[i];
-    if (!dest_rt) {
-      continue;
-    }
-    if (resolve_clear_needed) {
-      any_work = true;
-    }
-    const std::vector<Transfer>& transfers = render_target_transfers[i];
-    if (transfers.empty()) {
-      continue;
-    }
-    any_work = true;
-    if (!dest_rt->key().is_depth) {
-      continue;
-    }
-    // Rotated when queued: the previous backing is the host depth.
-    if (dest_rt == pre_rotated_depth_target) {
-      continue;
-    }
-    for (const Transfer& transfer : transfers) {
-      if (transfer.host_depth_source == dest_rt) {
-        host_depth_store_needed = true;
-        break;
-      }
-    }
-  }
-  if (!any_work) {
-    return true;
-  }
-  // The host depth store is a compute dispatch, which cannot be encoded into a
-  // render pass.
-  if (use_active_render_encoder && host_depth_store_needed) {
-    return false;
-  }
-
-  // Encoding into the guest's pass touches no encoder of its own, so it needs
-  // no command buffer either.
-  MTL::CommandBuffer* cmd = nullptr;
-  if (!use_active_render_encoder) {
-    cmd = command_buffer ? command_buffer
-                         : command_processor_.EnsureCommandBuffer();
-    if (!cmd) {
-      XELOGE(
-          "MetalTransferEncoder::PerformTransfersAndResolveClears: no "
-          "command buffer");
-      return false;
-    }
-    command_processor_.EndRenderEncoder();
-    // The passes below read and partially write the backings.
-    render_target_cache_.PerformDeferredClears(cmd);
-  }
-
-  // Past every fallback to another path, so each transfer is logged once.
-  render_target_cache_.LogTransfers(
-      render_target_count, render_targets, render_target_transfers,
-      resolve_clear_needed ? resolve_clear_rectangle : nullptr);
-
-  if (resolve_clear_needed && !use_active_render_encoder) {
-    const MetalRenderTargetCache::PairedClearResult result =
-        render_target_cache_.TryPerformPairedResolveClear(
-            render_target_count, render_targets, render_target_transfers,
-            render_target_resolve_clear_values, *resolve_clear_rectangle, cmd);
-    if (result != MetalRenderTargetCache::PairedClearResult::kNotApplicable) {
-      return result == MetalRenderTargetCache::PairedClearResult::kEncoded;
-    }
-  }
+  const TransferAttachmentFormats active_attachment_formats =
+      active_attachment_formats_in ? *active_attachment_formats_in
+                                   : TransferAttachmentFormats();
 
   uint32_t scale_x = render_target_cache_.draw_resolution_scale_x();
   uint32_t scale_y = render_target_cache_.draw_resolution_scale_y();
@@ -933,29 +853,6 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
                           ::cvars::depth_float24_round)
                              ? 1u
                              : 0u;
-
-  // Self-sourced host depth: rather than snapshotting the depth into a buffer
-  // with a compute dispatch, keep the current backing as the read-only host
-  // depth source and render the transfer into a spare backing that becomes
-  // the active one. The generic transfer pass below then targets the new
-  // backing with a don't-care load.
-  MetalRenderTarget* renamed_depth_dest = pre_rotated_depth_target;
-  if (host_depth_store_needed && !use_active_render_encoder) {
-    auto* dest = static_cast<MetalRenderTarget*>(render_targets[0]);
-    if (render_target_cache_.CanRotateHostDepth(
-            render_target_count, render_targets, render_target_transfers,
-            resolve_clear_needed) &&
-        render_target_cache_.AcquireSpareDepthBacking(
-            dest, render_target_transfers[0])) {
-      dest->SwapDepthBackings();
-      render_target_cache_.MarkContentChanged(dest);
-      renamed_depth_dest = dest;
-      host_depth_store_needed = false;
-      if (output) {
-        output->render_pass_descriptor_dirty = true;
-      }
-    }
-  }
 
   // Host depth store pass (dest depth where host depth source == dest).
   bool host_depth_store_dispatched = false;
@@ -1068,7 +965,9 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
     }
 
     auto* dest_metal_rt = static_cast<MetalRenderTarget*>(dest_rt);
-    render_target_cache_.RecordPerformedTransfers(dest_metal_rt, transfers);
+    if (output) {
+      output->transferred_target_mask |= uint32_t(1) << i;
+    }
     const Transfer::Rectangle* const transfer_cutout = get_transfer_cutout(i);
     // What draws change from here on is tracked against what the transfers
     // wrote. A resolve clear writes more than the records say.

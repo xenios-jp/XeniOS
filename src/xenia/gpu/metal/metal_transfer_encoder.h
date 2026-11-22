@@ -82,6 +82,7 @@ class MetalTransferEncoder {
   struct ExecutionOutput {
     DrawPassTransferEncoderMutationMask mutations = 0;
     bool render_pass_descriptor_dirty = false;
+    uint32_t transferred_target_mask = 0;
     std::vector<RenderTargetKey> deferred_clear_targets;
   };
 
@@ -120,19 +121,21 @@ class MetalTransferEncoder {
                          MTL::CommandBuffer* command_buffer = nullptr);
 
   // Encodes ownership transfers and/or resolve clears (standalone passes or
-  // into an active guest render pass encoder). Planner state changes are
-  // reported via |output| rather than mutated implicitly.
+  // into an active guest render pass encoder). Pre-flight planner steps
+  // (deferred clears, paired resolve clears, host-depth backing rotation) are
+  // handled by the caller before entry; planner state changes are reported via
+  // |output|.
   bool PerformTransfersAndResolveClears(
       uint32_t render_target_count, RenderTarget* const* render_targets,
       const std::vector<Transfer>* render_target_transfers,
       const Transfer::Rectangle* const* transfer_cutouts,
       const uint64_t* render_target_resolve_clear_values,
       const Transfer::Rectangle* resolve_clear_rectangle,
-      MTL::CommandBuffer* command_buffer,
-      MTL::RenderCommandEncoder* active_render_encoder,
+      MTL::CommandBuffer* cmd, MTL::RenderCommandEncoder* active_render_encoder,
       MTL::RenderPassDescriptor* active_render_pass_descriptor,
-      bool depth_keep_dest_depth, MetalRenderTarget* pre_rotated_depth_target,
-      ExecutionOutput* output);
+      const TransferAttachmentFormats* active_attachment_formats,
+      bool depth_keep_dest_depth, bool host_depth_store_needed,
+      MetalRenderTarget* renamed_depth_dest, ExecutionOutput* output);
 
   EdramTransferShaderKey GetTransferShaderKey(
       RenderTargetKey source_key, RenderTargetKey dest_key,
