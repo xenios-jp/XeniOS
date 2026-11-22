@@ -1096,11 +1096,14 @@ class MetalCommandProcessor : public CommandProcessor,
     }
   };
   memexport_format_profile::ProfilePool memexport_format_profiles_;
-  // Accessed only while assembling requests on the command thread.
+  // Accessed on both the command thread and async compile workers (via
+  // TranslateAndCompileHostShader -> BakesFetchState). Guarded by
+  // shader_analysis_mutex_. Elements of an unordered_map keep their address
+  // across insert/rehash, and maps are only cleared after workers join in
+  // ShutdownContext().
+  mutable std::mutex shader_analysis_mutex_;
   mutable std::unordered_map<const Shader*, FiniteMultiplyInfo>
       finite_multiply_requirements_;
-  // The last lookup per shader type: a draw asks for its two shaders' entries
-  // several times. Elements of an unordered_map keep their address on insert.
   mutable const Shader* finite_multiply_last_shader_[2] = {};
   mutable const FiniteMultiplyInfo* finite_multiply_last_info_[2] = {};
   mutable std::unordered_map<const Shader*,

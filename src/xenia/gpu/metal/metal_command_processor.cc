@@ -1746,21 +1746,28 @@ bool MetalCommandProcessor::UsesPixelFetchStateFunctionConstants(
 const MetalCommandProcessor::FiniteMultiplyInfo&
 MetalCommandProcessor::GetFiniteMultiplyInfo(const Shader& shader) const {
   const size_t last_index = shader.type() == xenos::ShaderType::kPixel;
-  if (finite_multiply_last_shader_[last_index] == &shader) {
-    return *finite_multiply_last_info_[last_index];
+  {
+    std::lock_guard<std::mutex> lock(shader_analysis_mutex_);
+    if (finite_multiply_last_shader_[last_index] == &shader) {
+      return *finite_multiply_last_info_[last_index];
+    }
+    auto found = finite_multiply_requirements_.find(&shader);
+    if (found != finite_multiply_requirements_.end()) {
+      finite_multiply_last_shader_[last_index] = &shader;
+      finite_multiply_last_info_[last_index] = &found->second;
+      return found->second;
+    }
   }
-  auto found = finite_multiply_requirements_.find(&shader);
-  if (found == finite_multiply_requirements_.end()) {
-    SpirvShaderTranslator::FiniteMultiplyAnalysis analysis;
-    SpirvShaderTranslator::AnalyzeFiniteMultiplications(
-        shader, analysis, spirv_translator_features_.finite_multiply_one_sided,
-        spirv_translator_features_.finite_multiply_control_flow_join);
-    FiniteMultiplyInfo info;
-    info.required = analysis.dynamic_inputs;
-    std::memcpy(info.direct_constants, analysis.direct_constants,
-                sizeof(info.direct_constants));
-    found = finite_multiply_requirements_.emplace(&shader, info).first;
-  }
+  SpirvShaderTranslator::FiniteMultiplyAnalysis analysis;
+  SpirvShaderTranslator::AnalyzeFiniteMultiplications(
+      shader, analysis, spirv_translator_features_.finite_multiply_one_sided,
+      spirv_translator_features_.finite_multiply_control_flow_join);
+  FiniteMultiplyInfo info;
+  info.required = analysis.dynamic_inputs;
+  std::memcpy(info.direct_constants, analysis.direct_constants,
+              sizeof(info.direct_constants));
+  std::lock_guard<std::mutex> lock(shader_analysis_mutex_);
+  auto found = finite_multiply_requirements_.emplace(&shader, info).first;
   finite_multiply_last_shader_[last_index] = &shader;
   finite_multiply_last_info_[last_index] = &found->second;
   return found->second;
@@ -1768,23 +1775,31 @@ MetalCommandProcessor::GetFiniteMultiplyInfo(const Shader& shader) const {
 
 const SpirvShaderTranslator::DrawExactAnalysis&
 MetalCommandProcessor::GetDrawExactAnalysis(const Shader& shader) const {
-  if (draw_exact_last_shader_ == &shader) {
-    return *draw_exact_last_analysis_;
-  }
-  auto found = draw_exact_analyses_.find(&shader);
-  if (found == draw_exact_analyses_.end()) {
-    SpirvShaderTranslator::DrawExactAnalysis analysis;
-    // The same conditions as in the translator.
-    if (spirv_translator_features_.optimize_finite_multiplication &&
-        spirv_translator_features_.fetch_state_function_constants &&
-        shader.type() == xenos::ShaderType::kVertex &&
-        cvars::alu_round_toward_zero &&
-        !spirv_translator_features_.rounding_mode_rtz_float32 &&
-        cvars::alu_rtz_draw_exact) {
-      SpirvShaderTranslator::AnalyzeDrawExactness(shader, analysis);
+  {
+    std::lock_guard<std::mutex> lock(shader_analysis_mutex_);
+    if (draw_exact_last_shader_ == &shader) {
+      return *draw_exact_last_analysis_;
     }
-    found = draw_exact_analyses_.emplace(&shader, std::move(analysis)).first;
+    auto found = draw_exact_analyses_.find(&shader);
+    if (found != draw_exact_analyses_.end()) {
+      draw_exact_last_shader_ = &shader;
+      draw_exact_last_analysis_ = &found->second;
+      return found->second;
+    }
   }
+  SpirvShaderTranslator::DrawExactAnalysis analysis;
+  // The same conditions as in the translator.
+  if (spirv_translator_features_.optimize_finite_multiplication &&
+      spirv_translator_features_.fetch_state_function_constants &&
+      shader.type() == xenos::ShaderType::kVertex &&
+      cvars::alu_round_toward_zero &&
+      !spirv_translator_features_.rounding_mode_rtz_float32 &&
+      cvars::alu_rtz_draw_exact) {
+    SpirvShaderTranslator::AnalyzeDrawExactness(shader, analysis);
+  }
+  std::lock_guard<std::mutex> lock(shader_analysis_mutex_);
+  auto found =
+      draw_exact_analyses_.emplace(&shader, std::move(analysis)).first;
   draw_exact_last_shader_ = &shader;
   draw_exact_last_analysis_ = &found->second;
   return found->second;
@@ -3777,9 +3792,17 @@ void MetalCommandProcessor::ShutdownContext() {
     tess_prep_pipeline_->release();
     tess_prep_pipeline_ = nullptr;
   }
-  finite_multiply_requirements_.clear();
-  std::fill(std::begin(finite_multiply_last_shader_),
-            std::end(finite_multiply_last_shader_), nullptr);
+  {
+    std::lock_guard<std::mutex> lock(shader_analysis_mutex_);
+    finite_multiply_requirements_.clear();
+    std::fill(std::begin(finite_multiply_last_shader_),
+              std::end(finite_multiply_last_shader_), nullptr);
+    std::fill(std::begin(finite_multiply_last_info_),
+              std::end(finite_multiply_last_info_), nullptr);
+    draw_exact_analyses_.clear();
+    draw_exact_last_shader_ = nullptr;
+    draw_exact_last_analysis_ = nullptr;
+  }
   for (RecentShaderLoad& recent : recent_shader_loads_) {
     recent = RecentShaderLoad();
   }
