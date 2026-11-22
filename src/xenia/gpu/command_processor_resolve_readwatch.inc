@@ -563,10 +563,9 @@ void InitResolveReadWatch() {
 }
 
 // Unregisters the read callback and drops all tracking. Called from each
-// backend's ShutdownContext.
-// TODO(xenios-jp): a fault callback on another thread may still be inside
-// MarkResolvePagesRead when the owner array is freed, unless unregistering
-// waits for callbacks in flight (not checked).
+// backend's ShutdownContext. UnregisterPhysicalMemoryReadCallback drains all
+// in-flight read callbacks before returning, so freeing resolve_page_owners_
+// immediately afterward is safe.
 void ResetResolveReadWatch() {
   if (resolve_read_callback_) {
     memory_->UnregisterPhysicalMemoryReadCallback(resolve_read_callback_);
@@ -577,10 +576,10 @@ void ResetResolveReadWatch() {
     std::lock_guard<std::mutex> lock(resolve_read_mutex_);
     resolve_read_keys_.clear();
     resolve_owners_.clear();
+    resolve_rearm_ranges_.clear();
   }
   resolve_unsubmitted_owner_ = false;
   resolve_submit_requested_ = false;
-  resolve_rearm_ranges_.clear();
   resolve_read_frames_.clear();
 }
 

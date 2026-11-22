@@ -334,7 +334,6 @@ class MetalTextureCache : public TextureCache {
     std::vector<std::shared_ptr<std::atomic<bool>>> done_flags;
     bool empty() const { return dispatches.empty() && copies.empty(); }
   };
-  bool TracksLoadCompletion() const override { return true; }
   // Encodes the dispatches in one compute encoder, then the copies in one blit
   // encoder, releases the buffers after cmd and the textures, and clears
   // commands.

@@ -525,7 +525,7 @@ MetalTextureCache::MetalTextureCache(MetalCommandProcessor* command_processor,
                                      uint32_t draw_resolution_scale_x,
                                      uint32_t draw_resolution_scale_y)
     : TextureCache(register_file, shared_memory, draw_resolution_scale_x,
-                   draw_resolution_scale_y),
+                   draw_resolution_scale_y, /*tracks_load_completion=*/true),
       command_processor_(command_processor) {}
 
 MetalTextureCache::~MetalTextureCache() { Shutdown(); }

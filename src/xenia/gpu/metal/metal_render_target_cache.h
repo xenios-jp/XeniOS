@@ -672,16 +672,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       if (source_index != other_source_index) {
         return source_index < other_source_index;
       }
-      if (transfer.keep_dest_depth != other.transfer.keep_dest_depth) {
-        return other.transfer.keep_dest_depth;
-      }
       return transfer.start_tiles < other.transfer.start_tiles;
     }
     bool CanBeMergedIntoOneDraw(const TransferInvocation& other) const {
-      // A stencil-only draw binds a depth state of its own.
       return shader_key == other.shader_key &&
-             transfer.AreSourcesSame(other.transfer) &&
-             transfer.keep_dest_depth == other.transfer.keep_dest_depth;
+             transfer.AreSourcesSame(other.transfer);
     }
   };
 
@@ -892,6 +887,10 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Subset of the above that the current render pass descriptor was built with
   // a DontCare load action for.
   uint32_t pending_draw_pass_load_dontcare_mask_ = 0;
+  // Stencil-only depth round trip (KeepDepthOfStencilRoundTrips): all-or-none
+  // for slot 0 of the current update / pending draw-pass transfer batch.
+  bool update_depth_keep_dest_depth_ = false;
+  bool pending_draw_pass_depth_keep_dest_depth_ = false;
 
   // Track the last REAL (non-dummy) render targets for capture
   MetalRenderTarget* last_real_color_targets_[4] = {};
@@ -1135,15 +1134,15 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       MTL::CommandBuffer* command_buffer = nullptr,
       MTL::RenderCommandEncoder* active_render_encoder = nullptr,
       MTL::RenderPassDescriptor* active_render_pass_descriptor = nullptr,
-      DrawPassTransferEncoderMutationMask* mutations_out = nullptr);
+      DrawPassTransferEncoderMutationMask* mutations_out = nullptr,
+      bool depth_keep_dest_depth = false);
 
   // Whether the depth destination's self-sourced host depth can be preserved
   // by rotating its backings (render the transfer into a spare backing that
   // then becomes active) instead of copying it into the snapshot buffer. The
-  // transfers must be unscaled SPIR-V Cross draws with native stencil output
-  // covering every tile the destination owns, and nothing else in this update,
-  // including transfers already queued for the draw pass, may read the
-  // destination.
+  // transfers must be unscaled draws with native stencil output covering every
+  // tile the destination owns, and nothing else in this update, including
+  // transfers already queued for the draw pass, may read the destination.
   bool CanRotateHostDepth(uint32_t render_target_count,
                           RenderTarget* const* render_targets,
                           const std::vector<Transfer>* transfers,
@@ -1200,7 +1199,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
       const std::vector<Transfer>* render_target_transfers);
   bool PendingDrawPassTransfersFullyOverwriteTarget(
       uint32_t render_target_index, RenderTarget* render_target,
-      const std::vector<Transfer>& transfers) const;
+      const std::vector<Transfer>& transfers,
+      bool keep_dest_depth = false) const;
   bool PreflightPendingDrawPassTransfers(
       const TransferAttachmentFormats& attachment_formats);
   void ClearPendingDrawPassTransfers();

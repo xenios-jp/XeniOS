@@ -699,6 +699,8 @@ class Memory {
                                              PhysicalAccess access);
   void* RegisterPhysicalMemoryReadCallback(PhysicalMemoryReadCallback callback,
                                            void* callback_context);
+  // Waits for any in-flight read callbacks to return before returning, so the
+  // caller may immediately destroy callback_context state.
   void UnregisterPhysicalMemoryReadCallback(void* callback_handle);
 
   // Enables physical memory access callbacks for the specified memory range,

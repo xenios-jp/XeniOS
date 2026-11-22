@@ -1624,6 +1624,7 @@ void MetalRenderTargetCache::ElideRedundantTransfers() {
 }
 
 void MetalRenderTargetCache::KeepDepthOfStencilRoundTrips() {
+  update_depth_keep_dest_depth_ = false;
   if (!UseNativeStencilOutputInTransfers() || IsDrawResolutionScaled()) {
     return;
   }
@@ -1690,8 +1691,8 @@ void MetalRenderTargetCache::KeepDepthOfStencilRoundTrips() {
   }
   for (Transfer& transfer : transfers) {
     transfer.host_depth_source = nullptr;
-    transfer.keep_dest_depth = true;
   }
+  update_depth_keep_dest_depth_ = true;
 }
 
 void MetalRenderTargetCache::RecordPerformedTransfers(
@@ -2359,9 +2360,9 @@ void MetalRenderTargetCache::NoteDrawWrites() {
 bool MetalRenderTargetCache::CanRotateHostDepth(
     uint32_t render_target_count, RenderTarget* const* render_targets,
     const std::vector<Transfer>* transfers, bool resolve_clear) const {
-  // The rotation is a SPIR-V Cross transfer draw with native stencil output
-  // from color sources into an unscaled depth destination that is a host
-  // depth source of its own transfers.
+  // The rotation is a transfer draw with native stencil output from color
+  // sources into an unscaled depth destination that is a host depth source of
+  // its own transfers.
   if (!UseNativeStencilOutputInTransfers() || IsDrawResolutionScaled()) {
     return false;
   }
@@ -2729,6 +2730,10 @@ bool MetalRenderTargetCache::Update(
       pending_draw_pass_render_targets_[i] = accumulated_targets[i];
       pending_draw_pass_transfers_[i] = transfers;
       pending_draw_pass_transfer_mask_ |= uint32_t(1) << i;
+      if (i == 0) {
+        pending_draw_pass_depth_keep_dest_depth_ =
+            update_depth_keep_dest_depth_;
+      }
       if (update_cutout_mask_ & (uint32_t(1) << i)) {
         if (i == update_cutout_quad_slot_) {
           // Held until the quad is drawn, and the quads after it that
@@ -2760,7 +2765,8 @@ bool MetalRenderTargetCache::Update(
           pending_draw_pass_full_overwrite_mask_ |= uint32_t(1) << i;
         }
       } else if (PendingDrawPassTransfersFullyOverwriteTarget(
-                     i, accumulated_targets[i], transfers)) {
+                     i, accumulated_targets[i], transfers,
+                     i == 0 && update_depth_keep_dest_depth_)) {
         pending_draw_pass_full_overwrite_mask_ |= uint32_t(1) << i;
       }
       // A rotated-in backing holds nothing: the transfers reach every tile
@@ -2783,7 +2789,8 @@ bool MetalRenderTargetCache::Update(
     if (fallback_transfer_work) {
       PerformTransfersAndResolveClears(
           1 + xenos::kMaxColorRenderTargets, accumulated_targets,
-          fallback_transfers.data(), update_cutouts.data());
+          fallback_transfers.data(), update_cutouts.data(), nullptr, nullptr,
+          nullptr, nullptr, nullptr, nullptr, update_depth_keep_dest_depth_);
     }
     // Queue only what the pass the descriptor will describe can actually
     // encode, so eligibility is not re-decided at encode time.
@@ -2797,9 +2804,10 @@ bool MetalRenderTargetCache::Update(
       }
     }
   } else {
-    PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
-                                     accumulated_targets, update_transfers,
-                                     update_cutouts.data());
+    PerformTransfersAndResolveClears(
+        1 + xenos::kMaxColorRenderTargets, accumulated_targets,
+        update_transfers, update_cutouts.data(), nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, update_depth_keep_dest_depth_);
   }
 
   // Only mark render pass descriptor as dirty if targets actually changed
@@ -2885,6 +2893,7 @@ void MetalRenderTargetCache::ClearPendingDrawPassTransfers() {
   pending_draw_pass_rotated_depth_ = nullptr;
   pending_draw_pass_load_dontcare_mask_ = 0;
   pending_draw_pass_cutout_mask_ = 0;
+  pending_draw_pass_depth_keep_dest_depth_ = false;
   ResetQuadHold();
   released_quad_dest_ = nullptr;
   released_quad_constant_valid_ = false;
@@ -3015,14 +3024,11 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
       return false;
     }
     RenderTargetKey source_key = source_rt->key();
-    // Halo 3 (two recorded frames): with a depth target transferred into the
-    // second color target at the head of a long pass, later draws of the pass
-    // lost their output to that target in 8x4 pixel groups, at random places
-    // and in 10 to 25% of replays on an Apple M5 Pro. A pass of its own for the
-    // transfer never showed it.
-    // TODO(xenios-jp): the cause is not known, so this rule is fitted to that
-    // one transfer and may be too narrow or too wide.
-    if (source_key.is_depth && !dest_key.is_depth && render_target_index >= 2) {
+    // Keep depth-to-color ownership transfers in a standalone pass (matching
+    // PendingDrawPassTransfersPrepareable): running depth+stencil sampling
+    // transfers at the head of a long color draw pass showed stochastic 8x4
+    // pixel dropouts in Halo 3 on Apple Silicon.
+    if (source_key.is_depth && !dest_key.is_depth) {
       return false;
     }
     if (transfer.host_depth_source) {
@@ -3082,7 +3088,7 @@ bool MetalRenderTargetCache::CanQueueDrawPassTransfers(
 
 bool MetalRenderTargetCache::PendingDrawPassTransfersFullyOverwriteTarget(
     uint32_t render_target_index, RenderTarget* render_target,
-    const std::vector<Transfer>& transfers) const {
+    const std::vector<Transfer>& transfers, bool keep_dest_depth) const {
   if (!render_target || transfers.empty() ||
       render_target_index > xenos::kMaxColorRenderTargets) {
     return false;
@@ -3095,10 +3101,8 @@ bool MetalRenderTargetCache::PendingDrawPassTransfersFullyOverwriteTarget(
     return false;
   }
   // A stencil-only transfer keeps the depth, which has to be loaded.
-  for (const Transfer& transfer : transfers) {
-    if (transfer.keep_dest_depth) {
-      return false;
-    }
+  if (keep_dest_depth) {
+    return false;
   }
   uint32_t dest_width = uint32_t(dest_texture->width());
   uint32_t dest_height = uint32_t(dest_texture->height());
@@ -3358,7 +3362,8 @@ bool MetalRenderTargetCache::EncodePendingDrawPassTransfers(
           GetTransferCutouts(pending_draw_pass_cutout_mask_,
                              pending_draw_pass_cutouts_)
               .data(),
-          nullptr, nullptr, nullptr, encoder, pass_descriptor, mutations_out)) {
+          nullptr, nullptr, nullptr, encoder, pass_descriptor, mutations_out,
+          pending_draw_pass_depth_keep_dest_depth_)) {
     return false;
   }
   NoteReleasedQuadWrites();
@@ -3378,7 +3383,9 @@ bool MetalRenderTargetCache::FlushPendingDrawPassTransfers() {
           pending_draw_pass_transfers_.data(),
           GetTransferCutouts(pending_draw_pass_cutout_mask_,
                              pending_draw_pass_cutouts_)
-              .data())) {
+              .data(),
+          nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+          pending_draw_pass_depth_keep_dest_depth_)) {
     return false;
   }
   NoteReleasedQuadWrites();
@@ -3703,13 +3710,12 @@ MTL::Texture* MetalRenderTargetCache::CreateColorTexture(
   desc->setUsage(usage);
 
   MTL::Texture* texture = nullptr;
-  bool can_use_memoryless = false;
-#if XE_PLATFORM_IOS
-  can_use_memoryless = transient_render_target_only && !needs_pixel_format_view;
-#endif
+  const bool can_use_memoryless =
+      transient_render_target_only && !needs_pixel_format_view &&
+      device_->supportsFamily(MTL::GPUFamilyApple1);
   if (can_use_memoryless) {
     // Dummy fallback color targets are transient (load/store don't care) and
-    // never sampled - memoryless is optimal on iOS TBDR.
+    // never sampled - memoryless is optimal on Apple TBDR GPUs.
     desc->setStorageMode(MTL::StorageModeMemoryless);
     texture = device_->newTexture(desc);
   }
@@ -3737,10 +3743,10 @@ MTL::Texture* MetalRenderTargetCache::CreateDummyColorTexture(
   desc->setUsage(MTL::TextureUsageRenderTarget);
 
   MTL::Texture* texture = nullptr;
-#if XE_PLATFORM_IOS
-  desc->setStorageMode(MTL::StorageModeMemoryless);
-  texture = device_->newTexture(desc);
-#endif
+  if (device_->supportsFamily(MTL::GPUFamilyApple1)) {
+    desc->setStorageMode(MTL::StorageModeMemoryless);
+    texture = device_->newTexture(desc);
+  }
   if (!texture) {
     desc->setStorageMode(MTL::StorageModePrivate);
     texture = device_->newTexture(desc);
@@ -4222,13 +4228,14 @@ void MetalRenderTargetCache::RestrictRenderArea(
   if (width == UINT32_MAX) {
     return;
   }
-  const uint32_t scale_y = std::max<uint32_t>(1u, draw_resolution_scale_y());
+  const uint32_t draw_scale_y = std::max<uint32_t>(1u, draw_resolution_scale_y());
   uint32_t height = min_height;
   for (uint32_t i = 0; i < key_count; ++i) {
     uint32_t owned_height = GetRenderTargetOwnedHeight(keys[i]);
     if (!owned_height) {
       return;
     }
+    const uint32_t scale_y = keys[i].scale_native ? 1u : draw_scale_y;
     height = std::max(height, owned_height * scale_y);
   }
   if (height >= full_height) {
@@ -7598,6 +7605,10 @@ EdramTransferShaderKey MetalRenderTargetCache::GetTransferShaderKey(
   shader_key.dest_resource_format = dest_key.resource_format;
   shader_key.host_depth_source_msaa_samples = xenos::MsaaSamples::k1X;
   shader_key.dest_color_rt_index = dest_color_rt_index;
+  shader_key.dest_scale_native = dest_key.scale_native;
+  shader_key.source_scale_native = source_key.scale_native;
+  assert_true(!host_depth_source_key ||
+              host_depth_source_key->scale_native == dest_key.scale_native);
 
   if (stencil_bit) {
     shader_key.mode = source_key.is_depth
@@ -8616,7 +8627,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
     MTL::CommandBuffer* command_buffer,
     MTL::RenderCommandEncoder* active_render_encoder,
     MTL::RenderPassDescriptor* active_render_pass_descriptor,
-    DrawPassTransferEncoderMutationMask* mutations_out) {
+    DrawPassTransferEncoderMutationMask* mutations_out,
+    bool depth_keep_dest_depth) {
   SCOPE_profile_cpu_f("gpu");
   if (mutations_out) {
     *mutations_out = kDrawPassTransferEncoderMutationNone;
@@ -9061,7 +9073,8 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           return false;
         }
         if (strip_merge_source) {
-          if (transfer.keep_dest_depth || transfer.source_band_shift < 0 ||
+          if ((i == 0 && dest_is_depth && depth_keep_dest_depth) ||
+              transfer.source_band_shift < 0 ||
               transfer.host_depth_source !=
                   (dest_is_depth ? transfer.source : nullptr)) {
             return false;
@@ -9215,7 +9228,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
       }
       for (const Transfer& transfer : transfers_for_shaders) {
         // A stencil-only transfer keeps the depth, which has to be loaded.
-        if (transfer.keep_dest_depth) {
+        if (i == 0 && dest_is_depth && depth_keep_dest_depth) {
           return false;
         }
         Transfer::Rectangle rectangles[kMaxBandedRectanglesWithCutout];
@@ -9837,7 +9850,7 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
 
           if (is_stencil_bit) {
             // Depth/stencil state set per-bit below.
-          } else if (dest_is_depth && transfer.keep_dest_depth) {
+          } else if (i == 0 && dest_is_depth && depth_keep_dest_depth) {
             // The destination keeps its depth: stencil replaced from the
             // shader's reference output, depth neither tested nor written. (The
             // per-bit draws write the stencil when there is no such output.)

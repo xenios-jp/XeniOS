@@ -610,7 +610,8 @@ class TextureCache {
   explicit TextureCache(const RegisterFile& register_file,
                         SharedMemory& shared_memory,
                         uint32_t draw_resolution_scale_x,
-                        uint32_t draw_resolution_scale_y);
+                        uint32_t draw_resolution_scale_y,
+                        bool tracks_load_completion = false);
 
   const RegisterFile& register_file() const { return register_file_; }
   SharedMemory& shared_memory() const { return shared_memory_; }
@@ -800,7 +801,7 @@ class TextureCache {
                                   bool load_mips);
   // Whether the implementation sets Texture::LoadedGuestData::load_done of
   // the parts it loads once the load has run on the GPU.
-  virtual bool TracksLoadCompletion() const { return false; }
+  bool TracksLoadCompletion() const { return tracks_load_completion_; }
   static void GpuWriteGlobalWatchCallbackThunk(
       const global_unique_lock_type& global_lock, void* context,
       uint32_t address_first, uint32_t address_last, bool invalidated_by_gpu);
@@ -809,7 +810,8 @@ class TextureCache {
   // page of guest memory, the count just after the last one that touched it
   // (0 if none). It never forgets a write, so a part is distrusted only when
   // a write really reached one of its pages. Under the global critical
-  // region.
+  // region. Allocated and watched only when tracks_load_completion_ is true.
+  const bool tracks_load_completion_ = false;
   uint64_t gpu_write_sequence_ = 0;
   static constexpr uint32_t kGpuWriteEpochPageShift = 12;
   std::vector<uint64_t> gpu_write_epochs_;

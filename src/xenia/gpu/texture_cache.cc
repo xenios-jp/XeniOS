@@ -131,13 +131,15 @@ const TextureCache::LoadShaderInfo
 TextureCache::TextureCache(const RegisterFile& register_file,
                            SharedMemory& shared_memory,
                            uint32_t draw_resolution_scale_x,
-                           uint32_t draw_resolution_scale_y)
+                           uint32_t draw_resolution_scale_y,
+                           bool tracks_load_completion)
     : register_file_(register_file),
       shared_memory_(shared_memory),
       draw_resolution_scale_x_(draw_resolution_scale_x),
       draw_resolution_scale_y_(draw_resolution_scale_y),
       draw_resolution_scale_x_divisor_(draw_resolution_scale_x),
-      draw_resolution_scale_y_divisor_(draw_resolution_scale_y) {
+      draw_resolution_scale_y_divisor_(draw_resolution_scale_y),
+      tracks_load_completion_(tracks_load_completion) {
   assert_true(draw_resolution_scale_x >= 1);
   assert_true(draw_resolution_scale_x <= kMaxDrawResolutionScaleAlongAxis);
   assert_true(draw_resolution_scale_y >= 1);
@@ -154,10 +156,12 @@ TextureCache::TextureCache(const RegisterFile& register_file,
     scaled_resolve_global_watch_handle_ = shared_memory.RegisterGlobalWatch(
         ScaledResolveGlobalWatchCallbackThunk, this);
   }
-  gpu_write_epochs_.resize(SharedMemory::kBufferSize >>
-                           kGpuWriteEpochPageShift);
-  gpu_write_global_watch_handle_ = shared_memory.RegisterGlobalWatch(
-      GpuWriteGlobalWatchCallbackThunk, this);
+  if (tracks_load_completion_) {
+    gpu_write_epochs_.resize(SharedMemory::kBufferSize >>
+                             kGpuWriteEpochPageShift);
+    gpu_write_global_watch_handle_ = shared_memory.RegisterGlobalWatch(
+        GpuWriteGlobalWatchCallbackThunk, this);
+  }
 }
 
 TextureCache::~TextureCache() {
