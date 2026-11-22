@@ -21,6 +21,7 @@
 
 #include "xenia/gpu/edram_dump_shader.h"
 #include "xenia/gpu/edram_transfer_shader.h"
+#include "xenia/gpu/metal/metal_resolve_encoder.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/render_target_cache.h"
@@ -38,8 +39,22 @@ class MetalCommandProcessor;
 
 class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   friend class MetalPairedClearTest;
+  friend class MetalResolveEncoder;
 
  public:
+  static uint32_t MsaaSamplesToCount(xenos::MsaaSamples samples) {
+    switch (samples) {
+      case xenos::MsaaSamples::k1X:
+        return 1;
+      case xenos::MsaaSamples::k2X:
+        return 2;
+      case xenos::MsaaSamples::k4X:
+        return 4;
+      default:
+        return 1;
+    }
+  }
+
   // The stencil attachment format that goes with a depth attachment format.
   // Guest depth targets are a Depth32Float texture with a separate Stencil8
   // one; a combined format is its own stencil attachment.
@@ -493,60 +508,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                      EdramDumpShaderKey::Hasher>
       dump_pipelines_;
 
-  // Resolve compute shaders (Metal XeSL → MSL metallib)
-  MTL::ComputePipelineState* resolve_full_8bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_16bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_pipeline_ = nullptr;
-  // The rgb10-4x copy reading the 4x render target directly.
-  MTL::ComputePipelineState* resolve_full_32bpp_rgb10_4x_direct_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_ = nullptr;
-  // The generic 32bpp copy of one sample of a 1x 8_8_8_8, 2_10_10_10 or
-  // 2_10_10_10_FLOAT render target, reading it directly.
-  MTL::ComputePipelineState* resolve_full_32bpp_1x_direct_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_1x_direct_refresh_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_64bpp_pipeline_ = nullptr;
-  // The rgba16-1x copy reading the 1x render target directly.
-  MTL::ComputePipelineState* resolve_full_64bpp_rgba16_1x_direct_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgba16_1x_direct_refresh_pipeline_ = nullptr;
-  // The rgb10f-to-rgba16 1x copy reading the 1x render target directly.
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_ = nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_pipeline_ = nullptr;
-  // Its 2x and 4x averages, reading the multisampled render target directly.
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_ = nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_pipeline_ = nullptr;
-  // One per kResolveSpecializations entry, in its order.
-  std::vector<MTL::ComputePipelineState*> resolve_specialized_pipelines_;
-  MTL::ComputePipelineState* resolve_full_128bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_1x2xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_4xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_1x2xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_4xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_8bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_16bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_64bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_128bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_1x2xmsaa_scaled_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_4xmsaa_scaled_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_1x2xmsaa_scaled_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_4xmsaa_scaled_pipeline_ =
-      nullptr;
+  // Direct, open-pass tile, and EDRAM resolve encoder + pipelines.
+  MetalResolveEncoder resolve_encoder_;
 
   // Host depth store compute shaders (1x/2x/4x MSAA).
   MTL::ComputePipelineState* host_depth_store_pipelines_[3] = {};
@@ -1019,29 +982,6 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   };
   std::vector<PostPassResolve> post_pass_resolves_;
   bool flushing_post_pass_resolves_ = false;
-  // A tile resolve's refresh of textures an earlier draw of the pass sampled,
-  // written to a scratch texture of their shape in the pass and copied into
-  // them when it ends.
-  struct PostPassRefreshCopy {
-    // Retained, back to refresh_scratch_pool_ after the copy is encoded.
-    MTL::Texture* scratch = nullptr;
-    std::vector<NS::SharedPtr<MTL::Texture>> destinations;
-    uint32_t origin_x = 0;
-    uint32_t origin_y = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    // Instead of the scratch texture, when the dispatch wrote every texel of
-    // the sampled textures: images of their own, which they take when the
-    // pass ends.
-    struct Swap {
-      // The texture's refresh write view, by which it is found.
-      NS::SharedPtr<MTL::Texture> write_view;
-      std::unique_ptr<MetalTextureCache::ResolveRefreshStorage> storage;
-    };
-    std::vector<Swap> swaps;
-    // The resolves left to the pass end before it, which run first.
-    size_t post_pass_resolves_before = 0;
-  };
   std::vector<PostPassRefreshCopy> post_pass_refresh_copies_;
   // Retained, free scratch textures.
   std::vector<MTL::Texture*> refresh_scratch_pool_;
@@ -1171,78 +1111,11 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
                                       MTL::LoadAction load_action);
   void ApplyPendingDrawPassLoadActions();
 
-  // Writes contents of host render targets within rectangles from
   // Returns the dump pipeline for a key, compiling it on the first use, or null
   // if it could not be built. A failed key is cached as null so it is not
   // retried every resolve.
   MTL::ComputePipelineState* GetOrCreateDumpPipeline(EdramDumpShaderKey key);
 
-  // Writes contents of the host render targets within those same rectangles
-  // straight into shared memory in the destination's guest texture layout,
-  // skipping edram_buffer_ and the resolve copy that would read it back again.
-  // With refresh_texture, also writes the texels into that texture. A
-  // 2_10_10_10 four-sample average instead runs the rgb10-4x copy reading the
-  // samples from the one 4x render target owning the source, with the group
-  // counts of the copy. Returns false if it can't, leaving the caller to fall
-  // back to the round trip, which rewrites the whole destination.
-  bool DirectResolveRenderTargets(
-      const draw_util::ResolveInfo& resolve_info,
-      draw_util::ResolveCopyShaderIndex copy_shader,
-      const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
-      uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
-      uint32_t dump_pitch, uint32_t group_count_x, uint32_t group_count_y,
-      MTL::CommandBuffer* command_buffer,
-      std::span<MTL::Texture* const> refresh_textures = {},
-      uint32_t refresh_offset_x = 0, uint32_t refresh_offset_y = 0,
-      bool refresh_depth_float = false, uint32_t refresh_raw_count = 0);
-
-  // What DirectResolveRenderTargets' dump shader does for
-  // a bit copy of one 1x color render target, as a tile dispatch in the
-  // guest's open render pass, which has that render target attached - reading
-  // the pixels from the tiles instead of ending the pass to read them back.
-  // With refresh_textures, also writes the texture-cache refresh texels as
-  // the dump shader does. Returns null if it encoded the dispatch, or why not,
-  // having encoded nothing.
-  const char* TileResolveInOpenPass(
-      const draw_util::ResolveInfo& resolve_info,
-      draw_util::ResolveCopyShaderIndex copy_shader,
-      const draw_util::ResolveCopyShaderConstants& copy_shader_constants,
-      uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
-      uint32_t dump_pitch, std::span<MTL::Texture* const> refresh_textures,
-      uint32_t refresh_offset_x, uint32_t refresh_offset_y);
-  enum class TileResolveKernel : uint32_t {
-    k8888,
-    k16_16Float,
-    k32Float,
-    k16_16_16_16Float,
-    k32_32Float,
-    // IsFull64RGBA16OneSample's conversion, not a bit copy.
-    k16_16_16_16,
-    // IsFull32RGBA8FourSampleAverage's average, of an 8_8_8_8 or an
-    // 8_8_8_8_GAMMA (RGBA16Unorm) render target.
-    k8888Average4,
-    k8888GammaAverage4,
-    // IsFull32RGB10FourSampleAverage's average, of a 2_10_10_10 render target
-    // (RGB10A2Unorm).
-    kRGB10Average4,
-    // The bit copies of one-sample 8_8_8_8_GAMMA (RGBA16Unorm) and 2_10_10_10
-    // (RGB10A2Unorm) render targets, as the dump shader packs them.
-    k8888Gamma,
-    kRGB10,
-    // The bit copy of a one-sample 2_10_10_10_FLOAT render target
-    // (RGBA16Float) as the dump shader packs it, and IsFull32RGB10FloatOneSample's
-    // conversion of it into 2_10_10_10.
-    kRGB10Float,
-    kRGB10FloatToRGB10,
-    kCount,
-  };
-  // For the pass's color formats at every index and its sample count, reading
-  // color attachment color_index.
-  MTL::RenderPipelineState* GetOrCreateTileResolvePipeline(
-      MTL::RenderPassDescriptor* pass_descriptor, uint32_t color_index,
-      TileResolveKernel kernel, uint32_t sample_count,
-      uint32_t refresh_count);
-  MTL::Library* tile_resolve_library_ = nullptr;
   // The last Resolve left the guest's pass open after a tile resolve.
   bool last_resolve_kept_pass_ = false;
 
@@ -1250,11 +1123,7 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   bool last_resolve_kept_pass() const { return last_resolve_kept_pass_; }
 
  private:
-  bool tile_resolve_library_failed_ = false;
-  // Null for a pipeline that failed, so it is not retried.
-  std::unordered_map<uint64_t, MTL::RenderPipelineState*>
-      tile_resolve_pipelines_;
-
+  // Writes contents of host render targets within rectangles from
   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
                          uint32_t dump_rows, uint32_t dump_pitch,
