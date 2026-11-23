@@ -143,8 +143,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
         deferred_clear_rows_ = 0;
         clear_depth_ = 1.0f;
         clear_stencil_ = 0;
-        clear_color_[0] = clear_color_[1] = clear_color_[2] =
-            clear_color_[3] = 0.0f;
+        clear_color_[0] = clear_color_[1] = clear_color_[2] = clear_color_[3] =
+            0.0f;
       }
     }
     // A full resolve clear left for the next pass to perform as its clear load
@@ -788,6 +788,45 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   void PlanResolveStoreActions(const draw_util::ResolveInfo& resolve_info);
   std::vector<MetalRenderTarget*> dead_store_render_targets_;
 
+  // Planner phase helpers for Update() (Hub 1).
+  bool PrepareUpdateQuadHoldAndTransfers(
+      bool is_rasterization_done, reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t normalized_color_mask);
+  bool SyncCurrentTargetsFromBaseUpdate(
+      RenderTarget* const* accumulated_targets);
+  bool OptimizeUpdateTransfers(RenderTarget* const* accumulated_targets,
+                               reg::RB_DEPTHCONTROL normalized_depth_control,
+                               const Shader& vertex_shader,
+                               bool targets_changed);
+  bool QueueOrPerformUpdateTransfers(
+      RenderTarget* const* accumulated_targets, bool is_rasterization_done,
+      reg::RB_DEPTHCONTROL normalized_depth_control,
+      uint32_t normalized_color_mask);
+
+  // Planner phase helpers for ResolveWithInfo() (Hub 2).
+  bool TryResolveDirectly(
+      const draw_util::ResolveInfo& resolve_info,
+      draw_util::ResolveCopyShaderIndex copy_shader,
+      const draw_util::ResolveCopyShaderConstants& copy_constants,
+      uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+      uint32_t dump_pitch, uint32_t resolve_width, uint32_t resolve_height,
+      uint32_t group_count_x, uint32_t group_count_y, bool is_depth,
+      bool draw_resolution_scaled, bool dest_rows_alias,
+      MTL::CommandBuffer* command_buffer, bool& tile_pass_open,
+      bool transfers_flushed, bool& clear_left_to_pass_end,
+      MetalTextureCache::ResolveTextureRefreshTarget& refresh_target);
+  bool EncodeEdramComputeResolve(
+      const draw_util::ResolveInfo& resolve_info,
+      draw_util::ResolveCopyShaderIndex copy_shader,
+      const draw_util::ResolveCopyShaderConstants& copy_constants,
+      uint32_t resolve_height, uint32_t group_count_x, uint32_t group_count_y,
+      bool draw_resolution_scaled, bool dest_rows_alias,
+      MTL::CommandBuffer* command_buffer);
+
+  // Planner phase helpers for PerformDepthClearRetarget() (Hub 3).
+  MTL::DepthStencilState* GetOrCreateRetargetClearState(
+      bool write_depth, bool write_stencil, uint8_t stencil_write_mask);
+
   // Resolve's body, from what GetResolveInfo gave (resolve_info_valid if it
   // succeeded), so a resolve left to the pass end can run it later.
   bool ResolveWithInfo(draw_util::ResolveInfo resolve_info,
@@ -849,9 +888,8 @@ class MetalRenderTargetCache final : public gpu::RenderTargetCache {
   // Drops the render targets the resolve reads from the store plan.
   void KeepStoresOfResolveReads(const draw_util::ResolveInfo& resolve_info);
   bool AnyDeferredClear(const RenderTarget* render_target) const {
-    return render_target &&
-           static_cast<const MetalRenderTarget*>(render_target)
-               ->clear_deferred();
+    return render_target && static_cast<const MetalRenderTarget*>(render_target)
+                                ->clear_deferred();
   }
   // Keys of the render targets that may have a deferred clear.
   std::vector<RenderTargetKey> deferred_clear_targets_;

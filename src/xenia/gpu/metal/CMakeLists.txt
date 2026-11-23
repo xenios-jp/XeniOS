@@ -17,6 +17,7 @@ add_library(xenia-gpu-metal STATIC
   metal_pipeline_cache.h
   metal_primitive_processor.cc
   metal_primitive_processor.h
+  metal_render_pass_planner.cc
   metal_render_target_cache.cc
   metal_render_target_cache.h
   metal_resolve_encoder.cc
