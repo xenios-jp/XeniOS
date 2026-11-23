@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/metal/metal_transfer_encoder.h"
 
+#include <dispatch/dispatch.h>
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -16,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "spirv2air.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -23,7 +26,6 @@
 #include "xenia/base/profiling.h"
 #include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
-#include "xenia/gpu/metal/metal_transfer_spirv_cross.h"
 #include "xenia/gpu/metal/metal_util.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_1xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_2xmsaa_cs.h"
@@ -43,6 +45,65 @@ DECLARE_bool(metal_defer_resolve_clears);
 namespace xe {
 namespace gpu {
 namespace metal {
+
+namespace {
+
+MTL::Function* CompileDirectSpirvFunction(MTL::Device* device,
+                                          const std::vector<uint32_t>& spirv,
+                                          std::string* error_out,
+                                          bool is_compute_dump) {
+  spirv2air::Options options;
+  options.directBindings = !is_compute_dump;
+  options.pushConstantBuffer = int(kTransferMslPushConstantBufferIndex);
+  for (uint32_t set = 0; set < kTransferDescriptorSetCount; ++set) {
+    const uint32_t binding_count =
+        is_compute_dump && set == 0 ? 5 : kTransferBindingsPerSet;
+    for (uint32_t binding = 0; binding < binding_count; ++binding) {
+      spirv2air::ResourceBinding rb;
+      rb.set = set;
+      rb.binding = binding;
+      rb.buffer = kTransferMslHostDepthBufferIndex;
+      rb.texture =
+          is_compute_dump
+              ? (set == 1
+                     ? (binding ? 2 : 0)
+                     : (binding <= 1 ? 1
+                                     : kResolveRefreshMslFirstAliasTexture +
+                                           binding - 2))
+              : TransferMslTextureIndex(set, binding);
+      options.bindings.push_back(rb);
+    }
+  }
+  spirv2air::Result translated =
+      spirv2air::translate(spirv.data(), spirv.size(), options);
+  if (!translated.ok()) {
+    *error_out = "spirv2air: " + translated.error;
+    return nullptr;
+  }
+
+  ScopedAutoreleasePool pool;
+  dispatch_data_t data = dispatch_data_create(
+      translated.metallib.data(), translated.metallib.size(), nullptr,
+      DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+  NS::Error* error = nullptr;
+  MTL::Library* library = device->newLibrary(data, &error);
+  dispatch_release(data);
+  if (!library) {
+    *error_out = error && error->localizedDescription()
+                     ? error->localizedDescription()->utf8String()
+                     : "unknown Metal library error";
+    return nullptr;
+  }
+  MTL::Function* function =
+      library->newFunction(NS::String::string("main", NS::UTF8StringEncoding));
+  if (!function) {
+    *error_out = "no function named main";
+  }
+  library->release();
+  return function;
+}
+
+}  // namespace
 
 namespace {
 
@@ -346,7 +407,7 @@ MTL::ComputePipelineState* MetalTransferEncoder::GetOrCreateDumpPipeline(
   } else {
     std::string error;
     MTL::Function* function =
-        CompileEdramDumpFunctionMsl(device_, spirv, &error);
+        CompileDirectSpirvFunction(device_, spirv, &error, true);
     if (function) {
       NS::Error* pipeline_error = nullptr;
       pipeline = device_->newComputePipelineState(function, &pipeline_error);
@@ -2497,7 +2558,7 @@ MTL::Function* MetalTransferEncoder::GetOrCreateTransferFragmentFunction(
         key.key);
   } else {
     std::string error;
-    function = CompileTransferFragmentFunctionMsl(device_, spirv, &error);
+    function = CompileDirectSpirvFunction(device_, spirv, &error, false);
     if (!function) {
       XELOGE(
           "MetalRenderTargetCache: failed to compile the MSL transfer shader "

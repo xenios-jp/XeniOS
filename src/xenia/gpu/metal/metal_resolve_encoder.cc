@@ -26,7 +26,7 @@
 #include "xenia/gpu/metal/metal_render_target_cache.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
-#include "xenia/gpu/metal/metal_transfer_spirv_cross.h"
+#include "xenia/gpu/metal/metal_transfer_encoder.h"
 #include "xenia/gpu/metal/metal_util.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_fast_32bpp_1x2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/resolve_fast_32bpp_1x2xmsaa_scaled_cs.h"

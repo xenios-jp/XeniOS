@@ -29,6 +29,23 @@ namespace metal {
 
 class MetalCommandProcessor;
 
+// The transfer emitter numbers its descriptor sets densely and puts at most two
+// textures in each.
+constexpr uint32_t kTransferDescriptorSetCount = 2;
+constexpr uint32_t kTransferBindingsPerSet = 2;
+
+// Direct Metal binding slots for the spirv2air-compiled transfer fragment and
+// EDRAM dump/direct-resolve compute shaders.
+constexpr uint32_t kTransferMslPushConstantBufferIndex = 0;
+constexpr uint32_t kTransferMslHostDepthBufferIndex = 1;
+constexpr uint32_t kTransferMslTextureCount =
+    kTransferDescriptorSetCount * kTransferBindingsPerSet;
+// Resolve refresh uses source 0, output 1, source stencil 2, aliases 3..5.
+constexpr uint32_t kResolveRefreshMslFirstAliasTexture = 3;
+constexpr uint32_t TransferMslTextureIndex(uint32_t set, uint32_t binding) {
+  return set * kTransferBindingsPerSet + binding;
+}
+
 // Matches TransferVertexConstants / TransferRectInstance / clear constants in
 // the transfer library's MSL.
 struct TransferVertexConstants {

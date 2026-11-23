@@ -30,8 +30,6 @@ add_library(xenia-gpu-metal STATIC
   metal_texture_cache.h
   metal_transfer_encoder.cc
   metal_transfer_encoder.h
-  metal_transfer_spirv_cross.cc
-  metal_transfer_spirv_cross.h
   metal_upload_cache.h
   metal_util.h
   metal_zpd_visibility_pool.cc
@@ -60,7 +58,6 @@ target_link_libraries(xenia-gpu-metal PUBLIC
   xenia-base
   xenia-gpu
   xenia-ui-metal
-  spirv-cross
   "-framework Foundation"
   "-framework Metal"
   "-framework MetalKit"
