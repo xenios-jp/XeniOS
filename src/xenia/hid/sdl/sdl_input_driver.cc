@@ -399,8 +399,15 @@ X_RESULT SDLInputDriver::SetState(uint32_t user_index,
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
+  if (controller->accessory_rumble) {
+    controller->accessory_rumble->SetMotors(vibration->left_motor_speed,
+                                            vibration->right_motor_speed);
+    return X_ERROR_SUCCESS;
+  }
   if (!SDL_RumbleGamepad(controller->sdl, vibration->left_motor_speed,
                          vibration->right_motor_speed, 0)) {
+    XELOGW("SDL rumble failed for controller '{}': {}",
+           GetDeviceName(controller->sdl), SDL_GetError());
     return X_ERROR_FUNCTION_FAILED;
   }
   return X_ERROR_SUCCESS;
@@ -589,6 +596,20 @@ bool SDLInputDriver::GetKeystrokeButtons(uint32_t user_index,
   const X_INPUT_GAMEPAD& gamepad = controller->state.gamepad;
   buttons = gamepad.buttons | AnalogToKeyfield(gamepad);
   return true;
+}
+
+void SDLInputDriver::ResetKeystrokes() {
+  {
+    std::lock_guard<std::mutex> lock(keystroke_mutex_);
+    keystroke_states_.fill({});
+  }
+  // Also called when a title starts or ends: side channel rumble keeps
+  // resending its last level, so don't let it outlive the title.
+  for (auto& controller : controllers_) {
+    if (controller.accessory_rumble) {
+      controller.accessory_rumble->Stop();
+    }
+  }
 }
 
 InputType SDLInputDriver::GetInputType() const { return InputType::Controller; }
@@ -819,6 +840,13 @@ void SDLInputDriver::OnControllerDeviceAdded(const SDL_Event& event) {
     auto& state = controllers_.at(user_id);
     state = {controller, {}};
     state.xinput_slot = xinput_slot;
+    if (controller_name) {
+      state.accessory_rumble = CreateAccessoryRumble(controller_name);
+      if (state.accessory_rumble) {
+        XELOGI("SDL Controller {}: rumble goes through ExternalAccessory.",
+               user_id);
+      }
+    }
     // XInput seems to start with packet_number = 1 .
     state.state_changed = true;
     UpdateXCapabilities(state);

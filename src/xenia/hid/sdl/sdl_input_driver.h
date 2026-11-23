@@ -13,6 +13,7 @@
 #include <array>
 #include <atomic>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -20,6 +21,7 @@
 
 #include <SDL3/SDL.h>
 #include "xenia/hid/input_driver.h"
+#include "xenia/hid/sdl/accessory_rumble.h"
 #include "xenia/xbox.h"
 
 #define HID_SDL_USER_COUNT 4
@@ -49,6 +51,7 @@ class SDLInputDriver final : public InputDriver {
   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
                         X_INPUT_KEYSTROKE* out_keystroke) override;
   void DiscardKeystrokes() override;
+  void ResetKeystrokes() override;
   virtual InputType GetInputType() const override;
   std::vector<InputDeviceInfo> EnumerateDevices() override;
   void SetNativeMode(uint8_t driver_slot, bool enabled) override;
@@ -64,6 +67,8 @@ class SDLInputDriver final : public InputDriver {
     int xinput_slot = -1;
     X_INPUT_CAPABILITIES native_caps = {};
     bool native_mode = true;
+    // Set when rumble goes through a side channel instead of SDL.
+    std::unique_ptr<AccessoryRumble> accessory_rumble;
 
     bool native() const {
       return xinput_slot >= 0 && native_mode && native_caps.type;

@@ -87,6 +87,12 @@ class IOSInputDriver final : public InputDriver {
       physical_->OnUnboundFromSlot(slot);
     }
   }
+  void ResetKeystrokes() override {
+    touch_->ResetKeystrokes();
+    if (physical_) {
+      physical_->ResetKeystrokes();
+    }
+  }
 
  private:
   static constexpr uint8_t kTouchSlot = 0xFF;

@@ -2550,7 +2550,15 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       }
     }
 
-    auto teardown_title_session = [this]() {
+    // Also stops controller rumble the title left running.
+    auto reset_title_input = [this]() {
+      if (emulator_->input_system()) {
+        emulator_->input_system()->ResetKeystrokes();
+      }
+    };
+    auto teardown_title_session = [this, &reset_title_input]() {
+      // Stop the motors as soon as the user leaves the game.
+      reset_title_input();
       // Faults that halted a guest thread leave the game running, so the
       // session would not otherwise show them.
       xe_ios_session_stats_note_halted_faults(emulator_->halted_fault_count());
@@ -2565,6 +2573,9 @@ void EmulatorAppIOS::EmulatorThread(const std::filesystem::path& game_path,
       // Edge stops the GPU worker, scheduler and guest threads in order.
       // Retain its freshly reset kernel and input drivers for the next title.
       emulator_->ResetTitle();
+      // Resumed guest threads may have restarted rumble before ResetTitle
+      // terminated them; none are left to do it again now.
+      reset_title_input();
       emulator_initialized_.store(true, std::memory_order_release);
       emulator_cpu_initialized_.store(true, std::memory_order_release);
       subsystems_ready_ = false;
