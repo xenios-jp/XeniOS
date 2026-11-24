@@ -4197,8 +4197,6 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
   MTL::TextureType view_type = metal_texture_type_;
   switch (dimension) {
     case xenos::FetchOpDimension::kCube:
-      // MSC ForceTextureArray changes the DXIL cube resource interface.
-      // SPIRV-Cross continues to use the original non-array SPIR-V type.
       view_type =
           cube_as_array ? MTL::TextureTypeCubeArray : MTL::TextureTypeCube;
       break;

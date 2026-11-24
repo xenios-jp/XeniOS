@@ -1,12 +1,10 @@
 add_library(xenia-gpu-metal STATIC
-  dxil_shader.cc
-  dxil_shader.h
+  metal_argument_binder.cc
+  metal_argument_binder.h
   metal_buffer_hazards.cc
   metal_buffer_hazards.h
   metal_command_processor.cc
   metal_command_processor.h
-  metal_dxil_binder.cc
-  metal_dxil_binder.h
   metal_graphics_system.cc
   metal_graphics_system.h
   metal_heap_pool.cc
@@ -22,6 +20,8 @@ add_library(xenia-gpu-metal STATIC
   metal_render_target_cache.h
   metal_resolve_encoder.cc
   metal_resolve_encoder.h
+  metal_shader.cc
+  metal_shader.h
   metal_shader_library_cache.cc
   metal_shader_library_cache.h
   metal_shared_memory.cc

@@ -662,14 +662,14 @@ MTL::Function* MetalPipelineCache::GetHostShaderFunction(
   if (!translation) {
     return nullptr;
   }
-  return static_cast<const DxilShader::DxilTranslation*>(translation)
+  return static_cast<const MetalShader::MetalTranslation*>(translation)
       ->metal_function();
 }
 
 bool MetalPipelineCache::IsHostShaderReady(
     const Shader::Translation* translation) {
   return translation &&
-         static_cast<const DxilShader::DxilTranslation*>(translation)
+         static_cast<const MetalShader::MetalTranslation*>(translation)
              ->is_ready();
 }
 
@@ -707,7 +707,7 @@ bool MetalPipelineCache::CompileHostShader(Shader::Translation* translation,
   if (!translation) {
     return false;
   }
-  return static_cast<DxilShader::DxilTranslation*>(translation)
+  return static_cast<MetalShader::MetalTranslation*>(translation)
       ->CompileToAir(command_processor_.device_, metallib_out);
 }
 
@@ -740,15 +740,15 @@ MetalPipelineCache::TranslateAndCompileHostShader(
     if (shader_library_cache_.Find(key, entry)) {
       spirv_shader.PublishBindings(entry.texture_bindings,
                                    entry.sampler_bindings);
-      auto* dxil_translation =
-          static_cast<DxilShader::DxilTranslation*>(translation);
+      auto* metal_translation =
+          static_cast<MetalShader::MetalTranslation*>(translation);
       if (entry.metallib.empty()) {
         if (bakes_only) {
-          dxil_translation->SetBakesOnly(entry.used_buffer_mask);
+          metal_translation->SetBakesOnly(entry.used_buffer_mask);
           AddCompileStageTime(kCompileStageLibraryCached, cached_start_ns);
           return ShaderCompileStatus::kReady;
         }
-      } else if (dxil_translation->LoadMetallib(
+      } else if (metal_translation->LoadMetallib(
                      command_processor_.device_, entry.metallib,
                      entry.entry_point_name, entry.used_buffer_mask)) {
         AddCompileStageTime(kCompileStageLibraryCached, cached_start_ns);
@@ -766,12 +766,13 @@ MetalPipelineCache::TranslateAndCompileHostShader(
     return status;
   }
   if (bakes_only) {
-    auto* dxil_translation =
-        static_cast<DxilShader::DxilTranslation*>(translation);
-    dxil_translation->SetBakesOnly(dxil_translation->GetSpirv2airBufferMask());
+    auto* metal_translation =
+        static_cast<MetalShader::MetalTranslation*>(translation);
+    metal_translation->SetBakesOnly(
+        metal_translation->GetSpirv2airBufferMask());
     if (cacheable) {
       shader_library_cache_.StoreBindings(
-          key, dxil_translation->used_buffer_mask(), spirv_shader);
+          key, metal_translation->used_buffer_mask(), spirv_shader);
     }
     return ShaderCompileStatus::kReady;
   }
@@ -784,11 +785,11 @@ MetalPipelineCache::TranslateAndCompileHostShader(
     return ShaderCompileStatus::kFailed;
   }
   if (cacheable && !metallib.empty()) {
-    auto* dxil_translation =
-        static_cast<DxilShader::DxilTranslation*>(translation);
+    auto* metal_translation =
+        static_cast<MetalShader::MetalTranslation*>(translation);
     shader_library_cache_.Store(
-        key, metallib, dxil_translation->entry_point_name(),
-        dxil_translation->used_buffer_mask(), spirv_shader);
+        key, metallib, metal_translation->entry_point_name(),
+        metal_translation->used_buffer_mask(), spirv_shader);
   }
   return ShaderCompileStatus::kReady;
 }
@@ -1088,7 +1089,7 @@ void MetalPipelineCache::ApplyColorAttachmentState(
 }
 
 MTL::Function* MetalPipelineCache::GetSpecializedFunction(
-    const DxilShader::DxilTranslation* translation, MTL::Library* library,
+    const MetalShader::MetalTranslation* translation, MTL::Library* library,
     const std::string& function_name, const uint32_t* states,
     uint32_t binding_count, std::string* error_out) {
   // A translation that bakes only has no library: its own address keys its
@@ -1181,7 +1182,7 @@ MTL::Function* MetalPipelineCache::GetSpecializedFunction(
 // TODO(xenios-jp): compile the vertex position format and the vertex
 // expansion index load per pipeline (ef2ac46b2, f5ba07305).
 MTL::Function* MetalPipelineCache::GetBakedFunction(
-    const DxilShader::DxilTranslation* translation, const uint32_t* states,
+    const MetalShader::MetalTranslation* translation, const uint32_t* states,
     uint32_t binding_count, const SpecializedFunctionKey& key) {
   const MetalShaderLibraryCache::Key variant_key =
       MetalShaderLibraryCache::MakeVariantKey(
@@ -1235,7 +1236,7 @@ MTL::Function* MetalPipelineCache::GetBakedFunction(
 }
 
 bool MetalPipelineCache::EnsureBakeSpirv(
-    const DxilShader::DxilTranslation* translation) {
+    const MetalShader::MetalTranslation* translation) {
   if (!translation->is_translated()) {
     // Only a translation TranslateAndCompileHostShader made ready from the
     // library cache gets here untranslated, and that took the claim. Compile
@@ -1244,14 +1245,14 @@ bool MetalPipelineCache::EnsureBakeSpirv(
     if (!translation->is_translated()) {
       auto translator = guest_spirv_shader_cache_->CreateWorkerTranslator();
       TranslateClaimedSpirv(
-          const_cast<DxilShader::DxilTranslation*>(translation), *translator);
+          const_cast<MetalShader::MetalTranslation*>(translation), *translator);
     }
   }
   return translation->is_valid() && !translation->translated_binary().empty();
 }
 
 MTL::Library* MetalPipelineCache::GetGenericFallbackLibrary(
-    const DxilShader::DxilTranslation* translation,
+    const MetalShader::MetalTranslation* translation,
     std::string& entry_point_name_out) {
   std::lock_guard<std::mutex> lock(generic_fallback_mutex_);
   auto it = generic_fallback_libraries_.find(translation);
@@ -1660,13 +1661,15 @@ void MetalPipelineCache::SetPipelineFunctionConstants(
   request.fragment_fetch_states_specialized =
       UsesPixelFetchStateFunctionConstants(pixel);
   if (request.vertex_fetch_states_specialized) {
-    auto* translation = static_cast<const DxilShader::DxilTranslation*>(vertex);
+    auto* translation =
+        static_cast<const MetalShader::MetalTranslation*>(vertex);
     request.vertex_translation = translation;
     request.vertex_library = translation->metal_library();
     request.vertex_function_name = translation->entry_point_name();
   }
   if (request.fragment_fetch_states_specialized) {
-    auto* translation = static_cast<const DxilShader::DxilTranslation*>(pixel);
+    auto* translation =
+        static_cast<const MetalShader::MetalTranslation*>(pixel);
     request.fragment_translation = translation;
     request.fragment_library = translation->metal_library();
     request.fragment_function_name = translation->entry_point_name();
@@ -2139,7 +2142,7 @@ void MetalPipelineCache::InitializeShaderStorage(
     // that leave those alone. Rebuilding them is our own translation work only;
     // the archive below keeps the GPU binaries.
     const std::string fingerprint = MetalShaderLibraryCache::MakeFingerprint(
-        fmt::format("dxil device={} msaa2x={} scale={}x{}",
+        fmt::format("spirv2air device={} msaa2x={} scale={}x{}",
                     command_processor_.device_->name()
                         ? command_processor_.device_->name()->utf8String()
                         : "",
@@ -2156,7 +2159,7 @@ void MetalPipelineCache::InitializeShaderStorage(
     // the first session after each one rebuild every pipeline.
     pipeline_archive_.Open(
         command_processor_.device_, title_local_root / "pipelines",
-        fmt::format("archive1 dxil device={}",
+        fmt::format("archive1 spirv2air device={}",
                     command_processor_.device_->name()
                         ? command_processor_.device_->name()->utf8String()
                         : ""));
@@ -2600,8 +2603,8 @@ SpirvShader* MetalPipelineCache::LoadShader(xenos::ShaderType shader_type,
   if (it != guest_shader_cache_.end()) {
     return it->second.get();
   }
-  auto shader = std::make_unique<DxilShader>(shader_type, hash, host_address,
-                                             dword_count);
+  auto shader = std::make_unique<MetalShader>(shader_type, hash, host_address,
+                                              dword_count);
   SpirvShader* result = shader.get();
   guest_shader_cache_[hash] = std::move(shader);
   return result;

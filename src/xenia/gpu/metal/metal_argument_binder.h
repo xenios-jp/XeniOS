@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef XENIA_GPU_METAL_METAL_DXIL_BINDER_H_
-#define XENIA_GPU_METAL_METAL_DXIL_BINDER_H_
+#ifndef XENIA_GPU_METAL_METAL_ARGUMENT_BINDER_H_
+#define XENIA_GPU_METAL_METAL_ARGUMENT_BINDER_H_
 
 #include <array>
 #include <cstdint>
@@ -30,7 +30,7 @@ class MetalCommandProcessor;
 // buffer(2) and reach textures and samplers by indexing two descriptor heaps
 // at buffer(0) and buffer(1), so nothing lands in a Metal texture or sampler
 // slot.
-class MetalDxilBinder {
+class MetalArgumentBinder {
  public:
   // Buffer bind points shared by spirv2air's default graphics layout and MSC.
   static constexpr uint32_t kDescriptorHeapBufferIndex = 0;
@@ -84,8 +84,8 @@ class MetalDxilBinder {
     ConstantBlock fetch;
   };
 
-  explicit MetalDxilBinder(MetalCommandProcessor& command_processor);
-  ~MetalDxilBinder();
+  explicit MetalArgumentBinder(MetalCommandProcessor& command_processor);
+  ~MetalArgumentBinder();
 
   // Writes this draw's descriptor heaps, per-stage index buffers and top-level
   // argument buffer, binds them to the stages the pipeline runs and makes
@@ -128,8 +128,7 @@ class MetalDxilBinder {
   std::vector<DescriptorEntry> cached_sampler_heap_entries_;
   Slice cached_texture_heap_slice_;
   Slice cached_sampler_heap_slice_;
-  using ArgumentBufferKey =
-      std::array<uint64_t, size_t(ArgumentSlot::kCount)>;
+  using ArgumentBufferKey = std::array<uint64_t, size_t(ArgumentSlot::kCount)>;
   UploadCache<Slice, ArgumentBufferKey> argument_buffer_slices_;
 
   // Where a stage's descriptors start in the heaps both stages share.
@@ -174,4 +173,4 @@ class MetalDxilBinder {
 }  // namespace gpu
 }  // namespace xe
 
-#endif  // XENIA_GPU_METAL_METAL_DXIL_BINDER_H_
+#endif  // XENIA_GPU_METAL_METAL_ARGUMENT_BINDER_H_

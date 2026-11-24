@@ -33,9 +33,9 @@
 #include "xenia/base/platform.h"
 #include "xenia/gpu/guest_spirv_shader_cache.h"
 #include "xenia/gpu/memexport_format_profile.h"
-#include "xenia/gpu/metal/dxil_shader.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_pipeline_archive.h"
+#include "xenia/gpu/metal/metal_shader.h"
 #include "xenia/gpu/metal/metal_shader_library_cache.h"
 #include "xenia/gpu/pipeline_creation_queue.h"
 #include "xenia/gpu/primitive_processor.h"
@@ -164,12 +164,12 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
     MTL::Function* fragment_function = nullptr;
     uint8_t priority = 0;
     MTL::Library* vertex_library = nullptr;
-    const DxilShader::DxilTranslation* vertex_translation = nullptr;
+    const MetalShader::MetalTranslation* vertex_translation = nullptr;
     std::string vertex_function_name;
     bool vertex_fetch_states_specialized = false;
     bool fragment_fetch_states_specialized = false;
     MTL::Library* fragment_library = nullptr;
-    const DxilShader::DxilTranslation* fragment_translation = nullptr;
+    const MetalShader::MetalTranslation* fragment_translation = nullptr;
     std::string fragment_function_name;
   };
 
@@ -448,15 +448,15 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
                                     const Shader::Translation* vertex,
                                     const Shader::Translation* pixel);
   MTL::Function* GetSpecializedFunction(
-      const DxilShader::DxilTranslation* translation, MTL::Library* library,
+      const MetalShader::MetalTranslation* translation, MTL::Library* library,
       const std::string& function_name, const uint32_t* states,
       uint32_t binding_count, std::string* error_out);
   MTL::Function* GetBakedFunction(
-      const DxilShader::DxilTranslation* translation, const uint32_t* states,
+      const MetalShader::MetalTranslation* translation, const uint32_t* states,
       uint32_t binding_count, const SpecializedFunctionKey& key);
-  bool EnsureBakeSpirv(const DxilShader::DxilTranslation* translation);
+  bool EnsureBakeSpirv(const MetalShader::MetalTranslation* translation);
   MTL::Library* GetGenericFallbackLibrary(
-      const DxilShader::DxilTranslation* translation,
+      const MetalShader::MetalTranslation* translation,
       std::string& entry_point_name_out);
   MTL::Function* GetPipelineVertexFunction(
       const PipelineCompileRequest& request, std::string* error_out);
@@ -521,7 +521,7 @@ class MetalPipelineCache : private GuestSpirvShaderCache::Host {
   std::vector<MTL::Library*> baked_libraries_;
   std::mutex bake_translate_mutex_;
   std::mutex generic_fallback_mutex_;
-  std::map<const DxilShader::DxilTranslation*,
+  std::map<const MetalShader::MetalTranslation*,
            std::pair<MTL::Library*, std::string>>
       generic_fallback_libraries_;
 

@@ -7,7 +7,7 @@
  ******************************************************************************
  */
 
-#include "xenia/gpu/metal/metal_dxil_binder.h"
+#include "xenia/gpu/metal/metal_argument_binder.h"
 
 #include <algorithm>
 #include <cstring>
@@ -24,12 +24,13 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
-MetalDxilBinder::MetalDxilBinder(MetalCommandProcessor& command_processor)
+MetalArgumentBinder::MetalArgumentBinder(
+    MetalCommandProcessor& command_processor)
     : command_processor_(command_processor) {}
 
-MetalDxilBinder::~MetalDxilBinder() = default;
+MetalArgumentBinder::~MetalArgumentBinder() = default;
 
-void MetalDxilBinder::ResetUploadCaches() {
+void MetalArgumentBinder::ResetUploadCaches() {
   gather_cache_valid_ = false;
   for (auto& cache : constant_slices_) {
     cache.Reset();
@@ -43,8 +44,8 @@ void MetalDxilBinder::ResetUploadCaches() {
   argument_buffer_slices_.Reset();
 }
 
-bool MetalDxilBinder::Upload(const void* data, uint32_t size,
-                             Slice& slice_out) {
+bool MetalArgumentBinder::Upload(const void* data, uint32_t size,
+                                 Slice& slice_out) {
   uint32_t bytes = std::max(size, uint32_t(1));
   if (!command_processor_.AcquireSpirvArgumentBufferSlice(
           bytes, kSliceAlignment, &slice_out.buffer, &slice_out.offset)) {
@@ -62,8 +63,8 @@ bool MetalDxilBinder::Upload(const void* data, uint32_t size,
   return true;
 }
 
-bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
-                                  StageRange& range_out) {
+bool MetalArgumentBinder::GatherStage(const SpirvShader* shader,
+                                      StageRange& range_out) {
   range_out.texture_start = uint32_t(texture_heap_entries_.size());
   range_out.sampler_start = uint32_t(sampler_heap_entries_.size());
   if (!shader) {
@@ -90,7 +91,7 @@ bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
       }
     }
     if (!texture) {
-      XELOGE("MetalDxilBinder: no texture for fetch constant {}",
+      XELOGE("MetalArgumentBinder: no texture for fetch constant {}",
              uint32_t(binding.fetch_constant));
       return false;
     }
@@ -110,7 +111,7 @@ bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
       sampler = command_processor_.null_sampler();
     }
     if (!sampler) {
-      XELOGE("MetalDxilBinder: no sampler for fetch constant {}",
+      XELOGE("MetalArgumentBinder: no sampler for fetch constant {}",
              uint32_t(binding.fetch_constant));
       return false;
     }
@@ -123,13 +124,13 @@ bool MetalDxilBinder::GatherStage(const SpirvShader* shader,
   return true;
 }
 
-bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
-                           const SpirvShader* vertex_shader,
-                           const SpirvShader* pixel_shader,
-                           const Constants& constants, bool memexport_used,
-                           uint32_t vertex_buffer_mask,
-                           uint32_t pixel_buffer_mask) {
-  SCOPE_profile_cpu_i("gpu", "MetalDxilBinder::Bind");
+bool MetalArgumentBinder::Bind(MTL::RenderCommandEncoder* encoder,
+                               const SpirvShader* vertex_shader,
+                               const SpirvShader* pixel_shader,
+                               const Constants& constants, bool memexport_used,
+                               uint32_t vertex_buffer_mask,
+                               uint32_t pixel_buffer_mask) {
+  SCOPE_profile_cpu_i("gpu", "MetalArgumentBinder::Bind");
   if (!encoder) {
     return false;
   }
@@ -212,9 +213,8 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   auto entries_equal = [](const std::vector<DescriptorEntry>& a,
                           const std::vector<DescriptorEntry>& b) {
     return a.size() == b.size() &&
-           (a.empty() ||
-            std::memcmp(a.data(), b.data(),
-                        a.size() * sizeof(DescriptorEntry)) == 0);
+           (a.empty() || std::memcmp(a.data(), b.data(),
+                                     a.size() * sizeof(DescriptorEntry)) == 0);
   };
   if (descriptor_heap_slices_valid_ &&
       entries_equal(texture_heap_entries_, cached_texture_heap_entries_) &&
@@ -222,15 +222,15 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     texture_heap = cached_texture_heap_slice_;
     sampler_heap = cached_sampler_heap_slice_;
   } else {
-    if (!Upload(texture_heap_entries_.data(),
-                uint32_t(texture_heap_entries_.size() *
-                         sizeof(DescriptorEntry)),
-                texture_heap) ||
-        !Upload(sampler_heap_entries_.data(),
-                uint32_t(sampler_heap_entries_.size() *
-                         sizeof(DescriptorEntry)),
-                sampler_heap)) {
-      XELOGE("MetalDxilBinder: failed to allocate the descriptor heaps");
+    if (!Upload(
+            texture_heap_entries_.data(),
+            uint32_t(texture_heap_entries_.size() * sizeof(DescriptorEntry)),
+            texture_heap) ||
+        !Upload(
+            sampler_heap_entries_.data(),
+            uint32_t(sampler_heap_entries_.size() * sizeof(DescriptorEntry)),
+            sampler_heap)) {
+      XELOGE("MetalArgumentBinder: failed to allocate the descriptor heaps");
       return false;
     }
     cached_texture_heap_entries_ = texture_heap_entries_;
@@ -264,7 +264,7 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     };
     if (!stage_index_slices_[stage].GetOrUpload(key, upload_indices,
                                                 stage_index_buffers[stage])) {
-      XELOGE("MetalDxilBinder: failed to allocate a texture index buffer");
+      XELOGE("MetalArgumentBinder: failed to allocate a texture index buffer");
       return false;
     }
   }
@@ -287,7 +287,7 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
     };
     if (!constant_slices_[i].GetOrUpload({block.size, block.revision}, upload,
                                          constant_slices[i])) {
-      XELOGE("MetalDxilBinder: failed to allocate a constant buffer");
+      XELOGE("MetalArgumentBinder: failed to allocate a constant buffer");
       return false;
     }
   }
@@ -325,7 +325,7 @@ bool MetalDxilBinder::Bind(MTL::RenderCommandEncoder* encoder,
   };
   if (!argument_buffer_slices_.GetOrUpload(argument_key, upload_argument_buffer,
                                            argument_buffer)) {
-    XELOGE("MetalDxilBinder: failed to allocate the argument buffer");
+    XELOGE("MetalArgumentBinder: failed to allocate the argument buffer");
     return false;
   }
   using Stage = MetalCommandProcessor::RenderEncoderStage;

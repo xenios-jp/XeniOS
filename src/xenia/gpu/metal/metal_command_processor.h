@@ -36,11 +36,11 @@
 #include "xenia/base/string_buffer.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/draw_util.h"
-#include "xenia/gpu/metal/dxil_shader.h"
+#include "xenia/gpu/metal/metal_argument_binder.h"
 #include "xenia/gpu/metal/metal_buffer_hazards.h"
-#include "xenia/gpu/metal/metal_dxil_binder.h"
 #include "xenia/gpu/metal/metal_primitive_processor.h"
 #include "xenia/gpu/metal/metal_render_target_cache.h"
+#include "xenia/gpu/metal/metal_shader.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
 #include "xenia/gpu/metal/metal_texture_cache.h"
 #include "xenia/gpu/metal/metal_zpd_visibility_pool.h"
@@ -124,10 +124,9 @@ class MetalCommandProcessor : public CommandProcessor,
   // they stay ahead of the encoder the caller creates next.
   void EndSharedComputeEncoder();
   void EndSharedComputeEncoder(MTL::CommandBuffer* command_buffer) {
-    if (command_buffer &&
-        (command_buffer == shared_compute_command_buffer_ ||
-         (shader_done_fences_outside_pass_ &&
-          command_buffer == current_command_buffer_))) {
+    if (command_buffer && (command_buffer == shared_compute_command_buffer_ ||
+                           (shader_done_fences_outside_pass_ &&
+                            command_buffer == current_command_buffer_))) {
       EndSharedComputeEncoder();
     }
   }
@@ -182,8 +181,7 @@ class MetalCommandProcessor : public CommandProcessor,
   MTL::CommandBuffer* CreateAccountedCommandBuffer(CommandBufferKind kind);
   // Commits a command buffer of its own whose results the CPU needs right
   // away, and waits for it, counting the wait as reason.
-  void CommitAndAwait(MTL::CommandBuffer* command_buffer,
-                      GpuWaitReason reason);
+  void CommitAndAwait(MTL::CommandBuffer* command_buffer, GpuWaitReason reason);
   // For one released without ever being committed - its completion handler
   // will never run, so the accounting has to be released by hand.
   void DiscardAccountedCommandBuffer(MTL::CommandBuffer* command_buffer,
@@ -361,8 +359,8 @@ class MetalCommandProcessor : public CommandProcessor,
                  IndexBufferInfo* index_buffer_info,
                  bool major_mode_explicit) override;
   // Guest draw path (spirv2air / MSC). Resources go through the argument
-  // buffer MetalDxilBinder builds instead of Metal slots.
-  bool IssueDrawDxil(
+  // buffer MetalArgumentBinder builds instead of Metal slots.
+  bool IssueDraw(
       Shader* vertex_shader, Shader* pixel_shader,
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
       bool primitive_polygonal, bool memexport_used, bool pure_memexport_draw,
@@ -426,7 +424,8 @@ class MetalCommandProcessor : public CommandProcessor,
   void NoteGpuWait(GpuWaitReason reason, int64_t wait_start_ns);
   void LogFrameGpuWaits();
   void AddGpuTimeHandler(MTL::CommandBuffer* command_buffer);
-  // Counts a command buffer that didn't complete, logging the first of each kind.
+  // Counts a command buffer that didn't complete, logging the first of each
+  // kind.
   void LogCommandBufferFailure(MTL::CommandBuffer* command_buffer,
                                MTL::CommandBufferStatus status);
   void WaitForPendingCompletionHandlers();
@@ -503,16 +502,6 @@ class MetalCommandProcessor : public CommandProcessor,
 
     ~SpirvArgumentBufferPage();
   };
-
-  // System constants population (mirrors D3D12 implementation)
-  void UpdateSystemConstantValues(bool shared_memory_is_uav,
-                                  bool primitive_polygonal,
-                                  uint32_t line_loop_closing_index,
-                                  xenos::Endian index_endian,
-                                  const draw_util::ViewportInfo& viewport_info,
-                                  uint32_t used_texture_mask,
-                                  reg::RB_DEPTHCONTROL normalized_depth_control,
-                                  uint32_t normalized_color_mask);
 
   void UpdateSpirvSystemConstantValues(
       const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
@@ -656,10 +645,10 @@ class MetalCommandProcessor : public CommandProcessor,
     };
     Entry* Find(MTL::Resource* resource) {
       const size_t mask = entries_.size() - 1;
-      size_t index =
-          size_t((uint64_t(uintptr_t(resource)) * UINT64_C(0x9E3779B97F4A7C15)) >>
-                 32) &
-          mask;
+      size_t index = size_t((uint64_t(uintptr_t(resource)) *
+                             UINT64_C(0x9E3779B97F4A7C15)) >>
+                            32) &
+                     mask;
       while (entries_[index].epoch == epoch_ &&
              entries_[index].resource != resource) {
         index = (index + 1) & mask;
@@ -721,7 +710,7 @@ class MetalCommandProcessor : public CommandProcessor,
   // Shader translation, pipeline compilation, and on-disk shader/pipeline
   // cache + archive.
   std::unique_ptr<MetalPipelineCache> pipeline_cache_;
-  MetalDxilBinder dxil_binder_;
+  MetalArgumentBinder argument_binder_;
   MTL::ComputePipelineState* tess_prep_pipeline_ = nullptr;
   std::vector<TessPrepDispatch> tess_prep_ahead_;
   uint32_t max_tessellation_factor_ = 64;
@@ -776,7 +765,7 @@ class MetalCommandProcessor : public CommandProcessor,
   // System constants versioning for constant upload dedupe.
   uint64_t msl_system_constants_version_ = 1;
   // Packed vertex/pixel floats, bool/loop, and fetch upload revisions.
-  std::array<uint64_t, 4> dxil_guest_constant_versions_{};
+  std::array<uint64_t, 4> guest_constant_versions_{};
   // D3D12-style SPIRV constant cache state.
   std::array<uint64_t, 4> msl_current_float_constant_map_vertex_{};
   std::array<uint64_t, 4> msl_current_float_constant_map_pixel_{};
@@ -878,9 +867,7 @@ class MetalCommandProcessor : public CommandProcessor,
   // GPU drains what it has already sent, leaving the GPU idle for about a
   // millisecond, so a frame split into a few command buffers keeps it busy.
   // On an iPad, splits at 32 and 48 passes still paused in the frames
-  // measured, and 40 paused in none of them. Only on the DXIL path: on the
-  // SPIRV-Cross path each command buffer holds a uniforms buffer from a small
-  // pool.
+  // measured, and 40 paused in none of them.
   static constexpr uint32_t kMaxRenderPassesPerCommandBuffer = 40;
   // Render passes ended in the current command buffer.
   uint32_t command_buffer_render_passes_ = 0;
@@ -954,7 +941,7 @@ class MetalCommandProcessor : public CommandProcessor,
   void EndSubmissionForMemexport() {
     EndCommandBuffer(CommandBufferKind::kSubmissionWait);
   }
-  // DXIL exports not yet separated from later GPU consumers by a pass boundary.
+  // Memexports not yet separated from later GPU consumers by a pass boundary.
   std::vector<draw_util::MemExportRange> render_encoder_memexport_ranges_;
   // Guest memory written by tile resolves kept in the open pass: another tile
   // may run its dispatch after any later draw of the pass, so a draw reading or
@@ -1013,8 +1000,9 @@ class MetalCommandProcessor : public CommandProcessor,
   void NoteMemexportRangesWritten();
 
   // Resolve read watch (command_processor_resolve_readwatch.inc), with
-  // zero-copy only. A zero-copy resolve writes guest RAM itself, so a CPU access of its output
-  // only has to wait for its submission to complete; nothing is copied.
+  // zero-copy only. A zero-copy resolve writes guest RAM itself, so a CPU
+  // access of its output only has to wait for its submission to complete;
+  // nothing is copied.
   bool EndResolveSubmission();
   uint64_t GetResolveSubmittedThrough() const {
     return resolve_submitted_through_.load(std::memory_order_acquire);
@@ -1125,9 +1113,10 @@ class MetalCommandProcessor : public CommandProcessor,
   // range, or 0.
   uint64_t UnfinishedGpuWriteSubmission(uint32_t address, uint32_t length);
   // Awaited export output under the resolve read watch: the ranges export
-  // draws of the open command buffer wrote, which FlushMemexportWatchRanges makes owners of
-  // their pages and arms before the command buffer is committed, or before
-  // the owners are looked up. Command processor thread only.
+  // draws of the open command buffer wrote, which FlushMemexportWatchRanges
+  // makes owners of their pages and arms before the command buffer is
+  // committed, or before the owners are looked up. Command processor thread
+  // only.
   std::vector<std::pair<uint32_t, uint32_t>> memexport_watch_pending_;
   void FlushMemexportWatchRanges();
   // Guest pages (4 KB) holding watched export output, for attributing faults

@@ -7,8 +7,8 @@
  ******************************************************************************
  */
 
-#ifndef XENIA_GPU_METAL_DXIL_SHADER_H_
-#define XENIA_GPU_METAL_DXIL_SHADER_H_
+#ifndef XENIA_GPU_METAL_METAL_SHADER_H_
+#define XENIA_GPU_METAL_METAL_SHADER_H_
 
 #include <atomic>
 #include <cstdint>
@@ -25,18 +25,18 @@ namespace metal {
 
 // Metal guest shader compiled directly from SPIR-V to Apple AIR by spirv2air.
 // Resources follow the bindless top-level argument buffer and descriptor heap
-// layout in spirv2air/docs/bindings.md (bound by MetalDxilBinder).
-class DxilShader : public SpirvShader {
+// layout in spirv2air/docs/bindings.md (bound by MetalArgumentBinder).
+class MetalShader : public SpirvShader {
  public:
-  DxilShader(xenos::ShaderType shader_type, uint64_t ucode_data_hash,
-             const uint32_t* ucode_dwords, size_t ucode_dword_count,
-             std::endian ucode_source_endian = std::endian::big);
+  MetalShader(xenos::ShaderType shader_type, uint64_t ucode_data_hash,
+              const uint32_t* ucode_dwords, size_t ucode_dword_count,
+              std::endian ucode_source_endian = std::endian::big);
 
-  class DxilTranslation : public SpirvTranslation {
+  class MetalTranslation : public SpirvTranslation {
    public:
-    DxilTranslation(DxilShader& shader, uint64_t modification)
+    MetalTranslation(MetalShader& shader, uint64_t modification)
         : SpirvTranslation(shader, modification) {}
-    ~DxilTranslation();
+    ~MetalTranslation();
 
     // Compiles the SPIR-V binary (already in translated_binary()) to a Metal
     // library with spirv2air and looks up its entry point.
@@ -66,7 +66,8 @@ class DxilShader : public SpirvShader {
     // Whether pipelines can be made of it: it has its function, or is one that
     // bakes only.
     bool is_ready() const { return metal_function_ != nullptr || bakes_only_; }
-    // used_buffer_mask of a function spirv2air compiles from translated_binary().
+    // used_buffer_mask of a function spirv2air compiles from
+    // translated_binary().
     uint32_t GetSpirv2airBufferMask() const;
     // The library CompileToAir would have made for a translation that bakes
     // only, for constant values spirv2air doesn't compile in (none are known).
@@ -123,4 +124,4 @@ class DxilShader : public SpirvShader {
 }  // namespace gpu
 }  // namespace xe
 
-#endif  // XENIA_GPU_METAL_DXIL_SHADER_H_
+#endif  // XENIA_GPU_METAL_METAL_SHADER_H_

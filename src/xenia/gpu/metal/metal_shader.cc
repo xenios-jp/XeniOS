@@ -7,7 +7,7 @@
  ******************************************************************************
  */
 
-#include "xenia/gpu/metal/dxil_shader.h"
+#include "xenia/gpu/metal/metal_shader.h"
 
 #include <cstddef>
 #include <cstring>
@@ -23,18 +23,19 @@ namespace xe {
 namespace gpu {
 namespace metal {
 
-DxilShader::DxilShader(xenos::ShaderType shader_type, uint64_t ucode_data_hash,
-                       const uint32_t* ucode_dwords, size_t ucode_dword_count,
-                       std::endian ucode_source_endian)
+MetalShader::MetalShader(xenos::ShaderType shader_type,
+                         uint64_t ucode_data_hash, const uint32_t* ucode_dwords,
+                         size_t ucode_dword_count,
+                         std::endian ucode_source_endian)
     : SpirvShader(shader_type, ucode_data_hash, ucode_dwords, ucode_dword_count,
                   ucode_source_endian) {}
 
-Shader::Translation* DxilShader::CreateTranslationInstance(
+Shader::Translation* MetalShader::CreateTranslationInstance(
     uint64_t modification) {
-  return new DxilTranslation(*this, modification);
+  return new MetalTranslation(*this, modification);
 }
 
-DxilShader::DxilTranslation::~DxilTranslation() {
+MetalShader::MetalTranslation::~MetalTranslation() {
   if (metal_function_) {
     metal_function_->release();
     metal_function_ = nullptr;
@@ -45,12 +46,12 @@ DxilShader::DxilTranslation::~DxilTranslation() {
   }
 }
 
-bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
+bool MetalShader::MetalTranslation::CompileToAirWithSpirv2air(
     std::vector<uint8_t>& metallib_out,
     std::string& entry_point_name_out) const {
   const std::vector<uint8_t>& spirv = translated_binary();
   if (spirv.empty() || (spirv.size() % sizeof(uint32_t)) != 0) {
-    XELOGE("DxilShader: shader {:016X} has no usable SPIR-V",
+    XELOGE("MetalShader: shader {:016X} has no usable SPIR-V",
            shader().ucode_data_hash());
     return false;
   }
@@ -72,7 +73,7 @@ bool DxilShader::DxilTranslation::CompileToAirWithSpirv2air(
     const uint64_t reject_index =
         spirv2air_reject_count.fetch_add(1, std::memory_order_relaxed) + 1;
     XELOGW(
-        "DxilShader: spirv2air rejected {} shader {:016X} modification "
+        "MetalShader: spirv2air rejected {} shader {:016X} modification "
         "{:016X} (reject #{}: {})",
         IsTessellationDomain()
             ? "domain"
@@ -116,7 +117,7 @@ static uint32_t Spirv2airBufferMask(const std::vector<uint8_t>& spirv) {
   return mask;
 }
 
-bool DxilShader::DxilTranslation::CompileWithFetchState(
+bool MetalShader::MetalTranslation::CompileWithFetchState(
     const uint32_t* states, uint32_t count, std::vector<uint8_t>& metallib_out,
     std::string& entry_point_name_out) const {
   const std::vector<uint8_t>& spirv = translated_binary();
@@ -134,8 +135,7 @@ bool DxilShader::DxilTranslation::CompileWithFetchState(
   }
   for (uint32_t i = 0; i < count; ++i) {
     options.graphics.functionConstantValues[i] = {
-        states[4 * i], states[4 * i + 1], states[4 * i + 2],
-        states[4 * i + 3]};
+        states[4 * i], states[4 * i + 1], states[4 * i + 2], states[4 * i + 3]};
   }
   spirv2air::Result result =
       spirv2air::translate(reinterpret_cast<const uint32_t*>(spirv.data()),
@@ -148,7 +148,7 @@ bool DxilShader::DxilTranslation::CompileWithFetchState(
   return true;
 }
 
-bool DxilShader::DxilTranslation::LoadMetallib(
+bool MetalShader::MetalTranslation::LoadMetallib(
     MTL::Device* device, const std::vector<uint8_t>& metallib,
     const std::string& entry_point_name, uint32_t used_buffer_mask) {
   if (metal_function_) {
@@ -179,18 +179,18 @@ bool DxilShader::DxilTranslation::LoadMetallib(
   return true;
 }
 
-void DxilShader::DxilTranslation::SetBakesOnly(uint32_t used_buffer_mask) {
+void MetalShader::MetalTranslation::SetBakesOnly(uint32_t used_buffer_mask) {
   used_buffer_mask_ = used_buffer_mask;
   // What CompileWithFetchState names the function of each of its libraries.
   entry_point_name_ = "main";
   bakes_only_ = true;
 }
 
-uint32_t DxilShader::DxilTranslation::GetSpirv2airBufferMask() const {
+uint32_t MetalShader::MetalTranslation::GetSpirv2airBufferMask() const {
   return Spirv2airBufferMask(translated_binary());
 }
 
-MTL::Library* DxilShader::DxilTranslation::NewGenericLibrary(
+MTL::Library* MetalShader::MetalTranslation::NewGenericLibrary(
     MTL::Device* device, std::string& entry_point_name_out) const {
   std::vector<uint8_t> metallib;
   std::string entry_point_name;
@@ -210,7 +210,7 @@ MTL::Library* DxilShader::DxilTranslation::NewGenericLibrary(
   return library;
 }
 
-bool DxilShader::DxilTranslation::CompileToAir(
+bool MetalShader::MetalTranslation::CompileToAir(
     MTL::Device* device, std::vector<uint8_t>* metallib_out) {
   if (metal_function_) {
     return true;
@@ -236,17 +236,18 @@ bool DxilShader::DxilTranslation::CompileToAir(
   dispatch_release(metallib_data);
   if (!metal_library_) {
     XELOGE(
-        "DxilShader: could not create the Metal library for shader {:016X}: {}",
+        "MetalShader: could not create the Metal library for shader {:016X}: "
+        "{}",
         shader().ucode_data_hash(),
         error ? error->localizedDescription()->utf8String() : "unknown");
     return false;
   }
 
-  NS::String* entry_point_name = NS::String::string(
-      entry_point_name_str.c_str(), NS::UTF8StringEncoding);
+  NS::String* entry_point_name =
+      NS::String::string(entry_point_name_str.c_str(), NS::UTF8StringEncoding);
   metal_function_ = metal_library_->newFunction(entry_point_name);
   if (!metal_function_) {
-    XELOGE("DxilShader: shader {:016X} has no '{}' function in its library",
+    XELOGE("MetalShader: shader {:016X} has no '{}' function in its library",
            shader().ucode_data_hash(), entry_point_name_str);
     metal_library_->release();
     metal_library_ = nullptr;
@@ -257,13 +258,14 @@ bool DxilShader::DxilTranslation::CompileToAir(
     *metallib_out = std::move(metallib);
   }
 
-  XELOGD("DxilShader: compiled {} shader {:016X} with spirv2air ({}B SPIR-V, "
-         "{}B AIR)",
-         IsTessellationDomain()
-             ? "domain"
-             : (shader().type() == xenos::ShaderType::kVertex ? "vertex"
-                                                              : "pixel"),
-         shader().ucode_data_hash(), spirv.size(), metallib_size);
+  XELOGD(
+      "MetalShader: compiled {} shader {:016X} with spirv2air ({}B SPIR-V, "
+      "{}B AIR)",
+      IsTessellationDomain()
+          ? "domain"
+          : (shader().type() == xenos::ShaderType::kVertex ? "vertex"
+                                                           : "pixel"),
+      shader().ucode_data_hash(), spirv.size(), metallib_size);
   return true;
 }
 

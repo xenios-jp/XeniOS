@@ -17,7 +17,7 @@ set(gpu "${SOURCE_DIR}/src/xenia/gpu")
 file(GLOB seeds
   "${gpu}/shader.cc" "${gpu}/shader_translator*.cc" "${gpu}/spirv_*.cc"
   "${gpu}/ucode.cc" "${gpu}/xenos.cc" "${gpu}/draw_util.cc"
-  "${gpu}/metal/dxil_shader.cc" "${gpu}/metal/metal_shader_library_cache.cc")
+  "${gpu}/metal/metal_shader.cc" "${gpu}/metal/metal_shader_library_cache.cc")
 set(pending ${seeds})
 set(files "")
 while(pending)
@@ -34,7 +34,7 @@ while(pending)
     # The code behind a translation header, not that of every header the
     # translator reads constants from (render targets, textures).
     get_filename_component(name "${path}" NAME_WE)
-    if(name MATCHES "^(shader|spirv_|ucode|xenos|draw_util|dxil_shader|metal_shader_)")
+    if(name MATCHES "^(shader|spirv_|ucode|xenos|draw_util|metal_shader_)")
       string(REGEX REPLACE "\\.h$" ".cc" source "${path}")
       list(APPEND pending "${source}")
     endif()
