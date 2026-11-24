@@ -46,9 +46,9 @@ class ScopedAutoreleasePool {
   NS::AutoreleasePool* pool_;
 };
 
-inline MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
+inline MTL::Library* CreateLibraryFromEmbeddedMetallib(
     MTL::Device* device, const void* metallib_data, size_t metallib_size,
-    const char* debug_name, const char* entry_point_name = "entry_xe") {
+    const char* debug_name) {
   if (!device || !metallib_data || !metallib_size) {
     return nullptr;
   }
@@ -63,7 +63,19 @@ inline MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
            error ? error->localizedDescription()->utf8String() : "unknown");
     return nullptr;
   }
+  return lib;
+}
 
+inline MTL::ComputePipelineState* CreateComputePipelineFromEmbeddedLibrary(
+    MTL::Device* device, const void* metallib_data, size_t metallib_size,
+    const char* debug_name, const char* entry_point_name = "entry_xe") {
+  MTL::Library* lib = CreateLibraryFromEmbeddedMetallib(
+      device, metallib_data, metallib_size, debug_name);
+  if (!lib) {
+    return nullptr;
+  }
+
+  NS::Error* error = nullptr;
   NS::String* entry_name =
       NS::String::string(entry_point_name, NS::UTF8StringEncoding);
   MTL::Function* fn = lib->newFunction(entry_name);

@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_METAL_METAL_RESOLVE_ENCODER_H_
 #define XENIA_GPU_METAL_METAL_RESOLVE_ENCODER_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -133,6 +134,16 @@ class MetalResolveEncoder {
     kCount,
   };
 
+  enum class DirectResolveKind : uint32_t {
+    kRgb10_4x,
+    kFull32_1x,
+    kRgb10f_1x,
+    kRgba16_1x,
+    kRgb10fRgba16_1x,
+    kRgb10fRgba16_Msaa,
+    kCount,
+  };
+
   MTL::RenderPipelineState* GetOrCreateTileResolvePipeline(
       MTL::RenderPassDescriptor* pass_descriptor, uint32_t color_index,
       TileResolveKernel kernel, uint32_t sample_count, uint32_t refresh_count);
@@ -141,54 +152,18 @@ class MetalResolveEncoder {
   MetalCommandProcessor& command_processor_;
   MTL::Device* device_ = nullptr;
 
-  // Resolve compute pipelines (Metal XeSL / Slang -> MSL metallib).
-  MTL::ComputePipelineState* resolve_full_8bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_16bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_rgb10_4x_direct_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_32bpp_rgb10_4x_direct_refresh_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_1x_direct_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_1x_direct_refresh_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_rgb10f_1x_direct_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_32bpp_rgb10f_1x_direct_refresh_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_64bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_64bpp_rgba16_1x_direct_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgba16_1x_direct_refresh_pipeline_ = nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_1x_direct_pipeline_ = nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_1x_direct_refresh_pipeline_ = nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_msaa_direct_pipeline_ = nullptr;
-  MTL::ComputePipelineState*
-      resolve_full_64bpp_rgb10f_rgba16_msaa_direct_refresh_pipeline_ = nullptr;
+  // Generic EDRAM resolve compute pipelines indexed by ResolveCopyShaderIndex.
+  std::array<MTL::ComputePipelineState*,
+             size_t(draw_util::ResolveCopyShaderIndex::kCount)>
+      resolve_pipelines_{};
+  std::array<MTL::ComputePipelineState*,
+             size_t(draw_util::ResolveCopyShaderIndex::kCount)>
+      resolve_scaled_pipelines_{};
+  // Direct render-target resolve pipelines: [kind * 2 + (refresh ? 1 : 0)].
+  std::array<MTL::ComputePipelineState*, size_t(DirectResolveKind::kCount) * 2>
+      direct_resolve_pipelines_{};
   // One per kResolveSpecializations entry, in its order.
   std::vector<MTL::ComputePipelineState*> resolve_specialized_pipelines_;
-  MTL::ComputePipelineState* resolve_full_128bpp_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_1x2xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_4xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_1x2xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_4xmsaa_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_8bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_16bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_32bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_64bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_full_128bpp_scaled_pipeline_ = nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_1x2xmsaa_scaled_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_fast_32bpp_4xmsaa_scaled_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_1x2xmsaa_scaled_pipeline_ =
-      nullptr;
-  MTL::ComputePipelineState* resolve_fast_64bpp_4xmsaa_scaled_pipeline_ =
-      nullptr;
 
   // Tile resolve library and pipelines (on-chip open-pass resolves).
   MTL::Library* tile_resolve_library_ = nullptr;
