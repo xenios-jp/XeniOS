@@ -32,21 +32,6 @@ DEFINE_bool(strip_merge, true,
             "full-height pass sequence when every strip is verified to draw "
             "the same thing (Metal only, see xenia/gpu/strip_merge.h).",
             "GPU");
-// TODO(xenios-jp): the clipped last strip is not byte-exact yet.
-DEFINE_bool(strip_merge_clipped_last_strip, true,
-            "Merge sessions whose last strip is clipped by the frame (545407F2: "
-            "720 rows as 256 + 256 + 208). Off: such sessions stop merging at "
-            "once and fail learning as before; on again takes effect when "
-            "their dormancy ends (256 sessions at most).",
-            "GPU");
-DEFINE_bool(strip_merge_first_strip_other_surface, true,
-            "Merge tiling sessions whose first strip alone draws through "
-            "another surface over the strip surface's tiles (D3D's clear of "
-            "the first tile through a 4x MSAA view: 4D5307D5, 4D530919). The "
-            "merged first band takes those tiles from that surface, the later "
-            "bands start from the carry, as the later strips start from what "
-            "the strip before left. false: such sessions stay unmerged.",
-            "GPU");
 DEFINE_bool(strip_merge_log, false,
             "Log every predicated tiling session strip merge sees.", "GPU");
 
@@ -273,8 +258,6 @@ void StripMerge::BeginSession(uint64_t bin_select) {
       candidate_.IsValid() &&
       candidate_.strip_bits[0] == strip_bits &&
       (!layout_.IsValid() || layout_ == candidate_) &&
-      (cvars::strip_merge_clipped_last_strip ||
-       !candidate_.last_band_clipped()) &&
       (carry_session_order_ == kNoCarry ||
        carry_session_order_ == session_order_);
   bool may_merge = mergeable && !cooldown_sessions_ &&
@@ -368,28 +351,14 @@ void StripMerge::EndSession() {
     first_strip_draws = layout_.first_strip_draws;
   } else if (!failed_ && strip_count_ >= 2) {
     FindFirstStripDraws(first_strip_draws);
-    // A draw only the first strip does on another surface rewrites the EDRAM
-    // under the strip surface's render targets for the first strip alone
-    // (4D530919 writes depth through a 640x360 4x MSAA surface over the
-    // 1280x720 color targets' tiles). The later strips start from what the
-    // strip before leaves, but the merged render targets take those tiles in
-    // every band from that surface (AppendStripMergeTransfers; its claim also
-    // consumes the carry). Whether a draw is on the strip surface is known
-    // once there is a candidate layout.
-    if (candidate_.IsValid()) {
-      const Strip& first = strips_[0];
-      for (uint32_t draw : first_strip_draws) {
-        if (cvars::strip_merge_first_strip_other_surface) {
-          break;
-        }
-        if (draw >= first.draw_window.size() ||
-            !(first.draw_window[draw] & kDrawWindowBanded)) {
-          Fail("a draw only the first strip does is on another surface");
-          failure_strip_ = 0;
-          break;
-        }
-      }
-    }
+    // A draw only the first strip does may be on another surface. It rewrites
+    // the EDRAM under the strip surface's render targets for the first strip
+    // alone (4D530919 writes depth through a 640x360 4x MSAA surface over the
+    // 1280x720 color targets' tiles; D3D's clear of the first tile through a
+    // 4x MSAA view: 4D5307D5). The later strips start from what the strip
+    // before leaves, but the merged render targets take those tiles in every
+    // band from that surface (AppendStripMergeTransfers; its claim also
+    // consumes the carry).
   }
   bool verified = !failed_ && CheckMasks() &&
                   DropFirstStripDraws(first_strip_draws) &&
@@ -1264,8 +1233,7 @@ bool StripMerge::CompareStrip(uint32_t index, const Layout& layout) {
     // as 256 + 256 + 208, the last quad 208 rows tall). The merged first
     // strip draws the first strip's quad, the same above the frame, and the
     // rows below it aren't the EDRAM.
-    if (cvars::strip_merge_clipped_last_strip && index + 1 == strip_count_ &&
-        MatchClippedQuad(a, b, layout)) {
+    if (index + 1 == strip_count_ && MatchClippedQuad(a, b, layout)) {
       continue;
     }
     failure_strip_ = index;
