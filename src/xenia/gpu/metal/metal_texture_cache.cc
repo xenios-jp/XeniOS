@@ -23,7 +23,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "third_party/stb/stb_image_write.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/autorelease_pool_mac.h"
 #include "xenia/base/bit_stream.h"
@@ -34,6 +33,7 @@
 #include "xenia/base/profiling.h"
 #include "xenia/gpu/metal/metal_command_processor.h"
 #include "xenia/gpu/metal/metal_shared_memory.h"
+#include "xenia/gpu/metal/metal_util.h"
 #include "xenia/gpu/shaders/bytecode/metal/texture_load_128bpb_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/texture_load_128bpb_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/texture_load_16bpb_cs.h"
@@ -193,23 +193,6 @@ struct MetalLoadConstants {
   uint32_t padding1[5];  // Pad to 64 bytes to match HLSL CB size.
 };
 static_assert(sizeof(MetalLoadConstants) == 64);
-
-class ScopedAutoreleasePool {
- public:
-  ScopedAutoreleasePool() : pool_(NS::AutoreleasePool::alloc()->init()) {}
-  ~ScopedAutoreleasePool() {
-    if (pool_) {
-      SCOPE_profile_cpu_i("gpu", "MetalTextureCache::AutoreleasePoolDrain");
-      pool_->release();
-    }
-  }
-
-  ScopedAutoreleasePool(const ScopedAutoreleasePool&) = delete;
-  ScopedAutoreleasePool& operator=(const ScopedAutoreleasePool&) = delete;
-
- private:
-  NS::AutoreleasePool* pool_;
-};
 
 uint32_t GetMaxMipmapLevelCount(const MTL::TextureDescriptor* descriptor) {
   uint32_t width = static_cast<uint32_t>(descriptor->width());
@@ -705,8 +688,8 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
           uint32_t x0 = current.offset_x, y0 = current.offset_y;
           uint32_t x1 = x0 + width, y1 = y0 + height;
           if (!(cover.active && cover.watch &&
-                ResolveRefreshCoverUnion(cover.x0, cover.y0, cover.x1,
-                                         cover.y1, x0, y0, x1, y1)) &&
+                ResolveRefreshCoverUnion(cover.x0, cover.y0, cover.x1, cover.y1,
+                                         x0, y0, x1, y1)) &&
               uint64_t(width) * height * 2 <
                   uint64_t(key.GetWidth()) * key.GetHeight()) {
             continue;
@@ -789,8 +772,7 @@ void MetalTextureCache::PrepareDirectResolveTextureRefresh(
               root ==
               GetRootTexture(target_out.destinations[j].write_texture.get());
         }
-        if (raw_shared &&
-            target_out.shared_count < target_out.shared.size()) {
+        if (raw_shared && target_out.shared_count < target_out.shared.size()) {
           target_out.shared[target_out.shared_count++] = std::move(candidate);
         }
         continue;
@@ -815,10 +797,9 @@ void MetalTextureCache::PublishDirectResolveTextureRefresh(
   for (uint32_t refreshed_index = 0;
        refreshed_index < target.count + target.shared_count;
        ++refreshed_index) {
-    const auto& refreshed =
-        refreshed_index < target.count
-            ? target.destinations[refreshed_index]
-            : target.shared[refreshed_index - target.count];
+    const auto& refreshed = refreshed_index < target.count
+                                ? target.destinations[refreshed_index]
+                                : target.shared[refreshed_index - target.count];
     auto* texture = static_cast<MetalTexture*>(refreshed.cache_texture);
     bool found = false;
     for (MetalTexture* current = resolve_refresh_first_; current;
@@ -956,11 +937,11 @@ MetalTextureCache::AcquireResolveRefreshStorage(MTL::Texture* write_view) {
       like->storageMode() != GetCacheTextureStorageMode()) {
     return nullptr;
   }
-  MTL::Texture* texture = CreateTexture2D(
-      uint32_t(like->width()), uint32_t(like->height()),
-      uint32_t(like->arrayLength()), like->pixelFormat(), like->swizzle(),
-      uint32_t(like->mipmapLevelCount()), true,
-      (like->usage() & MTL::TextureUsagePixelFormatView) != 0);
+  MTL::Texture* texture =
+      CreateTexture2D(uint32_t(like->width()), uint32_t(like->height()),
+                      uint32_t(like->arrayLength()), like->pixelFormat(),
+                      like->swizzle(), uint32_t(like->mipmapLevelCount()), true,
+                      (like->usage() & MTL::TextureUsagePixelFormatView) != 0);
   if (!texture) {
     return nullptr;
   }
@@ -1055,8 +1036,7 @@ void MetalTextureCache::MoveResolveAliasViews(MTL::Texture* old_root,
 }
 
 bool MetalTextureCache::SwapResolveRefreshStorage(
-    MTL::Texture* write_view,
-    std::unique_ptr<ResolveRefreshStorage>& storage) {
+    MTL::Texture* write_view, std::unique_ptr<ResolveRefreshStorage>& storage) {
   if (!write_view || !storage) {
     return false;
   }
@@ -1279,11 +1259,10 @@ bool MetalTextureCache::EncodeLoadCommands(MTL::CommandBuffer* cmd,
     if (blit) {
       for (const LoadCopy& copy : commands.copies) {
         if (copy.dest_texture) {
-          blit->copyFromBuffer(copy.source, copy.source_offset,
-                               copy.source_bytes_per_row,
-                               copy.source_bytes_per_image, copy.size,
-                               copy.dest_texture, copy.dest_slice,
-                               copy.dest_level, MTL::Origin::Make(0, 0, 0));
+          blit->copyFromBuffer(
+              copy.source, copy.source_offset, copy.source_bytes_per_row,
+              copy.source_bytes_per_image, copy.size, copy.dest_texture,
+              copy.dest_slice, copy.dest_level, MTL::Origin::Make(0, 0, 0));
         } else {
           blit->copyFromBuffer(copy.source, copy.source_offset,
                                copy.dest_buffer, copy.dest_offset,
@@ -1315,9 +1294,9 @@ bool MetalTextureCache::EncodeLoadCommands(MTL::CommandBuffer* cmd,
     texture->release();
   }
   if (encoded && !commands.done_flags.empty()) {
-    auto done_flags = std::make_shared<
-        std::vector<std::shared_ptr<std::atomic<bool>>>>(
-        std::move(commands.done_flags));
+    auto done_flags =
+        std::make_shared<std::vector<std::shared_ptr<std::atomic<bool>>>>(
+            std::move(commands.done_flags));
     cmd->addCompletedHandler(^(MTL::CommandBuffer*) {
       for (const std::shared_ptr<std::atomic<bool>>& done : *done_flags) {
         done->store(true, std::memory_order_release);
@@ -1613,8 +1592,7 @@ MTL::PixelFormat MetalTextureCache::GetPixelFormatForKey(TextureKey key) const {
       return decompress ? MTL::PixelFormatRG8Unorm
                         : MTL::PixelFormatBC5_RGUnorm;
     case xenos::TextureFormat::k_DXT5A:
-      return decompress ? MTL::PixelFormatR8Unorm
-                        : MTL::PixelFormatBC4_RUnorm;
+      return decompress ? MTL::PixelFormatR8Unorm : MTL::PixelFormatBC4_RUnorm;
     case xenos::TextureFormat::k_DXT3A:
       return MTL::PixelFormatR8Unorm;
     case xenos::TextureFormat::k_DXT3A_AS_1_1_1_1:
@@ -1971,11 +1949,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       uint8_t* snapshot = static_cast<uint8_t*>(constants_buffer->contents()) +
                           snapshot_offset[part];
       size_t slack_copy = size_t(std::min(
-          uint64_t(16),
-          uint64_t(SharedMemory::kBufferSize) -
-              std::min(uint64_t(SharedMemory::kBufferSize),
-                       uint64_t(part_guest_address[part]) +
-                           snapshot_length[part])));
+          uint64_t(16), uint64_t(SharedMemory::kBufferSize) -
+                            std::min(uint64_t(SharedMemory::kBufferSize),
+                                     uint64_t(part_guest_address[part]) +
+                                         snapshot_length[part])));
       std::memcpy(snapshot, guest_ram + part_guest_address[part],
                   snapshot_length[part] + slack_copy);
       std::memset(snapshot + snapshot_length[part] + slack_copy, 0,
@@ -2114,10 +2091,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   // together when the request ends. A load writing the texture directly, or
   // one into the separate command buffers, is encoded at once, after the
   // recorded ones, so loads stay in order, unless it goes ahead.
-  const bool defer_load = (use_current_command_buffer || use_upload_batch) &&
-                          upload_batch_depth_ &&
-                          (!use_direct_raw || load_ahead) &&
-                          !texture_resolution_scaled;
+  const bool defer_load =
+      (use_current_command_buffer || use_upload_batch) && upload_batch_depth_ &&
+      (!use_direct_raw || load_ahead) && !texture_resolution_scaled;
   LoadCommands commands;
   for (uint32_t part = 0; part < 2; ++part) {
     if ((part ? load_mips : load_base) &&
@@ -2132,11 +2108,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       }
       // A final 16-byte fetch may extend past the part.
       commands.shared_memory_reads.emplace_back(
-          part_guest_address[part],
-          xe::align(part ? texture.GetGuestMipsSize()
-                         : texture.GetGuestBaseSize(),
-                    UINT32_C(16)) +
-              16);
+          part_guest_address[part], xe::align(part ? texture.GetGuestMipsSize()
+                                                   : texture.GetGuestBaseSize(),
+                                              UINT32_C(16)) +
+                                        16);
     }
   }
 
@@ -2257,10 +2232,10 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       dispatch.constants = constants_buffer;
       dispatch.constants_offset = dispatch_index * constants_size;
       dispatch.dest = use_direct_raw ? nullptr : dest_buffer;
-      dispatch.dest_offset =
-          use_direct_raw ? 0
-                         : stored_level.dest_offset_bytes +
-                               slice * stored_level.slice_size_bytes;
+      dispatch.dest_offset = use_direct_raw
+                                 ? 0
+                                 : stored_level.dest_offset_bytes +
+                                       slice * stored_level.slice_size_bytes;
       dispatch.dest_texture = use_direct_raw ? direct_raw_view : nullptr;
       dispatch.source = source_buffer;
       dispatch.source_offset = source_buffer_offset;
@@ -2297,10 +2272,9 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
       deferred.dispatches.insert(deferred.dispatches.end(),
                                  commands.dispatches.begin(),
                                  commands.dispatches.end());
-      deferred.shared_memory_reads.insert(
-          deferred.shared_memory_reads.end(),
-          commands.shared_memory_reads.begin(),
-          commands.shared_memory_reads.end());
+      deferred.shared_memory_reads.insert(deferred.shared_memory_reads.end(),
+                                          commands.shared_memory_reads.begin(),
+                                          commands.shared_memory_reads.end());
       deferred.copies.insert(deferred.copies.end(), commands.copies.begin(),
                              commands.copies.end());
       deferred.buffers.insert(deferred.buffers.end(), commands.buffers.begin(),
@@ -2333,84 +2307,101 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
   }
 
   MTL::Texture* mtl_texture = metal_texture->metal_texture();
+  uint32_t bytes_per_host_block = load_shader_info.bytes_per_host_block;
+
+  // Computes the byte offset within dest_buffer for a given mip level & slice
+  // (accounting for packed mip offsets when level >= level_packed).
+  auto compute_slice_source_offset =
+      [&](const StoredLevelHostLayout& stored_layout, uint32_t level,
+          uint32_t slice, uint32_t packed_offset_blocks_x,
+          uint32_t packed_offset_blocks_y, uint32_t packed_offset_z,
+          size_t bytes_per_image) -> size_t {
+    size_t offset = stored_layout.dest_offset_bytes +
+                    slice * stored_layout.slice_size_bytes;
+    if (level >= level_packed) {
+      offset += packed_offset_z * bytes_per_image;
+      if (host_block_compressed) {
+        offset += (packed_offset_blocks_y * texture_resolution_scale_y) *
+                  stored_layout.row_pitch_bytes;
+        offset += (packed_offset_blocks_x * texture_resolution_scale_x) *
+                  bytes_per_block;
+      } else {
+        offset += (packed_offset_blocks_y * block_height *
+                   texture_resolution_scale_y) *
+                  stored_layout.row_pitch_bytes;
+        offset += (packed_offset_blocks_x * block_width *
+                   texture_resolution_scale_x) *
+                  bytes_per_host_block;
+      }
+    }
+    return offset;
+  };
+
+  uint8_t* dest_data = nullptr;
   if (use_blit_upload) {
     mtl_texture->retain();
     commands.textures.push_back(mtl_texture);
+  } else {
+    CommitLoadsAhead();
+    FlushDeferredLoads();
+    if (!EncodeLoadCommands(cmd, commands)) {
+      handle_upload_failure(true);
+      return false;
+    }
+    command_processor_->CommitAndAwait(
+        cmd, MetalCommandProcessor::GpuWaitReason::kTextureUpload);
 
-    uint32_t bytes_per_host_block = load_shader_info.bytes_per_host_block;
-    const uint32_t blit_alignment = 256;
+    dest_data = static_cast<uint8_t*>(dest_buffer->contents());
+    if (!dest_data) {
+      release_buffer_immediate(constants_buffer, constants_buffer_size);
+      release_buffer_immediate(dest_buffer, size_t(dest_buffer_size));
+      return false;
+    }
+  }
 
-    for (uint32_t level = level_first; level <= level_last; ++level) {
-      uint32_t stored_level = std::min(level, level_packed);
-      bool is_base_storage =
-          stored_level == 0 && (level_packed != 0 || level == 0);
-      const StoredLevelHostLayout* stored_layout =
-          find_stored_level(is_base_storage, stored_level);
-      if (!stored_layout) {
-        continue;
-      }
+  const uint32_t blit_alignment = 256;
+  for (uint32_t level = level_first; level <= level_last; ++level) {
+    uint32_t stored_level = std::min(level, level_packed);
+    bool is_base_storage =
+        stored_level == 0 && (level_packed != 0 || level == 0);
+    const StoredLevelHostLayout* stored_layout =
+        find_stored_level(is_base_storage, stored_level);
+    if (!stored_layout) {
+      continue;
+    }
 
-      uint32_t level_width_unscaled = std::max(width >> level, uint32_t(1));
-      uint32_t level_height_unscaled = std::max(height >> level, uint32_t(1));
-      uint32_t level_depth = std::max(depth >> level, uint32_t(1));
-      uint32_t level_width_scaled =
-          level_width_unscaled * texture_resolution_scale_x;
-      uint32_t level_height_scaled =
-          level_height_unscaled * texture_resolution_scale_y;
+    uint32_t level_width_scaled =
+        std::max(width >> level, uint32_t(1)) * texture_resolution_scale_x;
+    uint32_t level_height_scaled =
+        std::max(height >> level, uint32_t(1)) * texture_resolution_scale_y;
+    uint32_t level_depth = std::max(depth >> level, uint32_t(1));
 
-      const uint32_t upload_width_texels = level_width_scaled;
-      const uint32_t upload_height_texels = level_height_scaled;
+    uint32_t packed_offset_blocks_x = 0;
+    uint32_t packed_offset_blocks_y = 0;
+    uint32_t packed_offset_z = 0;
+    if (level >= level_packed) {
+      texture_util::GetPackedMipOffset(width, height, depth, key.format, level,
+                                       packed_offset_blocks_x,
+                                       packed_offset_blocks_y, packed_offset_z);
+    }
 
-      uint32_t packed_offset_blocks_x = 0;
-      uint32_t packed_offset_blocks_y = 0;
-      uint32_t packed_offset_z = 0;
-      if (level >= level_packed) {
-        texture_util::GetPackedMipOffset(
-            width, height, depth, key.format, level, packed_offset_blocks_x,
-            packed_offset_blocks_y, packed_offset_z);
-      }
+    size_t bytes_per_image =
+        size_t(stored_layout->row_pitch_bytes) * stored_layout->height_blocks;
 
+    if (use_blit_upload) {
       uint32_t upload_blocks_x =
-          xe::round_up(upload_width_texels, host_block_width) /
-          host_block_width;
-      uint32_t upload_blocks_y =
-          xe::round_up(upload_height_texels, host_block_height) /
+          xe::round_up(level_width_scaled, host_block_width) / host_block_width;
+      uint32_t upload_row_count =
+          xe::round_up(level_height_scaled, host_block_height) /
           host_block_height;
       uint32_t upload_row_bytes = upload_blocks_x * bytes_per_host_block;
-      uint32_t upload_row_count = upload_blocks_y;
       uint32_t blit_row_pitch = xe::align(upload_row_bytes, blit_alignment);
       size_t blit_bytes_per_image = size_t(blit_row_pitch) * upload_row_count;
-      size_t bytes_per_image =
-          size_t(stored_layout->row_pitch_bytes) * stored_layout->height_blocks;
 
       for (uint32_t slice = 0; slice < array_size; ++slice) {
-        size_t source_offset_bytes = stored_layout->dest_offset_bytes +
-                                     slice * stored_layout->slice_size_bytes;
-        if (level >= level_packed) {
-          if (host_block_compressed) {
-            uint32_t packed_offset_blocks_x_scaled =
-                packed_offset_blocks_x * texture_resolution_scale_x;
-            uint32_t packed_offset_blocks_y_scaled =
-                packed_offset_blocks_y * texture_resolution_scale_y;
-            source_offset_bytes += packed_offset_z * bytes_per_image;
-            source_offset_bytes +=
-                packed_offset_blocks_y_scaled * stored_layout->row_pitch_bytes;
-            source_offset_bytes +=
-                packed_offset_blocks_x_scaled * bytes_per_block;
-          } else {
-            uint32_t packed_offset_texels_x =
-                packed_offset_blocks_x * block_width;
-            uint32_t packed_offset_texels_y =
-                packed_offset_blocks_y * block_height;
-            packed_offset_texels_x *= texture_resolution_scale_x;
-            packed_offset_texels_y *= texture_resolution_scale_y;
-            source_offset_bytes += packed_offset_z * bytes_per_image;
-            source_offset_bytes +=
-                packed_offset_texels_y * stored_layout->row_pitch_bytes;
-            source_offset_bytes +=
-                packed_offset_texels_x * bytes_per_host_block;
-          }
-        }
+        size_t source_offset_bytes = compute_slice_source_offset(
+            *stored_layout, level, slice, packed_offset_blocks_x,
+            packed_offset_blocks_y, packed_offset_z, bytes_per_image);
 
         // A buffer-to-texture copy needs its source offset aligned only to
         // the texel or compressed block size, which packed mip offsets are
@@ -2455,7 +2446,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           copy.source_offset = 0;
           copy.source_bytes_per_row = blit_row_pitch;
           copy.source_bytes_per_image = blit_bytes_per_image;
-          copy.size = MTL::Size::Make(upload_width_texels, upload_height_texels,
+          copy.size = MTL::Size::Make(level_width_scaled, level_height_scaled,
                                       level_depth);
           copy.dest_texture = mtl_texture;
           copy.dest_slice = is_3d ? 0 : slice;
@@ -2467,7 +2458,7 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           copy.source_offset = source_offset_bytes;
           copy.source_bytes_per_row = stored_layout->row_pitch_bytes;
           copy.source_bytes_per_image = bytes_per_image;
-          copy.size = MTL::Size::Make(upload_width_texels, upload_height_texels,
+          copy.size = MTL::Size::Make(level_width_scaled, level_height_scaled,
                                       level_depth);
           copy.dest_texture = mtl_texture;
           copy.dest_slice = is_3d ? 0 : slice;
@@ -2475,104 +2466,22 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
           copy.dest_buffer = nullptr;
         }
       }
-    }
-
-    return finish_gpu_upload();
-  } else {
-    CommitLoadsAhead();
-    FlushDeferredLoads();
-    if (!EncodeLoadCommands(cmd, commands)) {
-      handle_upload_failure(true);
-      return false;
-    }
-    command_processor_->CommitAndAwait(
-        cmd, MetalCommandProcessor::GpuWaitReason::kTextureUpload);
-
-    uint8_t* dest_data = static_cast<uint8_t*>(dest_buffer->contents());
-    if (!dest_data) {
-      release_buffer_immediate(constants_buffer, constants_buffer_size);
-      release_buffer_immediate(dest_buffer, size_t(dest_buffer_size));
-      return false;
-    }
-
-    auto find_stored_level =
-        [&](bool is_base_storage,
-            uint32_t stored_level) -> const StoredLevelHostLayout* {
-      for (const StoredLevelHostLayout& layout : stored_levels) {
-        if (layout.is_base == is_base_storage && layout.level == stored_level) {
-          return &layout;
-        }
-      }
-      return nullptr;
-    };
-
-    uint32_t bytes_per_host_block = load_shader_info.bytes_per_host_block;
-
-    for (uint32_t level = level_first; level <= level_last; ++level) {
-      uint32_t stored_level = std::min(level, level_packed);
-      bool is_base_storage =
-          stored_level == 0 && (level_packed != 0 || level == 0);
-      const StoredLevelHostLayout* stored_layout =
-          find_stored_level(is_base_storage, stored_level);
-      if (!stored_layout) {
-        continue;
-      }
-
-      uint32_t level_width_unscaled = std::max(width >> level, uint32_t(1));
-      uint32_t level_height_unscaled = std::max(height >> level, uint32_t(1));
-      uint32_t level_depth = std::max(depth >> level, uint32_t(1));
-      uint32_t level_width_scaled =
-          level_width_unscaled * texture_resolution_scale_x;
-      uint32_t level_height_scaled =
-          level_height_unscaled * texture_resolution_scale_y;
-
-      uint32_t upload_width = level_width_scaled;
-      uint32_t upload_height = level_height_scaled;
-      if (host_block_compressed) {
-        upload_width = xe::round_up(upload_width, host_block_width);
-        upload_height = xe::round_up(upload_height, host_block_height);
-      }
-
-      uint32_t packed_offset_blocks_x = 0;
-      uint32_t packed_offset_blocks_y = 0;
-      uint32_t packed_offset_z = 0;
-      if (level >= level_packed) {
-        texture_util::GetPackedMipOffset(
-            width, height, depth, key.format, level, packed_offset_blocks_x,
-            packed_offset_blocks_y, packed_offset_z);
-      }
+    } else {
+      uint32_t upload_width =
+          host_block_compressed
+              ? xe::round_up(level_width_scaled, host_block_width)
+              : level_width_scaled;
+      uint32_t upload_height =
+          host_block_compressed
+              ? xe::round_up(level_height_scaled, host_block_height)
+              : level_height_scaled;
 
       for (uint32_t slice = 0; slice < array_size; ++slice) {
-        const uint8_t* slice_base = dest_data +
-                                    stored_layout->dest_offset_bytes +
-                                    slice * stored_layout->slice_size_bytes;
-
-        const uint8_t* source_ptr = slice_base;
-        size_t bytes_per_image = size_t(stored_layout->row_pitch_bytes) *
-                                 stored_layout->height_blocks;
-        if (level >= level_packed) {
-          if (host_block_compressed) {
-            uint32_t packed_offset_blocks_x_scaled =
-                packed_offset_blocks_x * texture_resolution_scale_x;
-            uint32_t packed_offset_blocks_y_scaled =
-                packed_offset_blocks_y * texture_resolution_scale_y;
-            source_ptr += packed_offset_z * bytes_per_image;
-            source_ptr +=
-                packed_offset_blocks_y_scaled * stored_layout->row_pitch_bytes;
-            source_ptr += packed_offset_blocks_x_scaled * bytes_per_block;
-          } else {
-            uint32_t packed_offset_texels_x =
-                packed_offset_blocks_x * block_width;
-            uint32_t packed_offset_texels_y =
-                packed_offset_blocks_y * block_height;
-            packed_offset_texels_x *= texture_resolution_scale_x;
-            packed_offset_texels_y *= texture_resolution_scale_y;
-            source_ptr += packed_offset_z * bytes_per_image;
-            source_ptr +=
-                packed_offset_texels_y * stored_layout->row_pitch_bytes;
-            source_ptr += packed_offset_texels_x * bytes_per_host_block;
-          }
-        }
+        const uint8_t* source_ptr =
+            dest_data + compute_slice_source_offset(
+                            *stored_layout, level, slice,
+                            packed_offset_blocks_x, packed_offset_blocks_y,
+                            packed_offset_z, bytes_per_image);
 
         if (dimension == xenos::DataDimension::k3D) {
           MTL::Region region = MTL::Region::Make3D(0, 0, 0, upload_width,
@@ -2590,95 +2499,12 @@ bool MetalTextureCache::TryGpuLoadTexture(Texture& texture, bool load_base,
     }
   }
 
-  if (!use_blit_upload) {
-    release_buffer_immediate(constants_buffer, constants_buffer_size);
-    release_buffer_immediate(dest_buffer, size_t(dest_buffer_size));
+  if (use_blit_upload) {
+    return finish_gpu_upload();
   }
-
+  release_buffer_immediate(constants_buffer, constants_buffer_size);
+  release_buffer_immediate(dest_buffer, size_t(dest_buffer_size));
   return true;
-}
-
-void MetalTextureCache::DumpTextureToFile(MTL::Texture* texture,
-                                          const std::string& filename,
-                                          uint32_t width, uint32_t height) {
-  if (!texture) {
-    XELOGE("DumpTextureToFile: null texture");
-    return;
-  }
-
-  MTL::Device* device = command_processor_->GetMetalDevice();
-  MTL::CommandQueue* queue = command_processor_->GetMetalCommandQueue();
-  if (!device || !queue) {
-    XELOGE("DumpTextureToFile: missing Metal device or command queue");
-    return;
-  }
-
-  // Calculate bytes per row (align for blit requirements).
-  size_t bytes_per_pixel = 4;  // Assuming RGBA8
-  size_t bytes_per_row_unaligned = width * bytes_per_pixel;
-  size_t bytes_per_row = xe::align(bytes_per_row_unaligned, size_t(256));
-  size_t buffer_size = bytes_per_row * height;
-
-  MTL::Buffer* readback =
-      device->newBuffer(buffer_size, MTL::ResourceStorageModeShared);
-  if (!readback) {
-    XELOGE("DumpTextureToFile: failed to allocate readback buffer");
-    return;
-  }
-
-  ScopedAutoreleasePool autorelease_pool;
-  MTL::CommandBuffer* cmd = command_processor_->CreateAccountedCommandBuffer(
-      MetalCommandProcessor::CommandBufferKind::kTextureOther);
-  if (!cmd) {
-    readback->release();
-    XELOGE("DumpTextureToFile: failed to create command buffer");
-    return;
-  }
-  command_processor_->EndSharedComputeEncoder(cmd);
-  MTL::BlitCommandEncoder* blit = cmd->blitCommandEncoder();
-  if (!blit) {
-    command_processor_->DiscardAccountedCommandBuffer(
-        cmd, MetalCommandProcessor::CommandBufferKind::kTextureOther);
-    readback->release();
-    XELOGE("DumpTextureToFile: failed to create blit encoder");
-    return;
-  }
-
-  blit->copyFromTexture(texture, 0, 0, MTL::Origin::Make(0, 0, 0),
-                        MTL::Size::Make(width, height, 1), readback, 0,
-                        bytes_per_row, 0);
-  blit->endEncoding();
-  command_processor_->CommitAndAwait(
-      cmd, MetalCommandProcessor::GpuWaitReason::kDump);
-
-  // Allocate buffer for packed texture data (tightly packed rows).
-  std::vector<uint8_t> data(bytes_per_row_unaligned * height);
-  const uint8_t* src = static_cast<const uint8_t*>(readback->contents());
-  if (!src) {
-    readback->release();
-    XELOGE("DumpTextureToFile: failed to map readback buffer");
-    return;
-  }
-  for (uint32_t y = 0; y < height; ++y) {
-    std::memcpy(data.data() + y * bytes_per_row_unaligned,
-                src + y * bytes_per_row, bytes_per_row_unaligned);
-  }
-
-  readback->release();
-
-  if (texture->pixelFormat() == MTL::PixelFormatBGRA8Unorm) {
-    // Convert BGRA to RGBA for stb_image_write
-    for (size_t i = 0; i < data.size(); i += 4) {
-      std::swap(data[i], data[i + 2]);
-    }
-  }
-
-  // Write PNG file
-  if (stbi_write_png(filename.c_str(), width, height, 4, data.data(),
-                     bytes_per_row)) {
-  } else {
-    XELOGE("Failed to write texture to: {}", filename);
-  }
 }
 
 bool MetalTextureCache::Initialize() {
@@ -2754,241 +2580,82 @@ bool MetalTextureCache::InitializeLoadPipelines() {
     return false;
   }
 
-  NS::Error* error = nullptr;
-
-  auto create_pipeline_from_metallib =
-      [&](const uint8_t* data, size_t size) -> MTL::ComputePipelineState* {
-    if (!data || !size) {
-      return nullptr;
-    }
-    dispatch_data_t dispatch_data = dispatch_data_create(
-        data, size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-    MTL::Library* lib = device->newLibrary(dispatch_data, &error);
-    dispatch_release(dispatch_data);
-    if (!lib) {
-      XELOGE("MetalTextureCache: failed to create texture_load library: {}",
-             error ? error->localizedDescription()->utf8String() : "unknown");
-      return nullptr;
-    }
-    NS::String* fn_name =
-        NS::String::string("entry_xe", NS::UTF8StringEncoding);
-    MTL::Function* fn = lib->newFunction(fn_name);
-    if (!fn) {
-      XELOGE(
-          "MetalTextureCache: texture_load metallib missing entry_xe "
-          "function");
-      lib->release();
-      return nullptr;
-    }
-    MTL::ComputePipelineState* pipeline =
-        device->newComputePipelineState(fn, &error);
-    fn->release();
-    lib->release();
-    if (!pipeline) {
-      XELOGE("MetalTextureCache: failed to create texture_load pipeline: {}",
-             error ? error->localizedDescription()->utf8String() : "unknown");
-      return nullptr;
-    }
-    return pipeline;
+  struct LoadPipelineEntry {
+    TextureCache::LoadShaderIndex index;
+    const uint8_t* data;
+    size_t size;
+    const uint8_t* scaled_data;
+    size_t scaled_size;
   };
+#define XE_TEX_LOAD_PAIR(idx, base)                      \
+  {TextureCache::idx, texture_load_##base##_cs_metallib, \
+   sizeof(texture_load_##base##_cs_metallib),            \
+   texture_load_##base##_scaled_cs_metallib,             \
+   sizeof(texture_load_##base##_scaled_cs_metallib)}
+#define XE_TEX_LOAD_ONLY(idx, base)                      \
+  {TextureCache::idx, texture_load_##base##_cs_metallib, \
+   sizeof(texture_load_##base##_cs_metallib), nullptr, 0}
 
-  auto init_pipeline = [&](TextureCache::LoadShaderIndex index,
-                           const uint8_t* data, size_t size) -> void {
-    load_pipelines_[index] = create_pipeline_from_metallib(data, size);
+  static const LoadPipelineEntry kLoadPipelines[] = {
+      XE_TEX_LOAD_PAIR(kLoadShaderIndex8bpb, 8bpb),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndex16bpb, 16bpb),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndex32bpb, 32bpb),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndex64bpb, 64bpb),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndex128bpb, 128bpb),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR5G5B5A1ToB5G5R5A1, r5g5b5a1_b5g5r5a1),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR5G6B5ToB5G6R5, r5g6b5_b5g6r5),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR5G5B6ToB5G6R5WithRBGASwizzle,
+                       r5g5b6_b5g6r5_swizzle_rbga),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR10G11B11ToRGBA16, r10g11b11_rgba16),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR10G11B11ToRGBA16SNorm,
+                       r10g11b11_rgba16_snorm),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR11G11B10ToRGBA16, r11g11b10_rgba16),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR11G11B10ToRGBA16SNorm,
+                       r11g11b10_rgba16_snorm),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR16UNormToFloat, r16_unorm_float),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexR16SNormToFloat, r16_snorm_float),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexRG16UNormToFloat, rg16_unorm_float),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexRG16SNormToFloat, rg16_snorm_float),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexRGBA16UNormToFloat, rgba16_unorm_float),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexRGBA16SNormToFloat, rgba16_snorm_float),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexRGBA4ToARGB4, r4g4b4a4_a4r4g4b4),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexGBGR8ToGRGB8, gbgr8_grgb8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexGBGR8ToRGB8, gbgr8_rgb8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexBGRG8ToRGBG8, bgrg8_rgbg8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexBGRG8ToRGB8, bgrg8_rgb8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXT1ToRGBA8, dxt1_rgba8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXT3A, dxt3a),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXT3AAs1111ToARGB4, dxt3aas1111_argb4),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXT3ToRGBA8, dxt3_rgba8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXT5ToRGBA8, dxt5_rgba8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXT5AToR8, dxt5a_r8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexDXNToRG8, dxn_rg8),
+      XE_TEX_LOAD_ONLY(kLoadShaderIndexCTX1, ctx1),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexDepthUnorm, depth_unorm),
+      XE_TEX_LOAD_PAIR(kLoadShaderIndexDepthFloat, depth_float),
   };
-  auto init_pipeline_scaled = [&](TextureCache::LoadShaderIndex index,
-                                  const uint8_t* data, size_t size) -> void {
-    load_pipelines_scaled_[index] = create_pipeline_from_metallib(data, size);
-  };
+#undef XE_TEX_LOAD_PAIR
+#undef XE_TEX_LOAD_ONLY
 
-  init_pipeline(TextureCache::kLoadShaderIndex8bpb,
-                texture_load_8bpb_cs_metallib,
-                sizeof(texture_load_8bpb_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndex8bpb,
-                       texture_load_8bpb_scaled_cs_metallib,
-                       sizeof(texture_load_8bpb_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndex16bpb,
-                texture_load_16bpb_cs_metallib,
-                sizeof(texture_load_16bpb_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndex16bpb,
-                       texture_load_16bpb_scaled_cs_metallib,
-                       sizeof(texture_load_16bpb_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndex32bpb,
-                texture_load_32bpb_cs_metallib,
-                sizeof(texture_load_32bpb_cs_metallib));
-  // The raw 32-bit loader writes the guest words, which are the texels of each
-  // host format in kDirectRawLoadFormats.
-  load_direct_raw32_pipeline_ = create_pipeline_from_metallib(
-      texture_load_rgb10_direct_cs_metallib,
-      sizeof(texture_load_rgb10_direct_cs_metallib));
-  load_direct_raw64_pipeline_ = create_pipeline_from_metallib(
-      texture_load_f16_direct_cs_metallib,
-      sizeof(texture_load_f16_direct_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndex32bpb,
-                       texture_load_32bpb_scaled_cs_metallib,
-                       sizeof(texture_load_32bpb_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndex64bpb,
-                texture_load_64bpb_cs_metallib,
-                sizeof(texture_load_64bpb_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndex64bpb,
-                       texture_load_64bpb_scaled_cs_metallib,
-                       sizeof(texture_load_64bpb_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndex128bpb,
-                texture_load_128bpb_cs_metallib,
-                sizeof(texture_load_128bpb_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndex128bpb,
-                       texture_load_128bpb_scaled_cs_metallib,
-                       sizeof(texture_load_128bpb_scaled_cs_metallib));
+  for (const LoadPipelineEntry& entry : kLoadPipelines) {
+    load_pipelines_[entry.index] = CreateComputePipelineFromEmbeddedLibrary(
+        device, entry.data, entry.size, "texture_load");
+    if (entry.scaled_data) {
+      load_pipelines_scaled_[entry.index] =
+          CreateComputePipelineFromEmbeddedLibrary(device, entry.scaled_data,
+                                                   entry.scaled_size,
+                                                   "texture_load_scaled");
+    }
+  }
 
-  init_pipeline(TextureCache::kLoadShaderIndexR5G5B5A1ToB5G5R5A1,
-                texture_load_r5g5b5a1_b5g5r5a1_cs_metallib,
-                sizeof(texture_load_r5g5b5a1_b5g5r5a1_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexR5G5B5A1ToB5G5R5A1,
-      texture_load_r5g5b5a1_b5g5r5a1_scaled_cs_metallib,
-      sizeof(texture_load_r5g5b5a1_b5g5r5a1_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexR5G6B5ToB5G6R5,
-                texture_load_r5g6b5_b5g6r5_cs_metallib,
-                sizeof(texture_load_r5g6b5_b5g6r5_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndexR5G6B5ToB5G6R5,
-                       texture_load_r5g6b5_b5g6r5_scaled_cs_metallib,
-                       sizeof(texture_load_r5g6b5_b5g6r5_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexR5G5B6ToB5G6R5WithRBGASwizzle,
-                texture_load_r5g5b6_b5g6r5_swizzle_rbga_cs_metallib,
-                sizeof(texture_load_r5g5b6_b5g6r5_swizzle_rbga_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexR5G5B6ToB5G6R5WithRBGASwizzle,
-      texture_load_r5g5b6_b5g6r5_swizzle_rbga_scaled_cs_metallib,
-      sizeof(texture_load_r5g5b6_b5g6r5_swizzle_rbga_scaled_cs_metallib));
-
-  init_pipeline(TextureCache::kLoadShaderIndexR10G11B11ToRGBA16,
-                texture_load_r10g11b11_rgba16_cs_metallib,
-                sizeof(texture_load_r10g11b11_rgba16_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexR10G11B11ToRGBA16,
-      texture_load_r10g11b11_rgba16_scaled_cs_metallib,
-      sizeof(texture_load_r10g11b11_rgba16_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexR10G11B11ToRGBA16SNorm,
-                texture_load_r10g11b11_rgba16_snorm_cs_metallib,
-                sizeof(texture_load_r10g11b11_rgba16_snorm_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexR10G11B11ToRGBA16SNorm,
-      texture_load_r10g11b11_rgba16_snorm_scaled_cs_metallib,
-      sizeof(texture_load_r10g11b11_rgba16_snorm_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexR11G11B10ToRGBA16,
-                texture_load_r11g11b10_rgba16_cs_metallib,
-                sizeof(texture_load_r11g11b10_rgba16_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexR11G11B10ToRGBA16,
-      texture_load_r11g11b10_rgba16_scaled_cs_metallib,
-      sizeof(texture_load_r11g11b10_rgba16_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexR11G11B10ToRGBA16SNorm,
-                texture_load_r11g11b10_rgba16_snorm_cs_metallib,
-                sizeof(texture_load_r11g11b10_rgba16_snorm_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexR11G11B10ToRGBA16SNorm,
-      texture_load_r11g11b10_rgba16_snorm_scaled_cs_metallib,
-      sizeof(texture_load_r11g11b10_rgba16_snorm_scaled_cs_metallib));
-
-  init_pipeline(TextureCache::kLoadShaderIndexR16UNormToFloat,
-                texture_load_r16_unorm_float_cs_metallib,
-                sizeof(texture_load_r16_unorm_float_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndexR16UNormToFloat,
-                       texture_load_r16_unorm_float_scaled_cs_metallib,
-                       sizeof(texture_load_r16_unorm_float_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexR16SNormToFloat,
-                texture_load_r16_snorm_float_cs_metallib,
-                sizeof(texture_load_r16_snorm_float_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndexR16SNormToFloat,
-                       texture_load_r16_snorm_float_scaled_cs_metallib,
-                       sizeof(texture_load_r16_snorm_float_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexRG16UNormToFloat,
-                texture_load_rg16_unorm_float_cs_metallib,
-                sizeof(texture_load_rg16_unorm_float_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexRG16UNormToFloat,
-      texture_load_rg16_unorm_float_scaled_cs_metallib,
-      sizeof(texture_load_rg16_unorm_float_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexRG16SNormToFloat,
-                texture_load_rg16_snorm_float_cs_metallib,
-                sizeof(texture_load_rg16_snorm_float_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexRG16SNormToFloat,
-      texture_load_rg16_snorm_float_scaled_cs_metallib,
-      sizeof(texture_load_rg16_snorm_float_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexRGBA16UNormToFloat,
-                texture_load_rgba16_unorm_float_cs_metallib,
-                sizeof(texture_load_rgba16_unorm_float_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexRGBA16UNormToFloat,
-      texture_load_rgba16_unorm_float_scaled_cs_metallib,
-      sizeof(texture_load_rgba16_unorm_float_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexRGBA16SNormToFloat,
-                texture_load_rgba16_snorm_float_cs_metallib,
-                sizeof(texture_load_rgba16_snorm_float_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexRGBA16SNormToFloat,
-      texture_load_rgba16_snorm_float_scaled_cs_metallib,
-      sizeof(texture_load_rgba16_snorm_float_scaled_cs_metallib));
-
-  init_pipeline(TextureCache::kLoadShaderIndexRGBA4ToARGB4,
-                texture_load_r4g4b4a4_a4r4g4b4_cs_metallib,
-                sizeof(texture_load_r4g4b4a4_a4r4g4b4_cs_metallib));
-  init_pipeline_scaled(
-      TextureCache::kLoadShaderIndexRGBA4ToARGB4,
-      texture_load_r4g4b4a4_a4r4g4b4_scaled_cs_metallib,
-      sizeof(texture_load_r4g4b4a4_a4r4g4b4_scaled_cs_metallib));
-
-  init_pipeline(TextureCache::kLoadShaderIndexGBGR8ToGRGB8,
-                texture_load_gbgr8_grgb8_cs_metallib,
-                sizeof(texture_load_gbgr8_grgb8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexGBGR8ToRGB8,
-                texture_load_gbgr8_rgb8_cs_metallib,
-                sizeof(texture_load_gbgr8_rgb8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexBGRG8ToRGBG8,
-                texture_load_bgrg8_rgbg8_cs_metallib,
-                sizeof(texture_load_bgrg8_rgbg8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexBGRG8ToRGB8,
-                texture_load_bgrg8_rgb8_cs_metallib,
-                sizeof(texture_load_bgrg8_rgb8_cs_metallib));
-
-  init_pipeline(TextureCache::kLoadShaderIndexDXT1ToRGBA8,
-                texture_load_dxt1_rgba8_cs_metallib,
-                sizeof(texture_load_dxt1_rgba8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDXT3A,
-                texture_load_dxt3a_cs_metallib,
-                sizeof(texture_load_dxt3a_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDXT3AAs1111ToARGB4,
-                texture_load_dxt3aas1111_argb4_cs_metallib,
-                sizeof(texture_load_dxt3aas1111_argb4_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDXT3ToRGBA8,
-                texture_load_dxt3_rgba8_cs_metallib,
-                sizeof(texture_load_dxt3_rgba8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDXT5ToRGBA8,
-                texture_load_dxt5_rgba8_cs_metallib,
-                sizeof(texture_load_dxt5_rgba8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDXT5AToR8,
-                texture_load_dxt5a_r8_cs_metallib,
-                sizeof(texture_load_dxt5a_r8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDXNToRG8,
-                texture_load_dxn_rg8_cs_metallib,
-                sizeof(texture_load_dxn_rg8_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexCTX1,
-                texture_load_ctx1_cs_metallib,
-                sizeof(texture_load_ctx1_cs_metallib));
-
-  init_pipeline(TextureCache::kLoadShaderIndexDepthUnorm,
-                texture_load_depth_unorm_cs_metallib,
-                sizeof(texture_load_depth_unorm_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndexDepthUnorm,
-                       texture_load_depth_unorm_scaled_cs_metallib,
-                       sizeof(texture_load_depth_unorm_scaled_cs_metallib));
-  init_pipeline(TextureCache::kLoadShaderIndexDepthFloat,
-                texture_load_depth_float_cs_metallib,
-                sizeof(texture_load_depth_float_cs_metallib));
-  init_pipeline_scaled(TextureCache::kLoadShaderIndexDepthFloat,
-                       texture_load_depth_float_scaled_cs_metallib,
-                       sizeof(texture_load_depth_float_scaled_cs_metallib));
+  // The raw 32-bit/64-bit loaders write the guest words, which are the texels
+  // of each host format in kDirectRawLoadFormats.
+  load_direct_raw32_pipeline_ = CreateComputePipelineFromEmbeddedLibrary(
+      device, texture_load_rgb10_direct_cs_metallib,
+      sizeof(texture_load_rgb10_direct_cs_metallib), "texture_load_raw32");
+  load_direct_raw64_pipeline_ = CreateComputePipelineFromEmbeddedLibrary(
+      device, texture_load_f16_direct_cs_metallib,
+      sizeof(texture_load_f16_direct_cs_metallib), "texture_load_raw64");
 
   // Require at least the common loaders.
   return load_pipelines_[TextureCache::kLoadShaderIndex32bpb] != nullptr &&
@@ -3145,22 +2812,6 @@ void MetalTextureCache::ClearCache() {
   XELOGD("Metal texture cache: Cache cleared");
 }
 
-// Legacy method - kept for compatibility but now uses base class texture
-// management
-bool MetalTextureCache::UploadTexture2D(const TextureInfo& texture_info) {
-  XELOGD("UploadTexture2D: Legacy method called - delegating to base class");
-  // The base class RequestTextures will handle texture creation and loading
-  return true;
-}
-
-// Legacy method - kept for compatibility but now uses base class texture
-// management
-bool MetalTextureCache::UploadTextureCube(const TextureInfo& texture_info) {
-  XELOGD("UploadTextureCube: Legacy method called - delegating to base class");
-  // The base class RequestTextures will handle texture creation and loading
-  return true;
-}
-
 MTL::PixelFormat MetalTextureCache::ConvertXenosFormat(
     xenos::TextureFormat format, xenos::Endian endian) {
   // Convert Xbox 360 texture formats to Metal pixel formats
@@ -3210,10 +2861,11 @@ MTL::PixelFormat MetalTextureCache::ConvertXenosFormat(
   }
 }
 
-MTL::Texture* MetalTextureCache::CreateTexture2D(
-    uint32_t width, uint32_t height, uint32_t array_length,
-    MTL::PixelFormat format, MTL::TextureSwizzleChannels swizzle,
-    uint32_t mip_levels, bool shader_write, bool pixel_format_view) {
+MTL::Texture* MetalTextureCache::CreateCacheTexture(
+    MTL::TextureType type, uint32_t width, uint32_t height, uint32_t depth,
+    uint32_t array_length, MTL::PixelFormat format,
+    MTL::TextureSwizzleChannels swizzle, uint32_t mip_levels,
+    MTL::TextureUsage usage, const char* debug_label) {
   MTL::Device* device = command_processor_->GetMetalDevice();
   if (!device) {
     XELOGE(
@@ -3222,27 +2874,14 @@ MTL::Texture* MetalTextureCache::CreateTexture2D(
     return nullptr;
   }
 
-  // Always create 2D array textures (even with a single layer) so that the
-  // Metal texture type matches the shader expectation of texture2d_array,
-  // mirroring the D3D12 backend which uses TEXTURE2DARRAY SRVs for 1D/2D
-  // textures.
-  array_length = std::max(array_length, 1u);
-
   MTL::TextureDescriptor* descriptor = MTL::TextureDescriptor::alloc()->init();
-  descriptor->setTextureType(MTL::TextureType2DArray);
+  descriptor->setTextureType(type);
   descriptor->setPixelFormat(format);
   descriptor->setWidth(width);
   descriptor->setHeight(std::max(height, 1u));
-  descriptor->setDepth(1);
-  descriptor->setArrayLength(array_length);
+  descriptor->setDepth(std::max(depth, 1u));
+  descriptor->setArrayLength(std::max(array_length, 1u));
   descriptor->setMipmapLevelCount(mip_levels);
-  MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
-  if (pixel_format_view || shader_write) {
-    usage |= MTL::TextureUsagePixelFormatView;
-  }
-  if (shader_write) {
-    usage |= MTL::TextureUsageShaderWrite;
-  }
   descriptor->setUsage(usage);
   descriptor->setStorageMode(GetCacheTextureStorageMode());
   descriptor->setSwizzle(swizzle);
@@ -3260,233 +2899,112 @@ MTL::Texture* MetalTextureCache::CreateTexture2D(
   if (!texture) {
     texture = device->newTexture(descriptor);
   }
-
   descriptor->release();
 
   if (!texture) {
-    XELOGE(
-        "Metal texture cache: Failed to create 2D array texture {}x{} (layers "
-        "{})",
-        width, height, array_length);
-    return nullptr;
+    XELOGE("Metal texture cache: Failed to create {} texture {}x{}x{} (arr {})",
+           debug_label, width, height, depth, array_length);
   }
-
   return texture;
+}
+
+MTL::Texture* MetalTextureCache::CreateTexture2D(
+    uint32_t width, uint32_t height, uint32_t array_length,
+    MTL::PixelFormat format, MTL::TextureSwizzleChannels swizzle,
+    uint32_t mip_levels, bool shader_write, bool pixel_format_view) {
+  // Always create 2D array textures (even with a single layer) so that the
+  // Metal texture type matches the shader expectation of texture2d_array,
+  // mirroring the D3D12 backend which uses TEXTURE2DARRAY SRVs for 1D/2D
+  // textures.
+  MTL::TextureUsage usage = MTL::TextureUsageShaderRead;
+  if (pixel_format_view || shader_write) {
+    usage |= MTL::TextureUsagePixelFormatView;
+  }
+  if (shader_write) {
+    usage |= MTL::TextureUsageShaderWrite;
+  }
+  return CreateCacheTexture(MTL::TextureType2DArray, width, height, 1,
+                            std::max(array_length, 1u), format, swizzle,
+                            mip_levels, usage, "2D array");
 }
 
 MTL::Texture* MetalTextureCache::CreateTexture3D(
     uint32_t width, uint32_t height, uint32_t depth, MTL::PixelFormat format,
     MTL::TextureSwizzleChannels swizzle, uint32_t mip_levels) {
-  MTL::Device* device = command_processor_->GetMetalDevice();
-  if (!device) {
-    XELOGE(
-        "Metal texture cache: Failed to get Metal device from command "
-        "processor");
-    return nullptr;
-  }
-
-  depth = std::max(depth, 1u);
-
-  MTL::TextureDescriptor* descriptor = MTL::TextureDescriptor::alloc()->init();
-  descriptor->setTextureType(MTL::TextureType3D);
-  descriptor->setPixelFormat(format);
-  descriptor->setWidth(width);
-  descriptor->setHeight(std::max(height, 1u));
-  descriptor->setDepth(depth);
-  descriptor->setArrayLength(1);
-  descriptor->setMipmapLevelCount(mip_levels);
-  descriptor->setUsage(MTL::TextureUsageShaderRead |
-                       MTL::TextureUsagePixelFormatView);
-  descriptor->setStorageMode(GetCacheTextureStorageMode());
-  descriptor->setSwizzle(swizzle);
-
-  if (!ValidateTextureDescriptorBeforeCreation(descriptor)) {
-    descriptor->release();
-    return nullptr;
-  }
-
-  MTL::Texture* texture = nullptr;
-  if (texture_heap_pool_ &&
-      descriptor->storageMode() == MTL::StorageModePrivate) {
-    texture = texture_heap_pool_->CreateTexture(descriptor);
-  }
-  if (!texture) {
-    texture = device->newTexture(descriptor);
-  }
-
-  descriptor->release();
-
-  if (!texture) {
-    XELOGE("Metal texture cache: Failed to create 3D texture {}x{}x{}", width,
-           height, depth);
-    return nullptr;
-  }
-
-  return texture;
+  return CreateCacheTexture(
+      MTL::TextureType3D, width, height, std::max(depth, 1u), 1, format,
+      swizzle, mip_levels,
+      MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView, "3D");
 }
 
 MTL::Texture* MetalTextureCache::CreateTextureCube(
     uint32_t width, MTL::PixelFormat format,
     MTL::TextureSwizzleChannels swizzle, uint32_t mip_levels,
     uint32_t cube_count) {
+  // Use cube for single-cube textures to match non-array cube bindings in the
+  // translated shaders, and cube-array only when multiple cubes are present.
+  return CreateCacheTexture(
+      cube_count > 1 ? MTL::TextureTypeCubeArray : MTL::TextureTypeCube, width,
+      width, 1, std::max(cube_count, 1u), format, swizzle, mip_levels,
+      MTL::TextureUsageShaderRead | MTL::TextureUsagePixelFormatView, "Cube");
+}
+
+MTL::Texture* MetalTextureCache::CreateNullTexture(MTL::TextureType type,
+                                                   const char* debug_label) {
+  SCOPE_profile_cpu_f("gpu");
   MTL::Device* device = command_processor_->GetMetalDevice();
   if (!device) {
     XELOGE(
-        "Metal texture cache: Failed to get Metal device from command "
-        "processor");
+        "Metal texture cache: Failed to get Metal device for null {} texture",
+        debug_label);
     return nullptr;
   }
 
   MTL::TextureDescriptor* descriptor = MTL::TextureDescriptor::alloc()->init();
-  // Use cube for single-cube textures to match non-array cube bindings in the
-  // translated MSL, and cube-array only when multiple cubes are present.
-  descriptor->setTextureType(cube_count > 1 ? MTL::TextureTypeCubeArray
-                                            : MTL::TextureTypeCube);
-  descriptor->setArrayLength(std::max(cube_count, 1u));
-  descriptor->setPixelFormat(format);
-  descriptor->setWidth(width);
-  descriptor->setHeight(width);
+  descriptor->setTextureType(type);
+  descriptor->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
+  descriptor->setWidth(1);
+  descriptor->setHeight(1);
   descriptor->setDepth(1);
-  descriptor->setMipmapLevelCount(mip_levels);
+  descriptor->setArrayLength(1);
   descriptor->setUsage(MTL::TextureUsageShaderRead |
                        MTL::TextureUsagePixelFormatView);
-  descriptor->setStorageMode(GetCacheTextureStorageMode());
-  descriptor->setSwizzle(swizzle);
+  descriptor->setStorageMode(MTL::StorageModeShared);
 
-  if (!ValidateTextureDescriptorBeforeCreation(descriptor)) {
-    descriptor->release();
-    return nullptr;
-  }
-
-  MTL::Texture* texture = nullptr;
-  if (texture_heap_pool_ &&
-      descriptor->storageMode() == MTL::StorageModePrivate) {
-    texture = texture_heap_pool_->CreateTexture(descriptor);
-  }
-  if (!texture) {
-    texture = device->newTexture(descriptor);
-  }
-
+  MTL::Texture* texture = device->newTexture(descriptor);
   descriptor->release();
 
   if (!texture) {
-    XELOGE("Metal texture cache: Failed to create Cube texture {}x{}", width,
-           width);
+    XELOGE("Failed to create null {} texture", debug_label);
     return nullptr;
   }
 
-  return texture;
-}
-
-MTL::Texture* MetalTextureCache::CreateNullTexture2D() {
-  SCOPE_profile_cpu_f("gpu");
-
-  MTL::Device* device = command_processor_->GetMetalDevice();
-  if (!device) {
-    XELOGE("Metal texture cache: Failed to get Metal device for null texture");
-    return nullptr;
-  }
-
-  MTL::TextureDescriptor* descriptor = MTL::TextureDescriptor::alloc()->init();
-  // Null 2D textures are created as 2D arrays with a single layer so they can
-  // be bound wherever shaders expect texture2d_array.
-  descriptor->setTextureType(MTL::TextureType2DArray);
-  descriptor->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
-  descriptor->setWidth(1);
-  descriptor->setHeight(1);
-  descriptor->setArrayLength(1);
-  descriptor->setUsage(MTL::TextureUsageShaderRead |
-                       MTL::TextureUsagePixelFormatView);
-  descriptor->setStorageMode(MTL::StorageModeShared);
-
-  MTL::Texture* texture = device->newTexture(descriptor);
-  descriptor->release();  // Immediate release following pattern
-
-  if (texture) {
-    // Initialize with black color (0xFF000000 for RGBA8)
-    uint32_t default_color = 0xFF000000;
-    MTL::Region region = MTL::Region::Make2D(0, 0, 1, 1);
-    texture->replaceRegion(region, 0, &default_color, 4);
-  } else {
-    XELOGE("Failed to create null 2D texture");
-  }
-
-  return texture;  // No retain needed - newTexture returns retained object
-}
-
-MTL::Texture* MetalTextureCache::CreateNullTexture3D() {
-  SCOPE_profile_cpu_f("gpu");
-
-  MTL::Device* device = command_processor_->GetMetalDevice();
-  if (!device) {
-    XELOGE(
-        "Metal texture cache: Failed to get Metal device for null 3D texture");
-    return nullptr;
-  }
-
-  MTL::TextureDescriptor* descriptor = MTL::TextureDescriptor::alloc()->init();
-  descriptor->setTextureType(MTL::TextureType3D);
-  descriptor->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
-  descriptor->setWidth(1);
-  descriptor->setHeight(1);
-  descriptor->setDepth(1);
-  descriptor->setUsage(MTL::TextureUsageShaderRead |
-                       MTL::TextureUsagePixelFormatView);
-  descriptor->setStorageMode(MTL::StorageModeShared);
-
-  MTL::Texture* texture = device->newTexture(descriptor);
-  descriptor->release();  // Immediate release following pattern
-
-  if (texture) {
-    // Initialize with black color (0xFF000000 for RGBA8)
-    uint32_t default_color = 0xFF000000;
-    MTL::Region region = MTL::Region::Make3D(0, 0, 0, 1, 1, 1);
-    texture->replaceRegion(region, 0, 0, &default_color, 4, 4);
-  } else {
-    XELOGE("Failed to create null 3D texture");
-  }
-
-  return texture;  // No retain needed - newTexture returns retained object
-}
-
-MTL::Texture* MetalTextureCache::CreateNullTextureCube() {
-  SCOPE_profile_cpu_f("gpu");
-
-  MTL::Device* device = command_processor_->GetMetalDevice();
-  if (!device) {
-    XELOGE(
-        "Metal texture cache: Failed to get Metal device for null cube "
-        "texture");
-    return nullptr;
-  }
-
-  MTL::TextureDescriptor* descriptor = MTL::TextureDescriptor::alloc()->init();
-  // Null cube texture must match non-array cube bindings in translated MSL.
-  descriptor->setTextureType(MTL::TextureTypeCube);
-  descriptor->setPixelFormat(MTL::PixelFormatRGBA8Unorm);
-  descriptor->setWidth(1);
-  descriptor->setHeight(1);
-  descriptor->setDepth(1);
-  descriptor->setArrayLength(1);
-  descriptor->setUsage(MTL::TextureUsageShaderRead |
-                       MTL::TextureUsagePixelFormatView);
-  descriptor->setStorageMode(MTL::StorageModeShared);
-
-  MTL::Texture* texture = device->newTexture(descriptor);
-  descriptor->release();  // Immediate release following pattern
-
-  if (texture) {
-    // Initialize all 6 faces with black color (0xFF000000 for RGBA8)
-    uint32_t default_color = 0xFF000000;
+  const uint32_t default_color = 0xFF000000;
+  if (type == MTL::TextureType3D) {
+    texture->replaceRegion(MTL::Region::Make3D(0, 0, 0, 1, 1, 1), 0, 0,
+                           &default_color, 4, 4);
+  } else if (type == MTL::TextureTypeCube) {
     MTL::Region region = MTL::Region::Make2D(0, 0, 1, 1);
     for (uint32_t face = 0; face < 6; ++face) {
       texture->replaceRegion(region, 0, face, &default_color, 4, 0);
     }
   } else {
-    XELOGE("Failed to create null cube texture");
+    texture->replaceRegion(MTL::Region::Make2D(0, 0, 1, 1), 0, &default_color,
+                           4);
   }
+  return texture;
+}
 
-  return texture;  // No retain needed - newTexture returns retained object
+MTL::Texture* MetalTextureCache::CreateNullTexture2D() {
+  return CreateNullTexture(MTL::TextureType2DArray, "2D");
+}
+
+MTL::Texture* MetalTextureCache::CreateNullTexture3D() {
+  return CreateNullTexture(MTL::TextureType3D, "3D");
+}
+
+MTL::Texture* MetalTextureCache::CreateNullTextureCube() {
+  return CreateNullTexture(MTL::TextureTypeCube, "cube");
 }
 
 // RequestTextures override - integrates with standard texture binding pipeline
@@ -4453,10 +3971,10 @@ std::unique_ptr<TextureCache::Texture> MetalTextureCache::CreateTexture(
         if (MetalTexture* owner =
                 FindResolveAliasImageOwner(key, metal_format)) {
           MTL::Texture* root = GetRootTexture(owner->metal_texture_);
-          metal_texture = root->newTextureView(
-              metal_format, MTL::TextureType2DArray,
-              NS::Range::Make(0, root->mipmapLevelCount()),
-              NS::Range::Make(0, root->arrayLength()));
+          metal_texture =
+              root->newTextureView(metal_format, MTL::TextureType2DArray,
+                                   NS::Range::Make(0, root->mipmapLevelCount()),
+                                   NS::Range::Make(0, root->arrayLength()));
           if (metal_texture) {
             break;
           }
@@ -4738,8 +4256,7 @@ MTL::Texture* MetalTextureCache::MetalTexture::GetOrCreateView(
       view_format, view_type, level_range, slice_range, swizzle);
   if (!view) {
     // Returning a mismatched base type can trigger Metal validation asserts.
-    return metal_texture_type_ == view_type ? metal_texture_
-                                                      : nullptr;
+    return metal_texture_type_ == view_type ? metal_texture_ : nullptr;
   }
 
   swizzled_view_cache_.emplace(view_key, view);

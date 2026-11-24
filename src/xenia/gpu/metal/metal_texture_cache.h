@@ -63,9 +63,6 @@ class MetalTextureCache : public TextureCache {
   void ClearCache() override;
   void CompletedSubmissionUpdated(uint64_t completed_submission_index) override;
 
-  bool UploadTexture2D(const TextureInfo& texture_info);
-  bool UploadTextureCube(const TextureInfo& texture_info);
-
   // Pixel format conversion
   MTL::PixelFormat ConvertXenosFormat(
       xenos::TextureFormat format,
@@ -441,6 +438,15 @@ class MetalTextureCache : public TextureCache {
 
  private:
   // Metal texture creation helpers
+  MTL::Texture* CreateCacheTexture(MTL::TextureType type, uint32_t width,
+                                   uint32_t height, uint32_t depth,
+                                   uint32_t array_length,
+                                   MTL::PixelFormat format,
+                                   MTL::TextureSwizzleChannels swizzle,
+                                   uint32_t mip_levels, MTL::TextureUsage usage,
+                                   const char* debug_label);
+  MTL::Texture* CreateNullTexture(MTL::TextureType type,
+                                  const char* debug_label);
   MTL::Texture* CreateTexture2D(uint32_t width, uint32_t height,
                                 uint32_t array_length, MTL::PixelFormat format,
                                 MTL::TextureSwizzleChannels swizzle,
@@ -455,8 +461,6 @@ class MetalTextureCache : public TextureCache {
                                   MTL::TextureSwizzleChannels swizzle,
                                   uint32_t mip_levels = 1,
                                   uint32_t cube_count = 1);
-  void DumpTextureToFile(MTL::Texture* texture, const std::string& filename,
-                         uint32_t width, uint32_t height);
 
   struct ScaledResolveBuffer {
     MTL::Buffer* buffer = nullptr;
