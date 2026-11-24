@@ -7,14 +7,14 @@
  ******************************************************************************
  */
 
-#ifndef XENIA_GPU_RESOLVE_REFRESH_WATCH_LOG_H_
-#define XENIA_GPU_RESOLVE_REFRESH_WATCH_LOG_H_
+#ifndef XENIA_GPU_METAL_METAL_RESOLVE_REFRESH_WATCH_LOG_H_
+#define XENIA_GPU_METAL_METAL_RESOLVE_REFRESH_WATCH_LOG_H_
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 
-namespace xe::gpu {
+namespace xe::gpu::metal {
 
 // Bounded invalidation history for partial texture refresh. Callers synchronize
 // all access with the shared-memory global critical region. Missing history or
@@ -70,6 +70,6 @@ class ResolveRefreshWatchLog {
   uint64_t count_ = 0;
 };
 
-}  // namespace xe::gpu
+}  // namespace xe::gpu::metal
 
-#endif  // XENIA_GPU_RESOLVE_REFRESH_WATCH_LOG_H_
+#endif  // XENIA_GPU_METAL_METAL_RESOLVE_REFRESH_WATCH_LOG_H_

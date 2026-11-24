@@ -20,6 +20,7 @@ add_library(xenia-gpu-metal STATIC
   metal_render_target_cache.h
   metal_resolve_encoder.cc
   metal_resolve_encoder.h
+  metal_resolve_refresh_watch_log.h
   metal_shader.cc
   metal_shader.h
   metal_shader_library_cache.cc

@@ -71,7 +71,11 @@ DECLARE_bool(precise_interpolation);
 DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(submit_on_primary_buffer_end);
 
-DECLARE_bool(skip_no_effect_draws);
+DEFINE_bool(
+    skip_no_effect_draws, true,
+    "Don't issue a draw that writes no color, depth or stencil, exports "
+    "nothing to memory and is counted by no occlusion query.",
+    "GPU");
 DEFINE_bool(metal_stand_in_exact_depth_stencil, true,
             "A draw that writes depth or stencil and whose pixel shader "
             "decides where (kill, alpha test, alpha to coverage, depth "

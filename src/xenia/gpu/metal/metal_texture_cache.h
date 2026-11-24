@@ -20,8 +20,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "xenia/gpu/metal/metal_resolve_refresh_watch_log.h"
 #include "xenia/gpu/register_file.h"
-#include "xenia/gpu/resolve_refresh_watch_log.h"
 #include "xenia/gpu/spirv_shader.h"
 #include "xenia/gpu/texture_cache.h"
 #include "xenia/gpu/texture_info.h"

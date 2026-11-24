@@ -39,11 +39,6 @@ DEFINE_bool(
     "constant into the owner instead of transferring ownership to the 4x view and "
     "back.",
     "GPU");
-DEFINE_bool(
-    skip_no_effect_draws, true,
-    "Don't issue a draw that writes no color, depth or stencil, exports "
-    "nothing to memory and is counted by no occlusion query.",
-    "GPU");
 
 DEFINE_bool(log_transfers, false,
             "Log every EDRAM ownership transfer with its source and "
