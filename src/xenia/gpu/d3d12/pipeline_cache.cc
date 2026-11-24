@@ -932,8 +932,7 @@ PipelineCache::ConvertGuestMesaTessellationToDxil(
             ? (is_quad ? 4u : 3u)
             : 1u;
     dxil = SpirvToDxilCompiler::TranslateLinked(
-        stages, /*lower_to_bindless=*/true,
-        /*preserve_msc_fmad32=*/false, input_control_point_count);
+        stages, /*lower_to_bindless=*/true, input_control_point_count);
   }
 
   std::lock_guard<std::mutex> lock(mesa_dxil_cache_mutex_);

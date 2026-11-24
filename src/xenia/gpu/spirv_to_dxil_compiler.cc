@@ -37,9 +37,6 @@
 
 // Mesa C ABI. The header carries its own extern "C" guards.
 #include "spirv_to_dxil.h"
-#if defined(XE_MESA_METAL_FMAD32)
-#include "xenia_mesa_metal_version.h"
-#endif
 
 namespace xe {
 namespace gpu {
@@ -76,8 +73,7 @@ dxil_spirv_shader_stage ToDxilStage(SpirvToDxilCompiler::Stage stage_in,
 
 dxil_spirv_runtime_conf MakeRuntimeConf(bool lower_to_bindless,
                                         bool keep_io_vars,
-                                        uint32_t input_clip_size,
-                                        bool preserve_msc_fmad32) {
+                                        uint32_t input_clip_size) {
   // The guest sets 0..3 map to register spaces 0..3 in the Vulkan environment.
   // Park Dozen's runtime data and push constant CBVs in a high space so they
   // never collide. SpirvShaderTranslator emits no push constants and derives
@@ -109,11 +105,6 @@ dxil_spirv_runtime_conf MakeRuntimeConf(bool lower_to_bindless,
   conf.keep_io_vars = keep_io_vars;
   // Producer clip count, for splitting clip/cull inputs of an isolated stage.
   conf.input_clip_size = input_clip_size;
-#if defined(XE_MESA_METAL_FMAD32)
-  conf.preserve_msc_fmad32 = preserve_msc_fmad32;
-#else
-  (void)preserve_msc_fmad32;
-#endif
   return conf;
 }
 
@@ -289,13 +280,7 @@ bool SignDxil(std::vector<uint8_t>& dxil, const char* stage) {
 #endif  // XE_PLATFORM_WIN32
 }  // namespace
 
-uint64_t SpirvToDxilCompiler::version() {
-  uint64_t result = spirv_to_dxil_get_version();
-#if defined(XE_MESA_METAL_FMAD32)
-  result ^= XE_MESA_METAL_OVERLAY_REVISION;
-#endif
-  return result;
-}
+uint64_t SpirvToDxilCompiler::version() { return spirv_to_dxil_get_version(); }
 
 bool SpirvToDxilCompiler::IsSignerAvailable() {
   enum dxil_validator_version validator_version;
@@ -306,15 +291,13 @@ std::vector<uint8_t> SpirvToDxilCompiler::Translate(const uint32_t* spirv_words,
                                                     size_t spirv_word_count,
                                                     Stage stage_in,
                                                     bool lower_to_bindless,
-                                                    uint32_t input_clip_size,
-                                                    bool preserve_msc_fmad32) {
+                                                    uint32_t input_clip_size) {
   const char* stage_name;
   dxil_spirv_shader_stage stage = ToDxilStage(stage_in, &stage_name);
   // A single stage compiled on its own: keep unused varyings so its signature
   // matches the separately compiled neighbor stage.
-  dxil_spirv_runtime_conf conf =
-      MakeRuntimeConf(lower_to_bindless, /*keep_io_vars=*/true, input_clip_size,
-                      preserve_msc_fmad32);
+  dxil_spirv_runtime_conf conf = MakeRuntimeConf(
+      lower_to_bindless, /*keep_io_vars=*/true, input_clip_size);
 
   dxil_spirv_debug_options debug_options = {};
   dxil_spirv_logger logger = {};
@@ -345,7 +328,7 @@ std::vector<uint8_t> SpirvToDxilCompiler::Translate(const uint32_t* spirv_words,
 
 std::vector<std::vector<uint8_t>> SpirvToDxilCompiler::TranslateLinked(
     const std::vector<LinkedStage>& stages, bool lower_to_bindless,
-    bool preserve_msc_fmad32, uint32_t tess_input_control_point_count) {
+    uint32_t tess_input_control_point_count) {
   if (stages.empty()) {
     return {};
   }
@@ -363,7 +346,7 @@ std::vector<std::vector<uint8_t>> SpirvToDxilCompiler::TranslateLinked(
   // pruned, and the clip/cull split comes from the linked producer.
   dxil_spirv_runtime_conf conf =
       MakeRuntimeConf(lower_to_bindless, /*keep_io_vars=*/false,
-                      /*input_clip_size=*/0, preserve_msc_fmad32);
+                      /*input_clip_size=*/0);
   conf.tess_input_control_point_count = tess_input_control_point_count;
   dxil_spirv_debug_options debug_options = {};
   dxil_spirv_logger logger = {};
@@ -403,13 +386,3 @@ std::vector<std::vector<uint8_t>> SpirvToDxilCompiler::TranslateLinked(
 }  // namespace xe
 
 #endif  // XE_PLATFORM_WIN32
-
-namespace xe::gpu {
-bool SpirvToDxilCompiler::SupportsMscFmad32() {
-#if defined(XE_MESA_METAL_FMAD32)
-  return true;
-#else
-  return false;
-#endif
-}
-}  // namespace xe::gpu
