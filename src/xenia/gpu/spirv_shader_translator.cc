@@ -1619,6 +1619,11 @@ void SpirvShaderTranslator::ProcessLabel(uint32_t cf_index) {
     return;
   }
 
+  // Writes after a label may reach it by jumping back. Writes skipped by
+  // jumping forward are already in main_interpolators_unmodified_.
+  main_interpolators_unmodified_ &=
+      ~current_shader().GetRegisterComponentsWrittenBeforeReentering(cf_index);
+
   assert_false(current_shader().label_addresses().empty());
 
   // Close flow control within the previous switch case.
