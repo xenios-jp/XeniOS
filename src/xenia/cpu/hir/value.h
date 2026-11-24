@@ -80,6 +80,8 @@ enum ValueFlags {
   VALUE_IS_ALLOCATED = (1 << 2),  // Used by backends. Do not set.
   // Magnitude is zero, at least 2^-1022, or non-finite.
   VALUE_IN_SINGLE_RANGE = (1 << 3),
+  // See Value::IsNeverWideNan.
+  VALUE_NEVER_WIDE_NAN = (1 << 4),
 };
 
 struct RegAssignment {

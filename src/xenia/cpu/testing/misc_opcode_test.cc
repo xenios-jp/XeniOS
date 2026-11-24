@@ -21,6 +21,9 @@
 #include <limits>
 #include <thread>
 
+#include "xenia/cpu/compiler/passes/control_flow_analysis_pass.h"
+#include "xenia/cpu/compiler/passes/simplification_pass.h"
+
 using namespace xe;
 using namespace xe::cpu;
 using namespace xe::cpu::hir;
@@ -206,6 +209,122 @@ TEST_CASE("IS_NEVER_WIDE_NAN", "[convert]") {
   });
   test.Run([](PPCContext* ctx) { ctx->r[4] = 0x3F800000; },
            [](PPCContext* ctx) { REQUIRE(ctx->f[3] == 2.0); });
+}
+
+// Whether the last store to a guest FPR stores a value that IsNeverWideNan
+// proves once the simplification pass has run.
+static bool StoresNeverWideNan(void (*emit)(HIRBuilder& b), int reg) {
+  HIRBuilder b;
+  b.MakeCurrent();
+  emit(b);
+  b.Finalize();
+  compiler::passes::ControlFlowAnalysisPass cfa;
+  cfa.Run(&b);
+  compiler::passes::SimplificationPass pass;
+  bool changed = false;
+  pass.Run(&b, changed);
+  bool proven = false;
+  for (hir::Block* block = b.first_block(); block; block = block->next) {
+    for (hir::Instr* i = block->instr_head; i; i = i->next) {
+      if (i->GetOpcodeNum() == hir::OPCODE_STORE_CONTEXT &&
+          i->src1.offset == offsetof(PPCContext, f) + reg * 8) {
+        proven = i->src2.value->IsNeverWideNan();
+      }
+    }
+  }
+  b.RemoveCurrent();
+  return proven;
+}
+
+// The proof follows a guest FPR across blocks and around a loop. f31 is the
+// register asked about.
+TEST_CASE("IS_NEVER_WIDE_NAN_ACROSS_BLOCKS", "[convert]") {
+  // A loop's accumulator, from a single and singles.
+  REQUIRE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 4), INT32_TYPE)));
+        auto loop = b.NewLabel();
+        b.MarkLabel(loop);
+        Value* single = b.UnpackSingle(b.Truncate(LoadGPR(b, 5), INT32_TYPE));
+        Value* sum =
+            b.ToSingle(b.Add(LoadFPR(b, 1), single), TO_SINGLE_KEEP_NAN);
+        StoreFPR(b, 1, sum);
+        StoreFPR(b, 31, sum);
+        b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+        b.Return();
+      },
+      31));
+  // Not one that comes in unknown, whatever is in single range: a wide NaN is.
+  REQUIRE_FALSE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        auto loop = b.NewLabel();
+        b.MarkLabel(loop);
+        Value* single = b.UnpackSingle(b.Truncate(LoadGPR(b, 5), INT32_TYPE));
+        Value* sum =
+            b.ToSingle(b.Add(LoadFPR(b, 1), single), TO_SINGLE_KEEP_NAN);
+        StoreFPR(b, 1, sum);
+        StoreFPR(b, 31, sum);
+        b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+        b.Return();
+      },
+      31));
+  // Rounding keeps a wide NaN wide, in range as it is.
+  REQUIRE_FALSE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, b.ToSingle(LoadFPR(b, 2), TO_SINGLE_KEEP_NAN));
+        auto label = b.NewLabel();
+        b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), label);
+        b.MarkLabel(label);
+        StoreFPR(b, 31, LoadFPR(b, 1));
+        b.Return();
+      },
+      31));
+  // Nor when one path stores something unproven,
+  REQUIRE_FALSE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 4), INT32_TYPE)));
+        auto label = b.NewLabel();
+        b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), label);
+        StoreFPR(b, 1, LoadFPR(b, 2));
+        b.MarkLabel(label);
+        StoreFPR(b, 31, LoadFPR(b, 1));
+        b.Return();
+      },
+      31));
+  // after a call,
+  REQUIRE_FALSE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 4), INT32_TYPE)));
+        b.Call(nullptr);
+        StoreFPR(b, 31, LoadFPR(b, 1));
+        b.Return();
+      },
+      31));
+  // after a store of another shape over the register,
+  REQUIRE_FALSE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 4), INT32_TYPE)));
+        b.StoreContext(offsetof(PPCContext, f) + 8, LoadGPR(b, 5));
+        StoreFPR(b, 31, LoadFPR(b, 1));
+        b.Return();
+      },
+      31));
+  // or when a loop swaps in one that comes in unproven.
+  REQUIRE_FALSE(StoresNeverWideNan(
+      [](HIRBuilder& b) {
+        StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 4), INT32_TYPE)));
+        auto loop = b.NewLabel();
+        b.MarkLabel(loop);
+        Value* f1 = LoadFPR(b, 1);
+        Value* f2 = LoadFPR(b, 2);
+        Value* f3 = LoadFPR(b, 3);
+        StoreFPR(b, 1, b.Neg(f2));
+        StoreFPR(b, 2, b.Neg(f3));
+        StoreFPR(b, 31, b.Neg(f1));
+        b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+        b.Return();
+      },
+      31));
 }
 
 // ============================================================================

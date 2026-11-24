@@ -15,7 +15,7 @@
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/ppc/ppc_context.h"
 
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 namespace xe {
 namespace cpu {
@@ -37,12 +37,12 @@ static bool IsInSingleRange(const Value* v) {
   return v && v->IsInSingleRange();
 }
 
-// IsInSingleRange stops at a load_context, so carry the proof for the 32
-// FPR context slots across blocks: a forward must-analysis where a slot is
-// clean if every path to it stored a clean value. Loads of clean slots are
-// tagged VALUE_IN_SINGLE_RANGE, already while the analysis runs, so that a
-// value worked out from a loop's own loads (a sign flipped every time around)
-// keeps the proof too.
+// IsInSingleRange and IsNeverWideNan stop at a load_context, so carry the
+// proofs for the 32 FPR context slots across blocks: a forward must-analysis
+// where a slot is clean if every path to it stored a clean value. Loads of
+// clean slots are tagged VALUE_IN_SINGLE_RANGE or VALUE_NEVER_WIDE_NAN, already
+// while the analysis runs, so that a value worked out from a loop's own loads
+// (a sign flipped every time around) keeps the proof too.
 namespace {
 
 constexpr size_t kGuestFPRCount = 32;
@@ -50,6 +50,26 @@ constexpr uint32_t kGuestFPRBase =
     static_cast<uint32_t>(offsetof(ppc::PPCContext, f));
 constexpr uint32_t kGuestFPRSize =
     static_cast<uint32_t>(sizeof(double) * kGuestFPRCount);
+
+// The slots a proof holds for, one bit each.
+struct CleanFPRs {
+  uint32_t in_single_range;
+  uint32_t never_wide_nan;
+
+  CleanFPRs operator&(const CleanFPRs& other) const {
+    return {in_single_range & other.in_single_range,
+            never_wide_nan & other.never_wide_nan};
+  }
+  bool operator==(const CleanFPRs&) const = default;
+  void Clear(uint32_t slots) {
+    in_single_range &= ~slots;
+    never_wide_nan &= ~slots;
+  }
+};
+constexpr CleanFPRs kNoneClean = {0, 0};
+constexpr CleanFPRs kAllClean = {~uint32_t(0), ~uint32_t(0)};
+constexpr uint32_t kFPRProofFlags =
+    VALUE_IN_SINGLE_RANGE | VALUE_NEVER_WIDE_NAN;
 
 // Exactly one whole FPR, which is the only shape the proof describes.
 bool GuestFPRSlot(uint32_t offset, TypeName type, size_t* out_index) {
@@ -88,7 +108,7 @@ bool ClobbersGuestContext(const Instr* i) {
 
 }  // namespace
 
-bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
+bool SimplificationPass::PropagateGuestFPRProofs(
     HIRBuilder* builder) {
   // Block::ordinal is 16 bits.
   std::vector<const Block*> blocks;
@@ -115,49 +135,53 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
     }
   }
 
-  // The FPR loads that no earlier run has proven. A tag on one of these holds
-  // only once the analysis has converged.
-  std::unordered_set<Value*> untagged;
+  // The FPR loads an earlier run has not proven everything about, with the
+  // flags it left. A tag this run adds holds only once the analysis converged.
+  std::unordered_map<Value*, uint32_t> loads;
   for (const Block* b : blocks) {
     for (const Instr* i = b->instr_head; i; i = i->next) {
       size_t slot;
       if (i->GetOpcodeNum() == OPCODE_LOAD_CONTEXT && i->dest &&
           GuestFPRSlot(static_cast<uint32_t>(i->src1.offset), i->dest->type,
                        &slot) &&
-          !(i->dest->flags & VALUE_IN_SINGLE_RANGE)) {
-        untagged.insert(i->dest);
+          (i->dest->flags & kFPRProofFlags) != kFPRProofFlags) {
+        loads.emplace(i->dest, i->dest->flags);
       }
     }
   }
-  if (untagged.empty()) {
+  if (loads.empty()) {
     return false;
   }
 
-  constexpr uint32_t kAllClean = ~uint32_t(0);
   // Walks a block from the clean set at its entry, handing the set at each
   // branch to on_branch and tagging the FPR loads that the set proves clean.
   bool changed = false;
-  const auto transfer = [&changed, &untagged](Block* block, uint32_t clean,
-                                              auto&& on_branch) {
+  const auto transfer = [&changed, &loads](Block* block, CleanFPRs clean,
+                                           auto&& on_branch) {
     for (Instr* i = block->instr_head; i; i = i->next) {
       if (const Label* target = i->BranchLabel()) {
         on_branch(target->block, clean);
         continue;
       }
       if (ClobbersGuestContext(i)) {
-        clean = 0;
+        clean = kNoneClean;
         continue;
       }
       const Opcode op = i->GetOpcodeNum();
       const uint32_t offset = static_cast<uint32_t>(i->src1.offset);
       size_t slot;
       if (op == OPCODE_LOAD_CONTEXT) {
-        if (i->dest && GuestFPRSlot(offset, i->dest->type, &slot) &&
-            untagged.count(i->dest)) {
-          const uint32_t flags =
-              (clean & (uint32_t(1) << slot))
-                  ? i->dest->flags | VALUE_IN_SINGLE_RANGE
-                  : i->dest->flags & ~uint32_t(VALUE_IN_SINGLE_RANGE);
+        const auto load = loads.find(i->dest);
+        if (load != loads.end() &&
+            GuestFPRSlot(offset, i->dest->type, &slot)) {
+          const uint32_t bit = uint32_t(1) << slot;
+          uint32_t flags = load->second;
+          if (clean.in_single_range & bit) {
+            flags |= VALUE_IN_SINGLE_RANGE;
+          }
+          if (clean.never_wide_nan & bit) {
+            flags |= VALUE_NEVER_WIDE_NAN;
+          }
           changed |= flags != i->dest->flags;
           i->dest->flags = flags;
         }
@@ -168,10 +192,13 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
       }
       Value* stored = i->src2.value;
       if (GuestFPRSlot(offset, stored->type, &slot)) {
+        const uint32_t bit = uint32_t(1) << slot;
+        clean.Clear(bit);
         if (IsInSingleRange(stored)) {
-          clean |= uint32_t(1) << slot;
-        } else {
-          clean &= ~(uint32_t(1) << slot);
+          clean.in_single_range |= bit;
+        }
+        if (stored->IsNeverWideNan()) {
+          clean.never_wide_nan |= bit;
         }
         continue;
       }
@@ -183,7 +210,7 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
         const uint32_t lo = offset < kGuestFPRBase ? 0 : offset - kGuestFPRBase;
         const uint32_t hi = std::min(end - kGuestFPRBase, kGuestFPRSize);
         for (uint32_t byte = lo; byte < hi; ++byte) {
-          clean &= ~(uint32_t(1) << (byte / sizeof(double)));
+          clean.Clear(uint32_t(1) << (byte / sizeof(double)));
         }
       }
     }
@@ -211,16 +238,16 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
       incoming[block->next->ordinal].push_back(edge_count++);
     }
   }
-  std::vector<uint32_t> edge_clean(edge_count, kAllClean);
+  std::vector<CleanFPRs> edge_clean(edge_count, kAllClean);
   // The entry block inherits the caller's registers, which say nothing, and a
   // block no edge reaches is entered from somewhere the proof cannot see.
   const auto entry_of = [&](const Block* block) {
     if (block->ordinal == 0 || incoming[block->ordinal].empty()) {
-      return uint32_t(0);
+      return kNoneClean;
     }
-    uint32_t clean = kAllClean;
+    CleanFPRs clean = kAllClean;
     for (size_t e : incoming[block->ordinal]) {
-      clean &= edge_clean[e];
+      clean = clean & edge_clean[e];
     }
     return clean;
   };
@@ -233,14 +260,14 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
     changed = false;
     for (Block* block = builder->first_block(); block; block = block->next) {
       size_t e = first_edge[block->ordinal];
-      const auto set_edge = [&](const Block*, uint32_t clean) {
-        if (edge_clean[e] != clean) {
+      const auto set_edge = [&](const Block*, const CleanFPRs& clean) {
+        if (!(edge_clean[e] == clean)) {
           edge_clean[e] = clean;
           changed = true;
         }
         ++e;
       };
-      const uint32_t exit = transfer(block, entry_of(block), set_edge);
+      const CleanFPRs exit = transfer(block, entry_of(block), set_edge);
       if (falls_through(block)) {
         set_edge(block->next, exit);
       }
@@ -248,11 +275,11 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
     converged = !changed;
   }
   bool tagged = false;
-  for (Value* value : untagged) {
+  for (const auto& [value, flags] : loads) {
     if (!converged) {
-      value->flags &= ~uint32_t(VALUE_IN_SINGLE_RANGE);
+      value->flags = flags;
     }
-    tagged |= (value->flags & VALUE_IN_SINGLE_RANGE) != 0;
+    tagged |= value->flags != flags;
   }
   return tagged;
 }
@@ -403,7 +430,7 @@ bool SimplificationPass::RemoveRepeatedFpscrSummaryClears(HIRBuilder* builder) {
 bool SimplificationPass::Run(HIRBuilder* builder, bool& result) {
   result = false;
 
-  result |= PropagateGuestFPRSingleRangeProof(builder);
+  result |= PropagateGuestFPRProofs(builder);
   result |= RemoveRepeatedFpscrSummaryClears(builder);
   result |= SimplifyBitArith(builder);
   result |= EliminateConversions(builder);

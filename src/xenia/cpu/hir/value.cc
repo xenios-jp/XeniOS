@@ -1826,6 +1826,9 @@ static bool IsNeverWideNan(const Value* value, int& budget) {
     return (bits & 0x7FFFFFFFFFFFFFFFull) <= 0x7FF0000000000000ull ||
            !(bits & 0x1FFFFFFFull);
   }
+  if (value->flags & VALUE_NEVER_WIDE_NAN) {
+    return true;
+  }
   const Instr* def = const_cast<Value*>(value)->GetDefSkipAssigns();
   if (!def) {
     return false;
