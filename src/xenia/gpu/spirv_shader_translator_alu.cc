@@ -61,8 +61,7 @@ bool SpirvShaderTranslator::CanUseFiniteProduct(uint64_t first,
 spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
                                                 spv::Id second,
                                                 uint64_t first_reasons,
-                                                uint64_t second_reasons,
-                                                bool rounded_to_nearest) {
+                                                uint64_t second_reasons) {
   if (!CanUseFiniteProduct(first_reasons, second_reasons)) {
     return guarded;
   }
@@ -73,14 +72,6 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
   }
   uint64_t reasons = (first_finite ? first_reasons : 0) |
                      (second_finite ? second_reasons : 0);
-  bool rounds_toward_zero = !rounded_to_nearest && RoundsTowardZero() &&
-                            !RoundsTowardZeroInHardware();
-  if (reasons && rounds_toward_zero) {
-    // Whether the operands are finite is only known in the draw, so both
-    // products would be rounded toward zero and one selected. For finite
-    // operands they are the same value, and the guarded one is needed anyway.
-    return guarded;
-  }
   spv::Id finite = spv::NoResult;
   if (reasons && !features_.finite_multiply_one_sided) {
     spv::Id flags = main_fetch_state_[kFetchStateFiniteMultiplyBinding];
@@ -132,18 +123,6 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
       type_float_, ext_inst_glsl_std_450_, GLSLstd450Fma, first, second,
       const_float_0_);
   builder_->addDecoration(product, spv::Decoration::FPFastMathMode, 0);
-  if (rounds_toward_zero) {
-    // The fused product's exact error, also free of nsz.
-    auto error = builder_->createTriBuiltinCall(
-        type_float_, ext_inst_glsl_std_450_, GLSLstd450Fma, first, second,
-        builder_->createNoContractionUnaryOp(spv::OpFNegate, type_float_,
-                                             product));
-    builder_->addDecoration(error, spv::Decoration::FPFastMathMode, 0);
-    // The fused error of a product that overflowed from finite operands is
-    // the infinity of the opposite sign, which RoundTowardZero steps on
-    // already.
-    product = RoundTowardZero(product, error, spv::NoResult);
-  }
   if (!first_finite || !second_finite) {
     // Only one operand, F, is proven finite (the flags select the guarded
     // product when the proof fails at run time). The result equals the guard's
@@ -151,8 +130,7 @@ spv::Id SpirvShaderTranslator::UseFiniteProduct(spv::Id guarded, spv::Id first,
     // - F == 0: +0 from this select, whatever x is.
     // - F != 0, x == +-0: the fused product +-0 plus +0 is +0.
     // - F != 0, x infinite or NaN: the guard passes x * F through, and so
-    //   does the fused product (RoundTowardZero steps neither: the error is
-    //   NaN, and an infinite operand is not an overflow).
+    //   does the fused product.
     // - both nonzero and finite: the case with both operands proven.
     spv::Id finite_operand = first_finite ? first : second;
     product = builder_->createTriOp(
@@ -627,16 +605,58 @@ spv::Id SpirvShaderTranslator::ScalarEstimate(ScalarEstimateOp op,
              : result_float;
 }
 
-// TODO(xenios-jp): for a product below about 2^-79, the exact error passed in
+spv::Id SpirvShaderTranslator::StepTowardZero(spv::Id rounded, spv::Id step) {
+  spv::Id type = builder_->getTypeId(rounded);
+  int component_count = builder_->getNumComponents(rounded);
+  spv::Id type_uint = type_uint_vectors_[component_count - 1];
+  spv::Id const_uint_1 = builder_->makeUintConstant(1);
+  if (component_count > 1) {
+    std::vector<spv::Id> components(component_count, const_uint_1);
+    const_uint_1 = builder_->makeCompositeConstant(type_uint, components);
+  }
+  spv::Id stepped = builder_->createUnaryOp(
+      spv::OpBitcast, type,
+      builder_->createBinOp(
+          spv::OpISub, type_uint,
+          builder_->createUnaryOp(spv::OpBitcast, type_uint, rounded),
+          const_uint_1));
+  return builder_->createTriOp(spv::OpSelect, type, step, stepped, rounded);
+}
+
+// TODO(xenios-jp): for a product below about 2^-79, the error worked out here
 // is itself below 2^-126 and flushes, so the product isn't stepped and comes
 // out one ulp too large where the console rounds toward zero. A fix matches the
 // console but costs too much to enable for now.
+spv::Id SpirvShaderTranslator::FusedProductRoundedAway(spv::Id a, spv::Id b,
+                                                       spv::Id product) {
+  // The magnitudes round like the values, so a negative error of the product of
+  // the magnitudes means the rounding went away from zero. The error is minus
+  // infinity for a product that overflowed from finite operands, and NaN, not
+  // less than 0, for an infinite or a NaN operand. Free of nsz like
+  // UseFiniteProduct's.
+  spv::Id type = builder_->getTypeId(product);
+  int component_count = builder_->getNumComponents(product);
+  auto absolute = [&](spv::Id x) {
+    return builder_->createUnaryBuiltinCall(type, ext_inst_glsl_std_450_,
+                                            GLSLstd450FAbs, x);
+  };
+  builder_->addCapability(spv::Capability::FloatControls2);
+  builder_->addExtension("SPV_KHR_float_controls2");
+  spv::Id error = builder_->createTriBuiltinCall(
+      type, ext_inst_glsl_std_450_, GLSLstd450Fma, absolute(a), absolute(b),
+      builder_->createNoContractionUnaryOp(spv::OpFNegate, type,
+                                           absolute(product)));
+  builder_->addDecoration(error, spv::Decoration::FPFastMathMode, 0);
+  return builder_->createBinOp(spv::OpFOrdLessThan,
+                               type_bool_vectors_[component_count - 1], error,
+                               const_float_vectors_0_[component_count - 1]);
+}
+
 spv::Id SpirvShaderTranslator::RoundTowardZero(spv::Id rounded, spv::Id error,
                                                spv::Id overflowed) {
   spv::Id type = builder_->getTypeId(rounded);
   int component_count = builder_->getNumComponents(rounded);
   spv::Id type_bool = type_bool_vectors_[component_count - 1];
-  spv::Id type_uint = type_uint_vectors_[component_count - 1];
   spv::Id const_zero = const_float_vectors_0_[component_count - 1];
   auto compare = [&](spv::Op op, spv::Id x, spv::Id y) {
     return builder_->createBinOp(op, type_bool, x, y);
@@ -662,18 +682,7 @@ spv::Id SpirvShaderTranslator::RoundTowardZero(spv::Id rounded, spv::Id error,
   if (overflowed != spv::NoResult) {
     step = builder_->createBinOp(spv::OpLogicalOr, type_bool, step, overflowed);
   }
-  spv::Id const_uint_1 = builder_->makeUintConstant(1);
-  if (component_count > 1) {
-    std::vector<spv::Id> components(component_count, const_uint_1);
-    const_uint_1 = builder_->makeCompositeConstant(type_uint, components);
-  }
-  spv::Id stepped = builder_->createUnaryOp(
-      spv::OpBitcast, type,
-      builder_->createBinOp(
-          spv::OpISub, type_uint,
-          builder_->createUnaryOp(spv::OpBitcast, type_uint, rounded),
-          const_uint_1));
-  return builder_->createTriOp(spv::OpSelect, type, step, stepped, rounded);
+  return StepTowardZero(rounded, step);
 }
 
 spv::Id SpirvShaderTranslator::IsInfinite(spv::Id value, bool is_infinite) {
@@ -763,27 +772,36 @@ spv::Id SpirvShaderTranslator::AluAdd(spv::Id a, spv::Id b, spv::Id exact) {
     // in it.
     return builder_->createTriOp(spv::OpSelect, type, exact, sum, AluAdd(a, b));
   }
-  // Two-sum error of the rounded sum, exact unless it overflowed.
-  spv::Id b_rounded =
-      builder_->createNoContractionBinOp(spv::OpFSub, type, sum, a);
-  spv::Id b_error =
-      builder_->createNoContractionBinOp(spv::OpFSub, type, b, b_rounded);
+  // sum - a is b plus the rounding error of the sum, rounded, so subtracting b
+  // gives the error's sign or 0, and the same with a and b swapped. It's the
+  // exact error for the operand of the smaller magnitude. Their sum thus has
+  // the sign of the error, and is 0 only if there is none, or it's flushed.
+  // The sum rounded away from zero if that's the sign of the sum too. It's the
+  // infinity of that sign for a sum that overflowed from finite operands, and
+  // NaN, which doesn't compare, if either operand is infinite or NaN.
+  // TODO(xenios-jp): a zero sum with a nonzero error would be stepped to NaN.
+  // That takes a GPU that flushes a denormal sum to zero but reads a denormal
+  // operand as it is: Apple GPUs read it as zero (checked on an M5 Pro), so a
+  // sum that flushes has an error that flushes too. Test the sum for zero
+  // before another kind of GPU takes this path.
+  auto subtract = [&](spv::Id x, spv::Id y) {
+    return builder_->createNoContractionBinOp(spv::OpFSub, type, x, y);
+  };
   spv::Id error = builder_->createNoContractionBinOp(
-      spv::OpFAdd, type,
-      builder_->createNoContractionBinOp(
-          spv::OpFSub, type, a,
-          builder_->createNoContractionBinOp(spv::OpFSub, type, sum,
-                                             b_rounded)),
-      b_error);
-  // An infinite sum has finite operands exactly when b - (sum - a) is infinite
-  // as well: sum - a is NaN for an infinite a, and the infinity b is for an
-  // infinite b. A finite sum of large operands can have it infinite too.
-  return RoundTowardZero(
-      sum, error,
-      builder_->createBinOp(
-          spv::OpLogicalAnd,
-          type_bool_vectors_[builder_->getNumComponents(sum) - 1],
-          IsInfinite(sum, true), IsInfinite(b_error, true)));
+      spv::OpFAdd, type, subtract(subtract(sum, a), b),
+      subtract(subtract(sum, b), a));
+  // Cheaper on Apple GPUs than comparing the signs, float additions costing
+  // much less than selections.
+  int component_count = builder_->getNumComponents(sum);
+  spv::Id type_bool = type_bool_vectors_[component_count - 1];
+  spv::Id const_zero = const_float_vectors_0_[component_count - 1];
+  spv::Id error_away = builder_->createTriOp(
+      spv::OpSelect, type,
+      builder_->createBinOp(spv::OpFOrdLessThan, type_bool, sum, const_zero),
+      builder_->createNoContractionUnaryOp(spv::OpFNegate, type, error), error);
+  return StepTowardZero(
+      sum, builder_->createBinOp(spv::OpFOrdGreaterThan, type_bool, error_away,
+                                 const_zero));
 }
 
 spv::Id SpirvShaderTranslator::AluSubtract(spv::Id a, spv::Id b,
@@ -798,26 +816,23 @@ spv::Id SpirvShaderTranslator::AluSubtract(spv::Id a, spv::Id b,
                 exact);
 }
 
-spv::Id SpirvShaderTranslator::AluMultiply(spv::Id a, spv::Id b,
-                                           spv::Id exact) {
-  spv::Id type = builder_->getTypeId(a);
-  spv::Id product = builder_->createNoContractionBinOp(spv::OpFMul, type, a, b);
+spv::Id SpirvShaderTranslator::AluMultiply(spv::Id a, spv::Id b) {
+  return builder_->createNoContractionBinOp(spv::OpFMul,
+                                            builder_->getTypeId(a), a, b);
+}
+
+spv::Id SpirvShaderTranslator::RoundAluProduct(spv::Id product, spv::Id a,
+                                               spv::Id b, spv::Id exact) {
   if (!RoundsTowardZero() || RoundsTowardZeroInHardware()) {
     return product;
   }
+  spv::Id type = builder_->getTypeId(product);
   if (exact != spv::NoResult) {
     return builder_->createTriOp(spv::OpSelect, type, exact, product,
-                                 AluMultiply(a, b));
+                                 RoundAluProduct(product, a, b));
   }
   if (features_.fused_float32_fma) {
-    // The fused product's exact error, free of nsz like UseFiniteProduct's.
-    builder_->addCapability(spv::Capability::FloatControls2);
-    builder_->addExtension("SPV_KHR_float_controls2");
-    spv::Id error = builder_->createTriBuiltinCall(
-        type, ext_inst_glsl_std_450_, GLSLstd450Fma, a, b,
-        builder_->createNoContractionUnaryOp(spv::OpFNegate, type, product));
-    builder_->addDecoration(error, spv::Decoration::FPFastMathMode, 0);
-    return RoundTowardZero(product, error, spv::NoResult);
+    return StepTowardZero(product, FusedProductRoundedAway(a, b, product));
   }
   // Without a guaranteed fused Fma (spirv_to_dxil splits 32-bit Fma into a
   // multiply and an add), recover the product error with a Veltkamp split and
@@ -1059,9 +1074,7 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
                                  used_result_components);
       }
       spv::Id result =
-          AluMultiply(multiplicands[0], multiplicands[1],
-                      DrawExactCondition(current_draw_exact_.vector_multiply,
-                                         used_result_components));
+          AluMultiply(multiplicands[0], multiplicands[1]);
       uint32_t multiplicands_different =
           used_result_components &
           ~instr.vector_operands[0].GetIdenticalComponents(
@@ -1183,6 +1196,10 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
           ++index;
         }
       }
+      result = RoundAluProduct(
+          result, multiplicands[0], multiplicands[1],
+          DrawExactCondition(current_draw_exact_.vector_multiply,
+                             used_result_components));
       if (instr.vector_opcode == ucode::AluVectorOpcode::kMad) {
         // Not replacing true `0 + term` with conditional selection of the term
         // because +0 + -0 should result in +0, not -0.
@@ -1417,6 +1434,8 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
               current_finite_multiply_.vector[0][i],
               current_finite_multiply_.vector[1][i]);
         }
+        product = RoundAluProduct(product, operand_components[0],
+                                  operand_components[1]);
         if (!i) {
           result = product;
           continue;
@@ -1745,6 +1764,7 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
                                       current_finite_multiply_.vector[0][1],
                                       current_finite_multiply_.vector[1][1]);
         }
+        result_y = RoundAluProduct(result_y, operands_y[0], operands_y[1]);
       }
       id_vector_temp_.clear();
       if (used_result_components & 0b0001) {
@@ -1877,8 +1897,7 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
     case ucode::AluScalarOpcode::kMuls: {
       spv::Id a, b;
       GetOperandScalarXY(operand_storage[0], instr.scalar_operands[0], a, b);
-      spv::Id result = AluMultiply(
-          a, b, DrawExactCondition(&current_draw_exact_.scalar, 0b0001));
+      spv::Id result = AluMultiply(a, b);
       if (a != b) {
         // Shader Model 3: +0 or denormal * anything = +-0.
         result = ZeroIfAnyOperandIsZero(
@@ -1888,7 +1907,9 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
                                   current_finite_multiply_.scalar[0][0],
                                   current_finite_multiply_.scalar[0][1]);
       }
-      return result;
+      return RoundAluProduct(
+          result, a, b,
+          DrawExactCondition(&current_draw_exact_.scalar, 0b0001));
     }
     case ucode::AluScalarOpcode::kMulsPrev: {
       spv::Id a = GetOperandComponents(operand_storage[0],
@@ -1901,9 +1922,10 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           result, GetAbsoluteOperand(a, instr.scalar_operands[0]),
           builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
                                            GLSLstd450FAbs, ps));
-      return UseFiniteProduct(result, a, ps,
-                              current_finite_multiply_.scalar[0][0],
-                              current_finite_multiply_.previous_scalar);
+      result = UseFiniteProduct(result, a, ps,
+                                current_finite_multiply_.scalar[0][0],
+                                current_finite_multiply_.previous_scalar);
+      return RoundAluProduct(result, a, ps);
     }
     case ucode::AluScalarOpcode::kMulsPrev2: {
       // Check if need to select the src0.a * ps case.
@@ -1962,6 +1984,7 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
         // Shader Model 3: +0 or denormal * anything = +-0.
         product = ZeroIfAnyOperandIsZero(
             product, GetAbsoluteOperand(a, instr.scalar_operands[0]), ps_abs);
+        product = RoundAluProduct(product, a, ps);
       }
       multiply_if.makeEndIf();
       // Merge - choose between the product and -FLT_MAX.
@@ -2240,8 +2263,7 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
       spv::Id operand_1 = GetOperandComponents(
           operand_storage[1], instr.scalar_operands[1], 0b0001);
       spv::Id result =
-          AluMultiply(operand_0, operand_1,
-                      DrawExactCondition(&current_draw_exact_.scalar, 0b0001));
+          AluMultiply(operand_0, operand_1);
       if (!(instr.scalar_operands[0].GetIdenticalComponents(
                 instr.scalar_operands[1]) &
             0b0001)) {
@@ -2253,7 +2275,9 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
                                   current_finite_multiply_.scalar[0][0],
                                   current_finite_multiply_.scalar[1][0]);
       }
-      return result;
+      return RoundAluProduct(
+          result, operand_0, operand_1,
+          DrawExactCondition(&current_draw_exact_.scalar, 0b0001));
     }
     case ucode::AluScalarOpcode::kAddsc0:
     case ucode::AluScalarOpcode::kAddsc1:

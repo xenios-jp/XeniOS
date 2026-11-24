@@ -1181,11 +1181,21 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // set, the draw has proven that there is nothing to round.
   spv::Id AluAdd(spv::Id a, spv::Id b, spv::Id exact = spv::NoResult);
   spv::Id AluSubtract(spv::Id a, spv::Id b, spv::Id exact = spv::NoResult);
-  spv::Id AluMultiply(spv::Id a, spv::Id b, spv::Id exact = spv::NoResult);
+  // The product rounded to nearest (or in hardware). RoundAluProduct must follow
+  // once the zero check is applied, which rounding after it doesn't change.
+  spv::Id AluMultiply(spv::Id a, spv::Id b);
+  spv::Id RoundAluProduct(spv::Id product, spv::Id a, spv::Id b,
+                          spv::Id exact = spv::NoResult);
   // Steps a sum or product rounded to nearest toward zero if its exact error
   // shows it rounded away, or if it overflowed from finite operands, to
   // saturate (overflowed may be spv::NoResult if the error shows that too).
   spv::Id RoundTowardZero(spv::Id rounded, spv::Id error, spv::Id overflowed);
+  // One step toward zero from a sum or product rounded to nearest, where step
+  // is set.
+  spv::Id StepTowardZero(spv::Id rounded, spv::Id step);
+  // Whether a product of a and b rounded to nearest rounded away from zero, or
+  // overflowed from finite operands. Only with a genuinely fused Fma.
+  spv::Id FusedProductRoundedAway(spv::Id a, spv::Id b, spv::Id product);
   // Per component, whether the absolute value is (or is not) infinity.
   spv::Id IsInfinite(spv::Id value, bool is_infinite);
   // Whether the result of a and b is infinite while neither of them is.
@@ -1196,13 +1206,12 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Whether both operands can be proven finite, or with
   // Features::finite_multiply_one_sided, at least one.
   bool CanUseFiniteProduct(uint64_t first, uint64_t second) const;
-  // guarded is rounded as AluMultiply rounds unless rounded_to_nearest. With
-  // both operands proven finite, the product is a fused multiply with +0; with
-  // only one (Features::finite_multiply_one_sided), the zero check is on that
+  // guarded is rounded as AluMultiply rounds, before RoundAluProduct. With both
+  // operands proven finite, the product is a fused multiply with +0; with only
+  // one (Features::finite_multiply_one_sided), the zero check is on that
   // operand alone.
   spv::Id UseFiniteProduct(spv::Id guarded, spv::Id first, spv::Id second,
-                           uint64_t first_reasons, uint64_t second_reasons,
-                           bool rounded_to_nearest = false);
+                           uint64_t first_reasons, uint64_t second_reasons);
   // Pack/unpack two floats as Xbox 360 extended-range float16, where exponent
   // 31 is a large finite value (up to +-131008), not Inf/NaN.
   spv::Id PackFloat16x2ExtendedRange(spv::Id float2_value);
