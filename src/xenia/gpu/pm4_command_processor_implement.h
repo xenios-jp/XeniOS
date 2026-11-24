@@ -1058,6 +1058,13 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
   uint32_t polls = 0;
 
   bool poll_woken = false;
+  // Apple platforms only: waking on held signals and guest callbacks, and
+  // sleeping between spun polls.
+#if XE_PLATFORM_APPLE
+  constexpr bool kApplePollPacing = true;
+#else
+  constexpr bool kApplePollPacing = false;
+#endif
 
   do {
     // Before the value is read, so a callback that writes it after the read
@@ -1101,10 +1108,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
         if (held_guest_signals_.size() != held_count) {
           continue;
         }
-        // Wake when the held signal's submission completes, not on the
-        // guest's 1 ms poll.
-        COMMAND_PROCESSOR::PerformHeldSignals(1);
-        continue;
+        if (kApplePollPacing) {
+          // Wake when the held signal's submission completes, not on the
+          // guest's 1 ms poll.
+          COMMAND_PROCESSOR::PerformHeldSignals(1);
+          continue;
+        }
       }
       // A short-delay memory poll must also submit queued GPU producers (long
       // waits do in PrepareForWait), but an already satisfied poll must not
@@ -1125,7 +1134,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
               static_cast<uint64_t>(wait_ms * 1000000 * 0.90);
           xe::threading::NanoSleep(sleep_ns);
 #else
-          if (is_memory) {
+          if (kApplePollPacing && is_memory) {
             // The word is written by guest code. A graphics interrupt callback
             // (the vblank's, on the frame limiter thread) ends the wait when
             // it returns; the guest's wait stays the timeout, so nothing
@@ -1154,7 +1163,7 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
       // A guest thread writes what this waits for. Spinning on keeps a
       // performance core busy, the one the writer could run on, so a poll that
       // doesn't sleep above sleeps between checks after a brief spin.
-      if (++polls > 64 &&
+      if (kApplePollPacing && ++polls > 64 &&
           (wait < 0x100 || !cvars::guest_display_refresh_cap)) {
         xe::threading::DeadlineSleep(std::chrono::microseconds(100));
       }
