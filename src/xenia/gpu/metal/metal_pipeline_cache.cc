@@ -67,20 +67,6 @@ DEFINE_bool(
     "or a restart.",
     "Metal");
 DEFINE_bool(
-    metal_bake_fetch_state_uncached, false,
-    "Bake the fetch-state constants (metal_bake_fetch_state) even when the "
-    "title has no shader library cache to keep them in. For frame checks of "
-    "baked code against Metal's specialization; the variants are rebuilt "
-    "every run.",
-    "Metal");
-DEFINE_bool(
-    metal_bake_fetch_state_generic_library, false,
-    "Also compile the generic library (the one with function constants) of a "
-    "shader whose pipelines all take baked libraries "
-    "(metal_bake_fetch_state). It goes unused, so it is skipped by default; "
-    "this is the off switch of the skip.",
-    "Metal");
-DEFINE_bool(
     metal_finite_multiply, true,
     "Skip the Xenos 0 * x = 0 guard on multiplications whose operands are "
     "proven finite.",
@@ -105,18 +91,6 @@ DEFINE_bool(
     "with the pair's general variant (guarded products throughout) if that is "
     "built, and build the exact one in the background. Pipelines stored under "
     "another finite multiply analysis are rebuilt as the general variant.",
-    "Metal");
-DEFINE_bool(
-    metal_finite_multiply_force_general, false,
-    "Test: every pipeline uses the general variant of its finite multiply "
-    "state. Must give the same frames and guest memory as off.",
-    "Metal");
-DEFINE_bool(
-    metal_finite_multiply_prewarm_general, false,
-    "Test: build the general variant before the first draw of each finite "
-    "multiply state, as loading a description stored under another analysis "
-    "does, so replays take the fallback. Must give the same frames and guest "
-    "memory as off.",
     "Metal");
 
 namespace xe {
@@ -1103,10 +1077,8 @@ MTL::Function* MetalPipelineCache::GetSpecializedFunction(
       return it->second;
     }
   }
-  if (translation &&
-      (bakes_only || (cvars::metal_bake_fetch_state &&
-                      (shader_library_cache_.is_open() ||
-                       cvars::metal_bake_fetch_state_uncached)))) {
+  if (translation && (bakes_only || (cvars::metal_bake_fetch_state &&
+                                     shader_library_cache_.is_open()))) {
     if (MTL::Function* baked =
             GetBakedFunction(translation, states, binding_count, key)) {
       return baked;
@@ -1362,11 +1334,8 @@ bool MetalPipelineCache::BakesFetchState(
     const Shader::Translation* translation) const {
   // As GetSpecializedFunction decides it. Shader dumps want the library of the
   // translation itself.
-  if (!cvars::metal_bake_fetch_state ||
-      cvars::metal_bake_fetch_state_generic_library ||
-      !cvars::dump_shaders.empty() ||
-      !(shader_library_cache_.is_open() ||
-        cvars::metal_bake_fetch_state_uncached)) {
+  if (!cvars::metal_bake_fetch_state || !cvars::dump_shaders.empty() ||
+      !shader_library_cache_.is_open()) {
     return false;
   }
   return translation->shader().type() == xenos::ShaderType::kVertex
@@ -2939,10 +2908,6 @@ uint64_t MetalPipelineCache::PopulatePipelineCompileRequest(
                                     description)) {
     description.finite_multiply_one_sided =
         spirv_translator_features_.finite_multiply_one_sided;
-    if (cvars::metal_finite_multiply_force_general) {
-      SetGeneralFiniteMultiplyState(vertex_translation, pixel_translation,
-                                    description);
-    }
   }
   request.priority = pixel_translation ? kPipelinePriorityDraw
                                        : kPipelinePriorityDrawDepthOnly;
@@ -3049,10 +3014,6 @@ MTL::RenderPipelineState* MetalPipelineCache::GetOrCreatePipelineState(
           general_request.pipeline_key != request.pipeline_key
               ? FindBuiltPipelineState(general_request.pipeline_key)
               : nullptr;
-      if (!general && cvars::metal_finite_multiply_prewarm_general &&
-          general_request.pipeline_key != request.pipeline_key) {
-        general = AcquirePipelineState(general_request, false, nullptr);
-      }
       if (general) {
         uint64_t pending_key = last_pending_pipeline_key_;
         PipelineCompileRequest exact_request = request;
