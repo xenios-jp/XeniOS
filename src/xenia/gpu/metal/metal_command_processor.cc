@@ -72,7 +72,6 @@ DECLARE_bool(clear_memory_page_state);
 DECLARE_bool(submit_on_primary_buffer_end);
 
 DECLARE_bool(skip_no_effect_draws);
-DECLARE_bool(snap_vertices);
 DEFINE_bool(metal_stand_in_exact_depth_stencil, true,
             "A draw that writes depth or stencil and whose pixel shader "
             "decides where (kill, alpha test, alpha to coverage, depth "
@@ -5742,11 +5741,6 @@ void MetalCommandProcessor::UpdateSpirvSystemConstantValues(
     consts.ndc_scale[i] = viewport_info.ndc_scale[i];
     consts.ndc_offset[i] = viewport_info.ndc_offset[i];
   }
-  // Vertex snapping to the guest's subpixel grid (snap_vertices).
-  consts.vertex_snap_scale[0] =
-      cvars::snap_vertices ? float(viewport_info.xy_extent[0]) * 8.0f : 0.0f;
-  consts.vertex_snap_scale[1] =
-      cvars::snap_vertices ? float(viewport_info.xy_extent[1]) * 8.0f : 0.0f;
 
   // Point rendering (matching Vulkan backend).
   auto pa_su_point_size = regs.Get<reg::PA_SU_POINT_SIZE>();

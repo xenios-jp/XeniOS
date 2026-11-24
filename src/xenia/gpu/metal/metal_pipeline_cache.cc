@@ -59,14 +59,6 @@
 
 DECLARE_bool(precise_interpolation);
 DEFINE_bool(
-    snap_vertices, false,
-    "Snap vertex positions to the console's 1/16 pixel grid in the vertex "
-    "shader. Rasterization then doesn't depend on the host viewport origin, "
-    "so strip_merge gives bit for bit what unmerged strips give (without it "
-    "they differ by host subpixel rounding). Changes the output of every "
-    "draw slightly; off by default.",
-    "GPU");
-DEFINE_bool(
     metal_bake_fetch_state, true,
     "Compile a shader's fetch-state function constants into its library "
     "(kept in the shader library cache) instead of having Metal specialize the "
