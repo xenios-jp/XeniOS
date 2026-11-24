@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/backend/a64/a64_sequences.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -897,8 +898,14 @@ static void BranchIfOutsideSingleRange(A64Emitter& e, const DReg* operands,
 // keeps the check out of the result's dependency chain. Only the operands that
 // might be out of range are tested, and none at all when every one is known to
 // be in it: an infinite or NaN operand only matters once another is out of
-// range, and the tail tests all of them for that. operands are instr's sources
-// in order. Returns a label to bind after the operation, if one's needed.
+// range, and the tail tests all of them for that.
+//
+// Inline, an operand passes if its exponent is that of a value in the range, as
+// nearly every one's is. The tail sorts out the rest, zeros among them. An
+// integer test keeps the floating-point pipes free for the operation.
+//
+// operands are instr's sources in order. Returns a label to bind after the
+// operation, if one's needed. Clobbers x0 and, in the tail, x1 and x2.
 static Xbyak_aarch64::Label* EmitSingleRangeCheck(
     A64Emitter& e, const hir::Instr* instr, DReg dest,
     std::initializer_list<DReg> operands) {
@@ -911,7 +918,11 @@ static Xbyak_aarch64::Label* EmitSingleRangeCheck(
       regs.size() > 2 ? instr->src3.value : nullptr};
   std::vector<DReg> unknown;
   for (size_t n = 0; n < regs.size(); ++n) {
-    if (!sources[n]->IsInSingleRange()) {
+    const bool tested =
+        std::any_of(unknown.begin(), unknown.end(), [&](const DReg& reg) {
+          return reg.getIdx() == regs[n].getIdx();
+        });
+    if (!tested && !sources[n]->IsInSingleRange()) {
       unknown.push_back(regs[n]);
     }
   }
@@ -922,8 +933,14 @@ static Xbyak_aarch64::Label* EmitSingleRangeCheck(
   e.ChangeFpcrMode(FPCRMode::Fpu);
   auto& done = e.NewCachedLabel();
   auto& resume = e.NewCachedLabel();
-  auto& out_of_range = e.AddToTail(
-      [dest, regs, &done, &resume](A64Emitter& e, Xbyak_aarch64::Label& tail) {
+  auto& suspect = e.AddToTail(
+      [dest, regs, unknown, &done, &resume](A64Emitter& e,
+                                            Xbyak_aarch64::Label& tail) {
+        auto& out_of_range = e.NewCachedLabel();
+        BranchIfOutsideSingleRange(e, unknown.data(), unknown.size(),
+                                   out_of_range);
+        e.b(resume);
+        e.L(out_of_range);
         // An infinite or NaN operand takes precedence
         e.mov(e.x1, static_cast<uint64_t>(0xFFE0000000000000ull));
         for (const DReg& reg : regs) {
@@ -936,7 +953,14 @@ static Xbyak_aarch64::Label* EmitSingleRangeCheck(
         e.fmov(dest, e.x0);
         e.b(done);
       });
-  BranchIfOutsideSingleRange(e, unknown.data(), unknown.size(), out_of_range);
+  for (const DReg& reg : unknown) {
+    // The exponents of [2^-149, 2^128), whose first and last lie 276 apart.
+    e.fmov(e.x0, reg);
+    e.ubfx(e.x0, e.x0, 52, 11);
+    e.sub(e.w0, e.w0, 874);
+    e.cmp(e.w0, 276);
+    e.b(HI, suspect);
+  }
   e.L(resume);
   return &done;
 }

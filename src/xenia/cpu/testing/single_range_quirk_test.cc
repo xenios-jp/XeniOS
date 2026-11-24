@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "xenia/cpu/compiler/passes/control_flow_analysis_pass.h"
 #include "xenia/cpu/compiler/passes/control_flow_simplification_pass.h"
@@ -370,6 +371,93 @@ TEST_CASE("SINGLE_RANGE_FLAG_KNOWN_OPERANDS", "[instr]") {
             std::memcpy(&bits, &ctx->f[0], sizeof(bits));
             REQUIRE(bits == c.*op.expected);
           });
+    }
+  }
+}
+
+// The operations' own check gives what SINGLE_RANGE_QUIRK and a select do, in
+// every rounding mode, for operands on and around the edges of the range, the
+// doubles that are no single, and infinite and NaN ones.
+TEST_CASE("SINGLE_RANGE_FLAG_MATCHES_QUIRK", "[instr]") {
+  std::vector<uint64_t> operands;
+  for (uint64_t magnitude :
+       {kZero, kDenormal, uint64_t(0x000FFFFFFFFFFFFFull), kMinNormal,
+        uint64_t(0x3680000000000000ull), uint64_t(0x368FFFFFFFFFFFFFull),
+        kBelowSingle, uint64_t(0x3690000000000001ull),
+        uint64_t(0x369FFFFFFFFFFFFFull), kSmallestSingle,
+        uint64_t(0x36A0000000000001ull), uint64_t(0x36A8000000000000ull),
+        uint64_t(0x380FFFFFC0000000ull), uint64_t(0x3810000000000000ull),
+        uint64_t(0x3FEFFFFFFFFFFFFFull), kOne, uint64_t(0x3FF0000010000000ull),
+        uint64_t(0x3FF0000020000000ull), uint64_t(0x47EFFFFFE0000000ull),
+        uint64_t(0x47EFFFFFEFFFFFFFull), uint64_t(0x47EFFFFFF0000000ull),
+        kBelow128, k128, uint64_t(0x47F0000000000001ull),
+        uint64_t(0x7FEFFFFFFFFFFFFFull), kInf, uint64_t(0x7FF0000000000001ull),
+        kNaN}) {
+    operands.push_back(magnitude);
+    operands.push_back(magnitude | 0x8000000000000000ull);
+  }
+  using Build = Value* (*)(HIRBuilder & b, Value* x, Value* y, Value* z,
+                           uint32_t flags);
+  const Build builds[] = {
+      [](HIRBuilder& b, Value* x, Value* y, Value*, uint32_t flags) {
+        return b.Add(x, y, flags);
+      },
+      [](HIRBuilder& b, Value* x, Value* y, Value*, uint32_t flags) {
+        return b.Sub(x, y, flags);
+      },
+      [](HIRBuilder& b, Value* x, Value* y, Value*, uint32_t flags) {
+        return b.Mul(x, y, flags);
+      },
+      [](HIRBuilder& b, Value* x, Value* y, Value* z, uint32_t flags) {
+        return b.MulAdd(x, y, z, false, flags);
+      },
+      [](HIRBuilder& b, Value* x, Value* y, Value* z, uint32_t flags) {
+        return b.MulSub(x, y, z, true, flags);
+      },
+  };
+  int build_index = 0;
+  for (Build build : builds) {
+    const bool fused = build_index++ >= 3;
+    // One function at a time: each installs the process-wide MMIO handler.
+    TestFunction test([build, fused](HIRBuilder& b) {
+      b.SetRoundingMode(b.Truncate(LoadGPR(b, 4), INT32_TYPE));
+      Value* x = LoadFPR(b, 1);
+      Value* y = LoadFPR(b, 2);
+      Value* z = LoadFPR(b, 3);
+      Value* quirk = b.SingleRangeQuirk(x, y, fused ? z : y);
+      StoreFPR(b, 5,
+               b.Select(quirk, F64Constant(b, kNaN), build(b, x, y, z, 0)));
+      StoreFPR(b, 4, build(b, x, y, z, ARITHMETIC_SINGLE_RANGE));
+      b.SetRoundingMode(b.LoadConstantInt32(0));
+      b.Return();
+    });
+    const uint64_t thirds[] = {kOne, kZero, kBelowSingle, k128, kInf, kNaN};
+    for (uint64_t mode = 0; mode < 4; ++mode) {
+      for (uint64_t x : operands) {
+        for (uint64_t y : operands) {
+          for (uint64_t z : thirds) {
+            test.Run(
+                [&](PPCContext* ctx) {
+                  ctx->r[4] = mode;
+                  SetF64Bits(ctx, 1, x);
+                  SetF64Bits(ctx, 2, y);
+                  SetF64Bits(ctx, 3, z);
+                },
+                [&](PPCContext* ctx) {
+                  uint64_t flag_bits, quirk_bits;
+                  std::memcpy(&flag_bits, &ctx->f[4], sizeof(flag_bits));
+                  std::memcpy(&quirk_bits, &ctx->f[5], sizeof(quirk_bits));
+                  INFO("operation " << build_index << " mode " << mode
+                                    << " operands 0x" << std::hex << x << " 0x"
+                                    << y << " 0x" << z);
+                  REQUIRE(flag_bits == quirk_bits);
+                });
+            if (!fused || (mode && z == kZero)) {
+              break;
+            }
+          }
+        }
+      }
     }
   }
 }
