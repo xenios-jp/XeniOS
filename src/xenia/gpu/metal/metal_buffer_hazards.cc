@@ -119,6 +119,16 @@ bool MetalBufferHazards::Encoder::HasAccess(uint32_t start,
          Overlaps(writes_, start, end);
 }
 
+bool MetalBufferHazards::Encoder::HasWriteAccess(uint32_t start,
+                                                 uint32_t length) const {
+  if (!hazards_ || !length || start >= hazards_->buffer_size_) {
+    return false;
+  }
+  uint32_t end = uint32_t(
+      std::min(uint64_t(start) + length, uint64_t(hazards_->buffer_size_)));
+  return Overlaps(writes_, start, end);
+}
+
 bool MetalBufferHazards::Encoder::HasReadAccess(uint32_t start,
                                                 uint32_t length) const {
   if (!hazards_ || !length || start >= hazards_->buffer_size_) {
@@ -292,6 +302,29 @@ bool MetalBufferHazards::HasPendingAccess(uint32_t start,
     };
     if (overlaps(group->reads) || overlaps(group->writes)) {
       return true;
+    }
+  }
+  return false;
+}
+
+bool MetalBufferHazards::HasUncommittedWrite(uint32_t start,
+                                             uint32_t length) const {
+  if (!length || start >= buffer_size_) {
+    return false;
+  }
+  uint32_t end =
+      uint32_t(std::min(uint64_t(start) + length, uint64_t(buffer_size_)));
+  if (!AnyBlock(write_blocks_, start, end)) {
+    return false;
+  }
+  for (const auto& group : groups_) {
+    if (group->command_buffer->status() >= MTL::CommandBufferStatusCommitted) {
+      continue;
+    }
+    for (const Record& record : group->writes) {
+      if (record.start < end && start < record.end) {
+        return true;
+      }
     }
   }
   return false;

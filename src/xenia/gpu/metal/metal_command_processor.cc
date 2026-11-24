@@ -1804,6 +1804,8 @@ void MetalCommandProcessor::ShutdownContext() {
   {
     std::lock_guard<std::mutex> lock(spirv_argbuf_mutex_);
     command_buffer_spirv_argbuf_pages_.clear();
+    command_buffer_tess_prep_pages_.clear();
+    tess_prep_page_pool_.clear();
     pending_spirv_argbuf_releases_.clear();
     spirv_argbuf_pool_.clear();
   }
@@ -2571,6 +2573,26 @@ bool MetalCommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   // resolve work left to its end.
   if (RenderEncoderResolveOnly()) {
     EndRenderEncoder();
+  }
+
+  // The tessellation prep dispatch reads the indices (edge factors if adaptive)
+  // ahead of the open command buffer. If that one writes them, commit it, so
+  // this draw's dispatch and those of the draws after it can run ahead of the
+  // next one, instead of each ending the render pass.
+  if (index_buffer_info && shared_memory_ && shared_memory_->hazards() &&
+      current_command_buffer_) {
+    const auto initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+    if (xenos::IsMajorModeExplicit(initiator.major_mode, initiator.prim_type) &&
+        regs.Get<reg::VGT_OUTPUT_PATH_CNTL>().path_select ==
+            xenos::VGTOutputPath::kTessellationEnable) {
+      const uint32_t start = index_buffer_info->guest_base & 0x1FFFFFFF;
+      const uint32_t length = uint32_t(index_buffer_info->length);
+      if (shared_memory_->hazards()->HasUncommittedWrite(start, length) ||
+          render_encoder_shared_memory_hazards_.HasWriteAccess(start, length) ||
+          shared_compute_hazards_.HasWriteAccess(start, length)) {
+        EndCommandBuffer();
+      }
+    }
   }
 
   // Vertex shader analysis — use Shader* base type so both draw paths share
@@ -3534,7 +3556,9 @@ void MetalCommandProcessor::CommitTessPrepAhead() {
     pool->release();
     return;
   }
-  MTL::ComputeCommandEncoder* encoder = cmd->computeCommandEncoder();
+  // Every dispatch writes its own ranges and none reads another's output.
+  MTL::ComputeCommandEncoder* encoder =
+      cmd->computeCommandEncoder(MTL::DispatchTypeConcurrent);
   if (!encoder) {
     XELOGE("Metal: failed to create pre-pass compute encoder for tess prep");
     DiscardAccountedCommandBuffer(cmd, CommandBufferKind::kTessellationPrep);
@@ -3591,8 +3615,10 @@ bool MetalCommandProcessor::PrepareNativeTessellationDraw(
   const uint32_t total_control_points =
       is_adaptive ? patch_count : patch_count * cp_per_patch;
   const uint32_t cp_bytes = total_control_points * sizeof(float);
+  // Auto-indexed control points need no guest memory, so the CPU writes them.
+  const bool cp_from_cpu = !is_adaptive && !draw_index_buffer.indexed;
   if (!AcquireSpirvArgumentBufferSlice(cp_bytes, 4, &tess_out.cp_buffer,
-                                       &tess_out.cp_offset)) {
+                                       &tess_out.cp_offset, !cp_from_cpu)) {
     XELOGE("Metal: failed to allocate {}B tessellation control point buffer",
            cp_bytes);
     return false;
@@ -3609,7 +3635,7 @@ bool MetalCommandProcessor::PrepareNativeTessellationDraw(
   const uint32_t factor_bytes =
       is_adaptive ? patch_count * factor_struct_bytes : factor_struct_bytes;
   if (!AcquireSpirvArgumentBufferSlice(factor_bytes, 4, &tess_out.factor_buffer,
-                                       &tess_out.factor_offset)) {
+                                       &tess_out.factor_offset, is_adaptive)) {
     XELOGE("Metal: failed to allocate {}B tessellation factor buffer",
            factor_bytes);
     return false;
@@ -3626,6 +3652,28 @@ bool MetalCommandProcessor::PrepareNativeTessellationDraw(
     for (uint32_t i = 0; i < half_count; ++i) {
       dst[i] = factor_half;
     }
+  }
+
+  tess_out.patch_count = patch_count;
+  tess_out.cp_per_patch = cp_per_patch;
+
+  if (cp_from_cpu) {
+    // Matches the auto-index path of metal_tessellation_prep.cs.metal.
+    const uint32_t index_offset = regs[XE_GPU_REG_VGT_INDX_OFFSET];
+    const uint32_t min_index = regs[XE_GPU_REG_VGT_MIN_VTX_INDX];
+    const uint32_t max_index = regs[XE_GPU_REG_VGT_MAX_VTX_INDX];
+    // The shader's endian swap of the raw index.
+    const xenos::Endian endian =
+        primitive_processing_result.host_shader_index_endian;
+    auto* dst = reinterpret_cast<float*>(
+        static_cast<uint8_t*>(tess_out.cp_buffer->contents()) +
+        tess_out.cp_offset);
+    for (uint32_t i = 0; i < total_control_points; ++i) {
+      const uint32_t index =
+          (xenos::GpuSwap(i, endian) + index_offset) & 0xFFFFFFu;
+      dst[i] = float(std::min(std::max(index, min_index), max_index));
+    }
+    return true;
   }
 
   TessPrepDispatch dispatch;
@@ -3678,17 +3726,20 @@ bool MetalCommandProcessor::PrepareNativeTessellationDraw(
         uint32_t(std::min(index_bytes, uint64_t(SharedMemory::kBufferSize)));
   }
 
-  // If a render pass is already open and the source buffer has no pending GPU
-  // accesses in shared memory, queue the prep dispatch into a pre-pass command
-  // buffer committed right before current_command_buffer_ (like
-  // CommitLoadsAhead) so TBDR tile memory isn't broken mid-pass.
-  bool encode_ahead = current_render_encoder_ != nullptr;
-  if (encode_ahead && dispatch.reads_shared_memory) {
+  // Queue the prep dispatch into a pre-pass command buffer committed right
+  // before current_command_buffer_ (like CommitLoadsAhead) so TBDR tile memory
+  // isn't broken mid-pass, unless something in current_command_buffer_ writes
+  // the indices. Other reads of them don't matter. A later write there waits
+  // for this draw's pass, which waits for the dispatch.
+  bool encode_ahead = true;
+  if (dispatch.reads_shared_memory) {
     auto* hazards = shared_memory_->hazards();
     if (!hazards ||
-        hazards->HasPendingAccess(dispatch.shared_memory_start,
-                                  dispatch.shared_memory_length) ||
-        render_encoder_shared_memory_hazards_.HasAccess(
+        hazards->HasUncommittedWrite(dispatch.shared_memory_start,
+                                     dispatch.shared_memory_length) ||
+        render_encoder_shared_memory_hazards_.HasWriteAccess(
+            dispatch.shared_memory_start, dispatch.shared_memory_length) ||
+        shared_compute_hazards_.HasWriteAccess(
             dispatch.shared_memory_start, dispatch.shared_memory_length)) {
       encode_ahead = false;
     }
@@ -3712,8 +3763,6 @@ bool MetalCommandProcessor::PrepareNativeTessellationDraw(
     EncodeTessPrepDispatch(compute, dispatch);
   }
 
-  tess_out.patch_count = patch_count;
-  tess_out.cp_per_patch = cp_per_patch;
   return true;
 }
 
@@ -5217,7 +5266,7 @@ void MetalCommandProcessor::BeginCommandBuffer() {
 
 bool MetalCommandProcessor::AcquireSpirvArgumentBufferSlice(
     uint32_t bytes, uint32_t alignment, MTL::Buffer** buffer_out,
-    NS::UInteger* offset_out) {
+    NS::UInteger* offset_out, bool gpu_written) {
   if (!buffer_out || !offset_out) {
     return false;
   }
@@ -5232,8 +5281,10 @@ bool MetalCommandProcessor::AcquireSpirvArgumentBufferSlice(
     return ((value + alignment - 1) / alignment) * alignment;
   };
 
-  if (!command_buffer_spirv_argbuf_pages_.empty()) {
-    auto& page = command_buffer_spirv_argbuf_pages_.back();
+  auto& command_buffer_pages = gpu_written ? command_buffer_tess_prep_pages_
+                                           : command_buffer_spirv_argbuf_pages_;
+  if (!command_buffer_pages.empty()) {
+    auto& page = command_buffer_pages.back();
     const size_t aligned_offset = align_up(page->offset, align);
     if (aligned_offset + bytes <= page->bytes) {
       page->offset = aligned_offset + bytes;
@@ -5251,11 +5302,11 @@ bool MetalCommandProcessor::AcquireSpirvArgumentBufferSlice(
   std::shared_ptr<SpirvArgumentBufferPage> page;
   {
     std::lock_guard<std::mutex> lock(spirv_argbuf_mutex_);
-    for (auto it = spirv_argbuf_pool_.begin(); it != spirv_argbuf_pool_.end();
-         ++it) {
+    auto& pool = gpu_written ? tess_prep_page_pool_ : spirv_argbuf_pool_;
+    for (auto it = pool.begin(); it != pool.end(); ++it) {
       if ((*it) && (*it)->bytes >= page_bytes) {
         page = *it;
-        spirv_argbuf_pool_.erase(it);
+        pool.erase(it);
         break;
       }
     }
@@ -5263,6 +5314,7 @@ bool MetalCommandProcessor::AcquireSpirvArgumentBufferSlice(
   if (!page) {
     page = std::make_shared<SpirvArgumentBufferPage>();
     page->bytes = page_bytes;
+    page->gpu_written = gpu_written;
     page->buffer =
         device_->newBuffer(page_bytes, MTL::ResourceStorageModeShared);
     if (!page->buffer) {
@@ -5270,7 +5322,7 @@ bool MetalCommandProcessor::AcquireSpirvArgumentBufferSlice(
     }
   }
   page->offset = 0;
-  command_buffer_spirv_argbuf_pages_.push_back(page);
+  command_buffer_pages.push_back(page);
 
   const size_t aligned_offset = align_up(page->offset, align);
   if (aligned_offset + bytes > page->bytes) {
@@ -5286,12 +5338,16 @@ void MetalCommandProcessor::ScheduleSpirvArgumentBufferRelease(
     MTL::CommandBuffer* command_buffer) {
   // Cached addresses become invalid when these pages enter the recycling pool.
   argument_binder_.ResetUploadCaches();
-  if (!command_buffer || command_buffer_spirv_argbuf_pages_.empty()) {
+  if (!command_buffer || (command_buffer_spirv_argbuf_pages_.empty() &&
+                          command_buffer_tess_prep_pages_.empty())) {
     return;
   }
 
   std::vector<std::shared_ptr<SpirvArgumentBufferPage>> pages;
   pages.swap(command_buffer_spirv_argbuf_pages_);
+  pages.insert(pages.end(), command_buffer_tess_prep_pages_.begin(),
+               command_buffer_tess_prep_pages_.end());
+  command_buffer_tess_prep_pages_.clear();
 
   bool add_handler = false;
   {
@@ -5315,7 +5371,9 @@ void MetalCommandProcessor::ScheduleSpirvArgumentBufferRelease(
               for (auto& page : it->second) {
                 if (page) {
                   page->offset = 0;
-                  spirv_argbuf_pool_.push_back(std::move(page));
+                  auto& pool = page->gpu_written ? tess_prep_page_pool_
+                                                 : spirv_argbuf_pool_;
+                  pool.push_back(std::move(page));
                 }
               }
               pending_spirv_argbuf_releases_.erase(it);

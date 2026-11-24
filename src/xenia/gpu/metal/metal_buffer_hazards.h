@@ -52,6 +52,8 @@ class MetalBufferHazards {
     bool is_active() const { return hazards_ != nullptr; }
     // Accesses already encoded in this still-open encoder.
     bool HasAccess(uint32_t start, uint32_t length) const;
+    // Writes already encoded in this still-open encoder.
+    bool HasWriteAccess(uint32_t start, uint32_t length) const;
     // Reads already encoded in this still-open encoder, other than the coarse
     // ones.
     bool HasReadAccess(uint32_t start, uint32_t length) const;
@@ -110,6 +112,10 @@ class MetalBufferHazards {
   void Retire();
   // Includes ended encoders in command buffers that have not been committed.
   bool HasPendingAccess(uint32_t start, uint32_t length) const;
+  // Writes by ended encoders of command buffers not committed yet. A command
+  // buffer committed before them would read the range too early; writes of
+  // committed ones are waited for with their fences.
+  bool HasUncommittedWrite(uint32_t start, uint32_t length) const;
   // The command buffers with recorded accesses that are committed and not
   // finished, other than `except`. They stay retained until Retire.
   void GetCommittedUnfinished(MTL::CommandBuffer* except,

@@ -279,7 +279,8 @@ class MetalCommandProcessor : public CommandProcessor,
   // done with it.
   bool AcquireSpirvArgumentBufferSlice(uint32_t bytes, uint32_t alignment,
                                        MTL::Buffer** buffer_out,
-                                       NS::UInteger* offset_out);
+                                       NS::UInteger* offset_out,
+      bool gpu_written = false);
   MTL::Buffer* null_buffer() const { return null_buffer_; }
   MTL::SamplerState* null_sampler() const { return null_sampler_; }
 
@@ -499,6 +500,7 @@ class MetalCommandProcessor : public CommandProcessor,
     MTL::Buffer* buffer = nullptr;
     size_t bytes = 0;
     size_t offset = 0;
+    bool gpu_written = false;
 
     ~SpirvArgumentBufferPage();
   };
@@ -757,6 +759,12 @@ class MetalCommandProcessor : public CommandProcessor,
   std::vector<std::shared_ptr<SpirvArgumentBufferPage>> spirv_argbuf_pool_;
   std::vector<std::shared_ptr<SpirvArgumentBufferPage>>
       command_buffer_spirv_argbuf_pages_;
+  // Pages the tessellation prep dispatches write, apart from the constants:
+  // Metal tracks a whole buffer, so a write in a constants page would order the
+  // dispatch against every pass that reads any constants in it.
+  std::vector<std::shared_ptr<SpirvArgumentBufferPage>> tess_prep_page_pool_;
+  std::vector<std::shared_ptr<SpirvArgumentBufferPage>>
+      command_buffer_tess_prep_pages_;
   std::unordered_map<MTL::CommandBuffer*,
                      std::vector<std::shared_ptr<SpirvArgumentBufferPage>>>
       pending_spirv_argbuf_releases_;
