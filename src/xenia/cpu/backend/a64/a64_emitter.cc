@@ -178,6 +178,7 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
   // Count each block's incoming edges for the FPCR tracker, and note whether
   // the function touches VEC128 at all.
   function_has_vmx_ = false;
+  function_has_single_range_tests_ = false;
   function_has_stackpoint_ = false;
   ResetSequenceHandoffs();
   expected_preds_.clear();
@@ -192,6 +193,18 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
       }
       if (!function_has_stackpoint_ && MakesCall(i)) {
         function_has_stackpoint_ = true;
+      }
+      switch (i->GetOpcodeNum()) {
+        case hir::OPCODE_ADD:
+        case hir::OPCODE_SUB:
+        case hir::OPCODE_MUL:
+        case hir::OPCODE_MUL_ADD:
+        case hir::OPCODE_MUL_SUB:
+          function_has_single_range_tests_ |=
+              (i->flags & hir::ARITHMETIC_SINGLE_RANGE) != 0;
+          break;
+        default:
+          break;
       }
       if (function_has_vmx_) {
         continue;
@@ -278,8 +291,15 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
   }
   code_offsets.prolog_stack_alloc = getSize();
 
-  // Store host return address (x30/LR) so the epilog can restore it.
-  str(x30, ptr(sp, static_cast<uint32_t>(StackLayout::HOST_RET_ADDR)));
+  // Store host return address (x30/LR) so the epilog can restore it, and zero
+  // the byte that a failed single-range test sets, if there are any.
+  static_assert(StackLayout::GUEST_RANGE_TEST_FAILED ==
+                StackLayout::HOST_RET_ADDR + 8);
+  if (function_has_single_range_tests_) {
+    stp(x30, xzr, ptr(sp, static_cast<int32_t>(StackLayout::HOST_RET_ADDR)));
+  } else {
+    str(x30, ptr(sp, static_cast<uint32_t>(StackLayout::HOST_RET_ADDR)));
+  }
   // Store guest PPC return address (passed in x0 by convention).
   str(x0, ptr(sp, static_cast<uint32_t>(StackLayout::GUEST_RET_ADDR)));
   // Store zero for call return address (we haven't made a call yet).
@@ -310,6 +330,7 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
   auto block = builder->first_block();
   synchronize_stack_on_next_instruction_ = false;
   while (block) {
+    single_range_block_ = std::make_shared<SingleRangeBlock>();
     // Start in the meet of the incoming states once every incoming edge has
     // been emitted. A loop header's back edge has not been, so it starts
     // with the FPCR mode untracked.
@@ -372,6 +393,12 @@ bool A64Emitter::Emit(hir::HIRBuilder* builder, EmitFunctionInfo& func_info) {
         }
         instr = instr->next;
         continue;
+      }
+      // Tests from before a call aren't reused after it. The PPC front end
+      // reloads every register after a call, so this only guards HIR that
+      // keeps a value across one.
+      if (MakesCall(instr)) {
+        single_range_block_ = std::make_shared<SingleRangeBlock>();
       }
       const hir::Instr* new_tail = instr;
       bool selected = false;

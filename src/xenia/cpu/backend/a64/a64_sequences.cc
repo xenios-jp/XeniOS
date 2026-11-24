@@ -892,6 +892,19 @@ static void BranchIfOutsideSingleRange(A64Emitter& e, const DReg* operands,
   }
 }
 
+// The exponents of [2^-149, 2^128) are the kSingleRangeExponentCount from
+// kSingleRangeExponent on, and that of infinities and NaNs is 2047. Leaves the
+// flags of comparing reg's with the last of them: HI outside. Clobbers x0,
+// which is left with the exponent less kSingleRangeExponent.
+static constexpr uint32_t kSingleRangeExponent = 874;
+static constexpr uint32_t kSingleRangeExponentCount = 277;
+static void EmitCompareSingleRangeExponent(A64Emitter& e, const DReg& reg) {
+  e.fmov(e.x0, reg);
+  e.ubfx(e.x0, e.x0, 52, 11);
+  e.sub(e.w0, e.w0, kSingleRangeExponent);
+  e.cmp(e.w0, kSingleRangeExponentCount - 1);
+}
+
 // ARITHMETIC_SINGLE_RANGE, ahead of the operation: the default QNaN if an
 // operand is nonzero and outside [2^-149, 2^128) and none is infinite or NaN,
 // see PPCHIRBuilder::SingleOutOfRangeOperand. A branch rather than a select
@@ -904,8 +917,16 @@ static void BranchIfOutsideSingleRange(A64Emitter& e, const DReg* operands,
 // nearly every one's is. The tail sorts out the rest, zeros among them. An
 // integer test keeps the floating-point pipes free for the operation.
 //
+// A value that the block has tested before only needs the frame's byte that the
+// tail sets when it finds an operand out of range: while it is zero, every test
+// of the block so far has passed. The tail of the block's last such check
+// clears the byte, so a failure costs the rest of the block and not of the
+// call, unless a branch leaves the block before that check: then the byte stays
+// set, and the checks that read it take their tails, until a block's last check
+// clears it. Infinities and NaNs don't set it.
+//
 // operands are instr's sources in order. Returns a label to bind after the
-// operation, if one's needed. Clobbers x0 and, in the tail, x1 and x2.
+// operation, if one's needed. Clobbers x0 and, in the tail, x1.
 static Xbyak_aarch64::Label* EmitSingleRangeCheck(
     A64Emitter& e, const hir::Instr* instr, DReg dest,
     std::initializer_list<DReg> operands) {
@@ -916,49 +937,87 @@ static Xbyak_aarch64::Label* EmitSingleRangeCheck(
   const hir::Value* sources[3] = {
       instr->src1.value, instr->src2.value,
       regs.size() > 2 ? instr->src3.value : nullptr};
+  // What the tail has to test, and what of it the inline code does.
   std::vector<DReg> unknown;
+  std::vector<DReg> untested;
+  bool reuses = false;
   for (size_t n = 0; n < regs.size(); ++n) {
-    const bool tested =
+    const bool listed =
         std::any_of(unknown.begin(), unknown.end(), [&](const DReg& reg) {
           return reg.getIdx() == regs[n].getIdx();
         });
-    if (!tested && !sources[n]->IsInSingleRange()) {
-      unknown.push_back(regs[n]);
+    if (listed || sources[n]->IsInSingleRange()) {
+      continue;
+    }
+    unknown.push_back(regs[n]);
+    if (e.IsSingleRangeTested(sources[n])) {
+      reuses = true;
+    } else {
+      untested.push_back(regs[n]);
     }
   }
   if (unknown.empty()) {
     return nullptr;
   }
+  for (const hir::Value* source : sources) {
+    if (source && !source->IsInSingleRange()) {
+      e.MarkSingleRangeTested(source);
+    }
+  }
   // Ahead of the branch, as the quirk skips the operation that would do this
   e.ChangeFpcrMode(FPCRMode::Fpu);
   auto& done = e.NewCachedLabel();
   auto& resume = e.NewCachedLabel();
-  auto& suspect = e.AddToTail(
-      [dest, regs, unknown, &done, &resume](A64Emitter& e,
-                                            Xbyak_aarch64::Label& tail) {
-        auto& out_of_range = e.NewCachedLabel();
-        BranchIfOutsideSingleRange(e, unknown.data(), unknown.size(),
-                                   out_of_range);
-        e.b(resume);
-        e.L(out_of_range);
-        // An infinite or NaN operand takes precedence
-        e.mov(e.x1, static_cast<uint64_t>(0xFFE0000000000000ull));
-        for (const DReg& reg : regs) {
-          e.fmov(e.x0, reg);
-          e.add(e.x0, e.x0, e.x0);
-          e.cmp(e.x0, e.x1);
-          e.b(HS, resume);
-        }
-        e.mov(e.x0, static_cast<uint64_t>(0x7FF8000000000000ull));
-        e.fmov(dest, e.x0);
-        e.b(done);
-      });
-  for (const DReg& reg : unknown) {
-    // The exponents of [2^-149, 2^128), whose first and last lie 276 apart.
-    e.fmov(e.x0, reg);
-    e.ubfx(e.x0, e.x0, 52, 11);
-    e.sub(e.w0, e.w0, 874);
-    e.cmp(e.w0, 276);
+  auto& suspect = e.AddToTail([dest, regs, unknown, reuses,
+                               block = e.single_range_block(),
+                               check = e.AddSingleRangeCheck(reuses), &done,
+                               &resume](A64Emitter& e, Xbyak_aarch64::Label&) {
+    const auto failed_byte = [&e] {
+      return ptr(e.sp,
+                 static_cast<uint32_t>(StackLayout::GUEST_RANGE_TEST_FAILED));
+    };
+    if (reuses && block->last_reuse == check) {
+      e.strb(e.wzr, failed_byte());
+    }
+    auto& out_of_range = e.NewCachedLabel();
+    for (const DReg& reg : unknown) {
+      auto& next = e.NewCachedLabel();
+      // Passing the last one is what a zero does most, so go straight there
+      Xbyak_aarch64::Label& passed =
+          reg.getIdx() == unknown.back().getIdx() ? resume : next;
+      e.fcmp(reg, 0.0);
+      e.b(Xbyak_aarch64::EQ, passed);
+      EmitCompareSingleRangeExponent(e, reg);
+      e.b(Xbyak_aarch64::LS, passed);
+      e.cmp(e.w0, 2047 - kSingleRangeExponent);
+      e.b(Xbyak_aarch64::NE, out_of_range);
+      e.L(next);
+    }
+    e.b(resume);
+    e.L(out_of_range);
+    if (block->last_reuse > check) {
+      e.mov(e.w0, 1);
+      e.strb(e.w0, failed_byte());
+    }
+    // An infinite or NaN operand takes precedence
+    e.mov(e.x1, static_cast<uint64_t>(0xFFE0000000000000ull));
+    for (const DReg& reg : regs) {
+      e.fmov(e.x0, reg);
+      e.add(e.x0, e.x0, e.x0);
+      e.cmp(e.x0, e.x1);
+      e.b(HS, resume);
+    }
+    e.mov(e.x0, static_cast<uint64_t>(0x7FF8000000000000ull));
+    e.fmov(dest, e.x0);
+    e.b(done);
+  });
+  if (reuses) {
+    e.ldrb(e.w0, ptr(e.sp, static_cast<uint32_t>(
+                               StackLayout::GUEST_RANGE_TEST_FAILED)));
+    e.cbnz(e.w0, suspect);
+  }
+  for (const DReg& reg : untested) {
+    EmitCompareSingleRangeExponent(e, reg);
     e.b(HI, suspect);
   }
   e.L(resume);

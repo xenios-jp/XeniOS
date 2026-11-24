@@ -48,7 +48,7 @@ class StackLayout {
    *  | guest ret addr   | sp + 0x030  (guest PPC return address)
    *  | call ret addr    | sp + 0x038  (next call's guest PPC return addr)
    *  | host ret addr    | sp + 0x040  (host x30/LR, for ret instruction)
-   *  | reserved         | sp + 0x048
+   *  | range test failed| sp + 0x048  (byte, see EmitSingleRangeCheck)
    *  |  ... locals ...  |
    *  +------------------+
    *
@@ -63,9 +63,11 @@ class StackLayout {
   static constexpr size_t GUEST_RET_ADDR = 48;
   static constexpr size_t GUEST_CALL_RET_ADDR = 56;
   static constexpr size_t HOST_RET_ADDR = 64;
-  // Reserved padding. Longjmp detection state lives in A64BackendContext so it
-  // can be checked even when native SP still points at a skipped frame.
-  static constexpr size_t GUEST_RESERVED = 72;
+  // Nonzero once a single-range test has failed that the block reuses, see
+  // EmitSingleRangeCheck. Only functions with such tests initialize it. Longjmp
+  // detection state lives in A64BackendContext instead so it can be checked
+  // even when native SP still points at a skipped frame.
+  static constexpr size_t GUEST_RANGE_TEST_FAILED = 72;
 
   // The guest-to-host thunks save x30 in the top 8 bytes of their frames, so
   // the host address a guest frame's call into host code returns to sits this

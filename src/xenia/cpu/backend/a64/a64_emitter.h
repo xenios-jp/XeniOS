@@ -10,8 +10,10 @@
 #ifndef XENIA_CPU_BACKEND_A64_A64_EMITTER_H_
 #define XENIA_CPU_BACKEND_A64_A64_EMITTER_H_
 
+#include <algorithm>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -385,6 +387,32 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
     return fused_to_single_exit_;
   }
 
+  // The single-range tests of a block, or of what follows a call in one, see
+  // EmitSingleRangeCheck. Checks are numbered from 1.
+  struct SingleRangeBlock {
+    std::vector<const hir::Value*> tested;
+    size_t checks = 0;
+    // The last check, if any, that relies on tests before it
+    size_t last_reuse = 0;
+  };
+  std::shared_ptr<const SingleRangeBlock> single_range_block() const {
+    return single_range_block_;
+  }
+  size_t AddSingleRangeCheck(bool reuses) {
+    ++single_range_block_->checks;
+    if (reuses) {
+      single_range_block_->last_reuse = single_range_block_->checks;
+    }
+    return single_range_block_->checks;
+  }
+  bool IsSingleRangeTested(const hir::Value* value) const {
+    const auto& tested = single_range_block_->tested;
+    return std::find(tested.begin(), tested.end(), value) != tested.end();
+  }
+  void MarkSingleRangeTested(const hir::Value* value) {
+    single_range_block_->tested.push_back(value);
+  }
+
   // SOURCE_OFFSET, CONTEXT_BARRIER and NOP emit no code that touches NZCV
   // or a register a required handoff names (SOURCE_OFFSET's coverage
   // counter uses add, not adds, and only x0/x1). COMMENT does not pass: it
@@ -554,6 +582,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
 
   FPCRMode fpcr_mode_ = FPCRMode::Unknown;
   bool function_has_vmx_ = false;
+  bool function_has_single_range_tests_ = false;
   // Whether this function records a stackpoint. One that makes no call has no
   // return sites, so no unwind ever restores its frame, and it is never below
   // another frame, so a pseudo stack trace, taken from the frames that called
@@ -601,6 +630,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   Xbyak_aarch64::Cond fused_cmp_branch_cond_ = Xbyak_aarch64::EQ;
   const hir::Instr* fused_to_single_ = nullptr;
   Xbyak_aarch64::Label* fused_to_single_exit_ = nullptr;
+  std::shared_ptr<SingleRangeBlock> single_range_block_;
   const hir::Instr* x0_constant_reader_ = nullptr;
   uint64_t x0_constant_ = 0;
   uint64_t call_return_address_ = 0;

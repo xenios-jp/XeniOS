@@ -462,6 +462,225 @@ TEST_CASE("SINGLE_RANGE_FLAG_MATCHES_QUIRK", "[instr]") {
   }
 }
 
+// Values that a block uses again keep answering for themselves, whichever of
+// the uses is the first that fails, and so does the next call, after one in
+// which a test failed.
+TEST_CASE("SINGLE_RANGE_FLAG_REPEATED_OPERANDS", "[instr]") {
+  TestFunction test([](HIRBuilder& b) {
+    Value* x = LoadFPR(b, 1);
+    Value* y = LoadFPR(b, 2);
+    Value* z = LoadFPR(b, 3);
+    Value* results[][2] = {
+        {b.Add(x, y, ARITHMETIC_SINGLE_RANGE),
+         b.Select(b.SingleRangeQuirk(x, y, y), F64Constant(b, kNaN),
+                  b.Add(x, y))},
+        {b.Mul(x, x, ARITHMETIC_SINGLE_RANGE),
+         b.Select(b.SingleRangeQuirk(x, x, x), F64Constant(b, kNaN),
+                  b.Mul(x, x))},
+        {b.Sub(z, x, ARITHMETIC_SINGLE_RANGE),
+         b.Select(b.SingleRangeQuirk(z, x, x), F64Constant(b, kNaN),
+                  b.Sub(z, x))},
+        {b.MulAdd(y, z, x, false, ARITHMETIC_SINGLE_RANGE),
+         b.Select(b.SingleRangeQuirk(y, z, x), F64Constant(b, kNaN),
+                  b.MulAdd(y, z, x))},
+        {b.Mul(z, y, ARITHMETIC_SINGLE_RANGE),
+         b.Select(b.SingleRangeQuirk(z, y, y), F64Constant(b, kNaN),
+                  b.Mul(z, y))},
+    };
+    int reg = 10;
+    for (auto& result : results) {
+      StoreFPR(b, reg++, result[0]);
+      StoreFPR(b, reg++, result[1]);
+    }
+    b.Return();
+  });
+  const uint64_t operands[] = {kZero,
+                               kOne,
+                               kSmallestSingle,
+                               uint64_t(0x3FF0000000000001ull),
+                               kDenormal,
+                               kBelowSingle,
+                               k128,
+                               k128 | 0x8000000000000000ull,
+                               kInf,
+                               uint64_t(0x7FF0000000000001ull),
+                               kNaN};
+  for (uint64_t x : operands) {
+    for (uint64_t y : operands) {
+      for (uint64_t z : operands) {
+        test.Run(
+            [&](PPCContext* ctx) {
+              SetF64Bits(ctx, 1, x);
+              SetF64Bits(ctx, 2, y);
+              SetF64Bits(ctx, 3, z);
+            },
+            [&](PPCContext* ctx) {
+              for (int reg = 10; reg < 20; reg += 2) {
+                uint64_t flag_bits, quirk_bits;
+                std::memcpy(&flag_bits, &ctx->f[reg], sizeof(flag_bits));
+                std::memcpy(&quirk_bits, &ctx->f[reg + 1], sizeof(quirk_bits));
+                INFO("operation " << (reg - 10) / 2 << " operands 0x"
+                                  << std::hex << x << " 0x" << y << " 0x"
+                                  << z);
+                REQUIRE(flag_bits == quirk_bits);
+              }
+            });
+      }
+    }
+  }
+}
+
+// Rounded to single as the PPC front end does, with operands that are out of
+// range, NaNs a single can't hold, or both.
+TEST_CASE("SINGLE_RANGE_FLAG_TO_SINGLE", "[instr]") {
+  TestFunction test([](HIRBuilder& b) {
+    Value* x = LoadFPR(b, 1);
+    Value* y = LoadFPR(b, 2);
+    Value* n = b.UnpackSingle(b.Truncate(LoadGPR(b, 3), INT32_TYPE));
+    Value* wide = b.ToSingle(x, TO_SINGLE_KEEP_NAN);
+    const uint32_t flag = ARITHMETIC_SINGLE_RANGE;
+    const auto expect = [&](Value* a1, Value* a2, Value* result) {
+      return b.ToSingle(b.Select(b.SingleRangeQuirk(a1, a2, a2),
+                                 F64Constant(b, kNaN), result),
+                        TO_SINGLE_KEEP_NAN);
+    };
+    Value* results[][2] = {
+        {b.ToSingle(b.Mul(x, n, flag), TO_SINGLE_KEEP_NAN),
+         expect(x, n, b.Mul(x, n))},
+        {b.ToSingle(b.Sub(x, n, flag), TO_SINGLE_KEEP_NAN),
+         expect(x, n, b.Sub(x, n))},
+        {b.ToSingle(b.Add(y, n, flag), TO_SINGLE_KEEP_NAN),
+         expect(y, n, b.Add(y, n))},
+        {b.ToSingle(b.Mul(y, y, flag), TO_SINGLE_KEEP_NAN),
+         expect(y, y, b.Mul(y, y))},
+        {b.ToSingle(b.Add(x, x, flag), TO_SINGLE_KEEP_NAN),
+         expect(x, x, b.Add(x, x))},
+        {b.ToSingle(b.Mul(x, y, flag), TO_SINGLE_KEEP_NAN),
+         expect(x, y, b.Mul(x, y))},
+        // In the range, but can be a wide NaN
+        {b.ToSingle(b.Mul(y, wide, flag), TO_SINGLE_KEEP_NAN),
+         expect(y, wide, b.Mul(y, wide))},
+    };
+    int reg = 10;
+    for (auto& result : results) {
+      StoreFPR(b, reg++, result[0]);
+      StoreFPR(b, reg++, result[1]);
+    }
+    b.Return();
+  });
+  const uint64_t operands[] = {kZero,
+                               0x8000000000000000ull,
+                               kOne,
+                               0x3FF0000000000001ull,
+                               kDenormal,
+                               kBelowSingle,
+                               kSmallestSingle,
+                               kBelow128,
+                               k128,
+                               kNeg1000,
+                               kInf,
+                               0xFFF0000000000000ull,
+                               kNaN,
+                               0x7FF8000000000001ull,
+                               0xFFFC000000000003ull,
+                               0x7FF0000000000001ull,
+                               0xFFF4000020000001ull};
+  const uint32_t singles[] = {0,          0x3F800000, 0x80000001, 0x7F7FFFFF,
+                              0x7F800000, 0xFF800000, 0x7FC00000, 0xFFC00001,
+                              0x7F800001, 0xFFA00003};
+  for (uint64_t x : operands) {
+    for (uint64_t y : operands) {
+      for (uint32_t n : singles) {
+        test.Run(
+            [&](PPCContext* ctx) {
+              SetF64Bits(ctx, 1, x);
+              SetF64Bits(ctx, 2, y);
+              ctx->r[3] = n;
+            },
+            [&](PPCContext* ctx) {
+              for (int reg = 10; reg < 24; reg += 2) {
+                uint64_t flag_bits, quirk_bits;
+                std::memcpy(&flag_bits, &ctx->f[reg], sizeof(flag_bits));
+                std::memcpy(&quirk_bits, &ctx->f[reg + 1], sizeof(quirk_bits));
+                INFO("operation " << (reg - 10) / 2 << " operands 0x"
+                                  << std::hex << x << " 0x" << y << " 0x" << n);
+                REQUIRE(flag_bits == quirk_bits);
+              }
+            });
+      }
+    }
+  }
+}
+
+// A block's last reuse forgets its failures, so each time around a loop has to
+// find its own, whatever the one before left.
+TEST_CASE("SINGLE_RANGE_FLAG_REPEATED_OPERANDS_LOOP", "[instr]") {
+  TestFunction test([](HIRBuilder& b) {
+    auto loop = b.NewLabel();
+    auto second = b.NewLabel();
+    b.MarkLabel(loop);
+    const auto operations = [&](Value* x, Value* y, Value* z, bool flagged) {
+      const uint32_t flag = flagged ? ARITHMETIC_SINGLE_RANGE : 0;
+      const auto quirk = [&](Value* a1, Value* a2, Value* result) {
+        return flagged ? result
+                       : b.Select(b.SingleRangeQuirk(a1, a2, a2),
+                                  F64Constant(b, kNaN), result);
+      };
+      Value* bits = b.LoadConstantUint64(0);
+      for (Value* result :
+           {quirk(x, y, b.Add(x, y, flag)), quirk(x, z, b.Mul(x, z, flag)),
+            quirk(z, y, b.Sub(z, y, flag)), quirk(y, y, b.Mul(y, y, flag))}) {
+        bits = b.Add(b.Mul(bits, b.LoadConstantUint64(31)),
+                     b.Cast(result, INT64_TYPE));
+      }
+      return bits;
+    };
+    const auto block = [&](int reg) {
+      Value* x = LoadFPR(b, 1);
+      Value* y = LoadFPR(b, 2);
+      Value* z = LoadFPR(b, 3);
+      for (int k = 0; k < 2; ++k) {
+        StoreGPR(b, reg + k,
+                 b.Add(b.Mul(LoadGPR(b, reg + k), b.LoadConstantUint64(33)),
+                       operations(x, y, z, k == 0)));
+      }
+      // Other operands the next time
+      StoreFPR(b, 1, LoadFPR(b, 4));
+      StoreFPR(b, 4, y);
+      StoreFPR(b, 2, z);
+      StoreFPR(b, 3, x);
+    };
+    block(10);
+    b.BranchTrue(b.Truncate(LoadGPR(b, 4), INT8_TYPE), second);
+    b.MarkLabel(second);
+    block(12);
+    Value* left = b.Sub(LoadGPR(b, 5), b.LoadConstantUint64(1));
+    StoreGPR(b, 5, left);
+    b.BranchTrue(b.IsTrue(left), loop);
+    b.Return();
+  });
+  const uint64_t operands[] = {kZero, kOne, kBelowSingle, kInf, kNaN};
+  for (size_t code = 0; code < 5 * 5 * 5 * 5; ++code) {
+    test.Run(
+        [&](PPCContext* ctx) {
+          size_t rest = code;
+          for (int reg = 1; reg <= 4; ++reg, rest /= 5) {
+            SetF64Bits(ctx, reg, operands[rest % 5]);
+          }
+          ctx->r[4] = code & 1;
+          ctx->r[5] = 9;
+          for (int reg = 10; reg < 14; ++reg) {
+            ctx->r[reg] = 0;
+          }
+        },
+        [&](PPCContext* ctx) {
+          INFO("case " << code);
+          REQUIRE(ctx->r[10] == ctx->r[11]);
+          REQUIRE(ctx->r[12] == ctx->r[13]);
+        });
+  }
+}
+
 // The proof follows a widened single through a guest FPR across blocks.
 TEST_CASE("SINGLE_RANGE_QUIRK_FOLD_ACROSS_BLOCKS", "[instr]") {
   REQUIRE(SimplifiesAway([](HIRBuilder& b) {
