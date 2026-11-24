@@ -631,12 +631,23 @@ int InstrEmit_vcuxwfp128(PPCHIRBuilder& f, const InstrData& i) {
   return InstrEmit_vcfux_(f, VX128_3_VD128, VX128_3_VB128, VX128_3_IMM);
 }
 
+// The input of vctsxs and vctuxs, scaled by 2^uimm. Unscaled it's the register
+// itself: all that a multiplication by 1 changes is to quiet NaNs, which
+// convert to 0 either way, and to flush denormals, which truncate to 0.
+static Value* LoadScaledForConvert(PPCHIRBuilder& f, uint32_t vb,
+                                   uint32_t uimm) {
+  Value* v = f.LoadVR(vb);
+  if (uimm) {
+    float fuimm = static_cast<float>(std::exp2(uimm));
+    v = f.Mul(v, f.Splat(f.LoadConstantFloat32(fuimm), VEC128_TYPE));
+  }
+  return v;
+}
+
 int InstrEmit_vctsxs_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb,
                       uint32_t uimm) {
   // (VD) <- int_sat(VB as signed * 2^uimm)
-  float fuimm = static_cast<float>(std::exp2(uimm));
-  Value* v =
-      f.Mul(f.LoadVR(vb), f.Splat(f.LoadConstantFloat32(fuimm), VEC128_TYPE));
+  Value* v = LoadScaledForConvert(f, vb, uimm);
   Value* input = v;
   v = f.VectorConvertF2I(v);
   StoreSatForConvert(f, v, input, false);
@@ -653,9 +664,7 @@ int InstrEmit_vcfpsxws128(PPCHIRBuilder& f, const InstrData& i) {
 int InstrEmit_vctuxs_(PPCHIRBuilder& f, uint32_t vd, uint32_t vb,
                       uint32_t uimm) {
   // (VD) <- int_sat(VB as unsigned * 2^uimm)
-  float fuimm = static_cast<float>(std::exp2(uimm));
-  Value* v =
-      f.Mul(f.LoadVR(vb), f.Splat(f.LoadConstantFloat32(fuimm), VEC128_TYPE));
+  Value* v = LoadScaledForConvert(f, vb, uimm);
   Value* input = v;
   v = f.VectorConvertF2I(v, ARITHMETIC_UNSIGNED);
   StoreSatForConvert(f, v, input, true);

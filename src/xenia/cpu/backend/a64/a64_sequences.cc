@@ -1752,7 +1752,7 @@ struct MUL_F64 : Sequence<MUL_F64, I<OPCODE_MUL, F64Op, F64Op, F64Op>> {
 struct MUL_V128 : Sequence<MUL_V128, I<OPCODE_MUL, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     EmitVmxFpBinOp_V128(e, i.dest.reg().getIdx(), i.src1, i.src2,
-                        VmxFpBinOp::Mul);
+                        VmxFpBinOp::Mul, IsVmxNanUnobserved(i.instr->dest));
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_MUL, MUL_I32, MUL_I64, MUL_F32, MUL_F64, MUL_V128);

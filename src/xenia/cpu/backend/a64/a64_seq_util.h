@@ -772,12 +772,34 @@ inline void FixupVmxNanLanes_V128_Fma(A64Emitter& e, int a, int c, int b,
 // VMX float32x4 binary operations with full PPC semantics.
 enum class VmxFpBinOp { Add, Sub, Mul, Div };
 
+// Whether nothing that reads the value can tell one NaN from another: they all
+// convert to 0 and compare false. Anything else, an assign included, might.
+inline bool IsVmxNanUnobserved(const hir::Value* value) {
+  for (const hir::Value::Use* use = value->use_head; use; use = use->next) {
+    switch (use->instr->GetOpcodeNum()) {
+      case hir::OPCODE_VECTOR_CONVERT_F2I:
+        break;
+      case hir::OPCODE_VECTOR_COMPARE_EQ:
+      case hir::OPCODE_VECTOR_COMPARE_SGT:
+      case hir::OPCODE_VECTOR_COMPARE_SGE:
+        if (use->instr->flags != FLOAT32_TYPE) {
+          return false;
+        }
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
 // Execute a VMX float32x4 binary operation with denormal flushing and PPC NaN
-// propagation.  Result goes into dest_idx.
+// propagation, unless nan_unobserved.  Result goes into dest_idx.
 // Clobbers v0-v3, w0.
 template <typename T1, typename T2>
 inline void EmitVmxFpBinOp_V128(A64Emitter& e, int dest_idx, const T1& src1,
-                                const T2& src2, VmxFpBinOp op) {
+                                const T2& src2, VmxFpBinOp op,
+                                bool nan_unobserved = false) {
   EmitWithVmxFpcr(e, [&] {
     const auto emit_op = [&e, op](int result, int s1, int s2) {
       switch (op) {
@@ -805,6 +827,10 @@ inline void EmitVmxFpBinOp_V128(A64Emitter& e, int dest_idx, const T1& src1,
       // one, which one compare of it with itself tells.
       const int s1 = SrcVReg(e, src1, 0);
       const int s2 = SrcVReg(e, src2, 1);
+      if (nan_unobserved) {
+        emit_op(dest_idx, s1, s2);
+        return;
+      }
       const int result = dest_idx != s1 && dest_idx != s2 ? dest_idx : 2;
       emit_op(result, s1, s2);
       auto& done = e.NewCachedLabel();
