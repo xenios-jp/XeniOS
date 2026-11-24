@@ -107,6 +107,8 @@ bool IsPromotableOpcode(Opcode num) {
     case OPCODE_VECTOR_SHL:
     case OPCODE_SHR:
     case OPCODE_VECTOR_SHR:
+    case OPCODE_VECTOR_SHL_BITS:
+    case OPCODE_VECTOR_SHR_BITS:
     case OPCODE_SHA:
     case OPCODE_VECTOR_SHA:
     case OPCODE_ROTATE_LEFT:
