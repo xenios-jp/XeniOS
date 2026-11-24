@@ -937,15 +937,23 @@ bool A64Emitter::InlinesPPCGprLrSaveRestore(
 }
 
 bool A64Emitter::MakesCall(const hir::Instr* instr) const {
+  // A tail branch hands its frame over, so nothing returns into it. With
+  // dynamic code it can still resolve to a live frame's return site, or drop
+  // the calling frame, which both start from this function's record.
+  const bool tail = (instr->flags & hir::CALL_TAIL) != 0 &&
+                    !processor()->dynamic_code_enabled();
   switch (instr->opcode->num) {
     case hir::OPCODE_CALL:
-      return !InlinesPPCGprLrSaveRestore(
-          instr, static_cast<const GuestFunction*>(instr->src1.symbol));
+      return !tail &&
+             !InlinesPPCGprLrSaveRestore(
+                 instr, static_cast<const GuestFunction*>(instr->src1.symbol));
     case hir::OPCODE_CALL_TRUE:
-      return !InlinesPPCGprLrSaveRestore(
-          instr, static_cast<const GuestFunction*>(instr->src2.symbol));
+      return !tail &&
+             !InlinesPPCGprLrSaveRestore(
+                 instr, static_cast<const GuestFunction*>(instr->src2.symbol));
     case hir::OPCODE_CALL_INDIRECT:
     case hir::OPCODE_CALL_INDIRECT_TRUE:
+      return !tail;
     // Host code can run guest code, which unwinds into this frame.
     case hir::OPCODE_CALL_EXTERN:
     case hir::OPCODE_TRAP:
@@ -1051,7 +1059,8 @@ void A64Emitter::CallIndirect(const hir::Instr* instr, int reg_index) {
       const bool tail_call = (instr->flags & hir::CALL_TAIL) != 0;
       const bool possible_return =
           tail_call && (instr->flags & hir::CALL_POSSIBLE_RETURN) &&
-          cvars::a64_enable_host_guest_stack_synchronization;
+          cvars::a64_enable_host_guest_stack_synchronization &&
+          function_has_stackpoint_;
       Label& resolve_natively = AddToTail(
           [target_ready, tail_call, possible_return](A64Emitter& e, Label&) {
             if (possible_return) {
@@ -1198,6 +1207,8 @@ void A64Emitter::CallExtern(const hir::Instr* instr, const Function* function) {
 
 void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
   const bool direct_call = direct && !tail;
+  // Only a tail branch from a function with a stackpoint pops one after this.
+  const bool tail_pops_stackpoint = tail && function_has_stackpoint_;
   Label miss;
   Label done;
   Label check_kind;
@@ -1233,15 +1244,16 @@ void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
     // The helper answers the usual cases itself and leaves the rest, and w16,
     // to the host call.
     if (cvars::a64_enable_host_guest_stack_synchronization) {
-      mov(w17, tail ? 1 : 0);
+      mov(w17, tail_pops_stackpoint ? 1 : 0);
       ldr(x9, BackendCtxPtr(offsetof(A64BackendContext,
                                      dynamic_return_site_helper_address)));
       blr(x9);
       cbnz(x9, done);
     }
     mov(w1, w16);
-    CallNativeSafe(reinterpret_cast<void*>(tail ? ResolveCachedReturnSiteTail
-                                                : ResolveCachedReturnSiteCall));
+    CallNativeSafe(reinterpret_cast<void*>(tail_pops_stackpoint
+                                               ? ResolveCachedReturnSiteTail
+                                               : ResolveCachedReturnSiteCall));
     mov(x9, x0);
     b(done);
   }
@@ -1250,8 +1262,9 @@ void A64Emitter::EmitDynamicCallLookup(bool tail, bool direct) {
   // The host call can clobber x16, so hand the address over as its argument.
   mov(w1, w16);
   CallNativeSafe(reinterpret_cast<void*>(direct_call ? ResolveDirectDynamicCall
-                                         : tail      ? ResolveDynamicTailCall
-                                                     : ResolveDynamicCall));
+                                         : tail_pops_stackpoint
+                                             ? ResolveDynamicTailCall
+                                             : ResolveDynamicCall));
   mov(x9, x0);
 
   L(done);

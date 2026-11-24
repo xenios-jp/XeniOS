@@ -144,8 +144,9 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
                                     const GuestFunction* function);
   bool InlinesPPCGprLrSaveRestore(const hir::Instr* instr,
                                   const GuestFunction* function) const;
-  // Whether |instr| calls or branches to guest code, a saverest helper inlined
-  // in place aside, or calls host code, traps included.
+  // Whether |instr| calls guest code, a saverest helper inlined in place aside,
+  // or calls host code, traps included. A tail branch to guest code counts only
+  // once dynamic code is enabled.
   bool MakesCall(const hir::Instr* instr) const;
   void CallNative(void* fn);
   void CallNativeSafe(void* fn);
@@ -556,8 +557,8 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   // Whether this function records a stackpoint. One that makes no call has no
   // return sites, so no unwind ever restores its frame, and it is never below
   // another frame, so a pseudo stack trace, taken from the frames that called
-  // out, has nothing to show for it either. Every tail branch, and so every
-  // dynamic one, leaves from a frame that has its record.
+  // out, has nothing to show for it either. A tail branch makes no call, but
+  // one that can have a dynamic target leaves from a frame with its record.
   bool function_has_stackpoint_ = true;
   // FPCR tracking across blocks: lattice {Unknown, Fpu, Vmx, VmxDaz}, where
   // meet(a, b) = a if a == b else Unknown. A block starts in the meet of its
