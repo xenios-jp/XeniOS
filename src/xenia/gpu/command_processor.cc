@@ -59,8 +59,15 @@ DEFINE_bool(clear_memory_page_state, false,
             "GPU");
 UPDATE_from_bool(clear_memory_page_state, 2026, 8, 1, 12, true);
 
+// iOS keeps fast: in strict, the Metal backend's draws inside a counted report
+// wait for their own shaders, and the command processor for the GPU.
+#if XE_PLATFORM_IOS
+#define XE_OCCLUSION_QUERY_DEFAULT "fast"
+#else
+#define XE_OCCLUSION_QUERY_DEFAULT "strict"
+#endif
 DEFINE_string(
-    occlusion_query, "strict",
+    occlusion_query, XE_OCCLUSION_QUERY_DEFAULT,
     "Controls hardware occlusion query behavior for EVENT_WRITE_ZPD.\n"
     "Used for effects like lens flares, object culling, and auto-exposure.\n"
     "Titles that use QueryBatch are not currently supported and fall back to\n"
@@ -76,7 +83,9 @@ DEFINE_string(
     " strict: Ask the GPU and wait for the real result before continuing.\n"
     "         Most accurate, but may be somewhat less performant. (default)",
     "GPU");
+#if !XE_PLATFORM_IOS
 UPDATE_from_string(occlusion_query, 2026, 11, 23, 6, "fast");
+#endif  // !XE_PLATFORM_IOS
 
 DEFINE_bool(
     occlusion_query_full_counters, false,
