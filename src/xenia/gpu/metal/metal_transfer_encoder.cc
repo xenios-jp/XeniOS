@@ -30,6 +30,7 @@
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_1xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/metal/host_depth_store_4xmsaa_cs.h"
+#include "xenia/gpu/shaders/bytecode/metal/metal_transfer_vs.h"
 #include "xenia/gpu/strip_merge.h"
 #include "xenia/gpu/xenos.h"
 
@@ -115,6 +116,103 @@ constexpr uint32_t kTransferSampleDrawMax = 4;
 constexpr uint32_t kTransferPushConstantDwordMax =
     kEdramTransferUsedPushConstantDwordCount + 1;
 
+struct DecodedResolveClearColor {
+  TransferClearColorFloatConstants float_constants = {};
+  TransferClearColorUintConstants uint_constants = {};
+  bool requires_draw = false;
+};
+
+DecodedResolveClearColor DecodeResolveClearColor(
+    xenos::ColorRenderTargetFormat format, uint64_t clear_value,
+    bool gamma_as_unorm16) {
+  DecodedResolveClearColor decoded;
+  auto& fc = decoded.float_constants.color;
+  auto& uc = decoded.uint_constants.color;
+  switch (format) {
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8:
+      MetalTransferEncoder::GetResolveClearColor8888(clear_value, fc);
+      break;
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA:
+      MetalTransferEncoder::GetResolveClearColor8888(clear_value, fc);
+      if (gamma_as_unorm16) {
+        for (uint32_t j = 0; j < 3; ++j) {
+          fc[j] = xenos::PWLGammaToLinear(fc[j]);
+        }
+      }
+      break;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
+      for (uint32_t j = 0; j < 3; ++j) {
+        fc[j] = ((clear_value >> (j * 10)) & 0x3FF) * (1.0f / 0x3FF);
+      }
+      fc[3] = ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
+      break;
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16:
+      for (uint32_t j = 0; j < 3; ++j) {
+        fc[j] = xenos::Float7e3To32((clear_value >> (j * 10)) & 0x3FF);
+      }
+      fc[3] = ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
+      break;
+    case xenos::ColorRenderTargetFormat::k_16_16:
+    case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
+      for (uint32_t j = 0; j < 2; ++j) {
+        uc[j] = uint32_t((clear_value >> (j * 16)) & 0xFFFF);
+        fc[j] = float(uc[j]);
+      }
+      break;
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16:
+    case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
+      for (uint32_t j = 0; j < 4; ++j) {
+        uc[j] = uint32_t((clear_value >> (j * 16)) & 0xFFFF);
+        fc[j] = float(uc[j]);
+      }
+      break;
+    case xenos::ColorRenderTargetFormat::k_32_FLOAT:
+      uc[0] = uint32_t(clear_value);
+      fc[0] = float(uc[0]);
+      decoded.requires_draw = uint64_t(fc[0]) != uc[0];
+      break;
+    case xenos::ColorRenderTargetFormat::k_32_32_FLOAT:
+      uc[0] = uint32_t(clear_value);
+      uc[1] = uint32_t(clear_value >> 32);
+      fc[0] = float(uc[0]);
+      fc[1] = float(uc[1]);
+      decoded.requires_draw =
+          uint64_t(fc[0]) != uc[0] || uint64_t(fc[1]) != uc[1];
+      break;
+  }
+  return decoded;
+}
+
+MTL::DepthStencilState* CreateTransferDepthStencilState(
+    MTL::Device* device, MTL::CompareFunction depth_compare, bool depth_write,
+    uint32_t stencil_write_mask,
+    MTL::StencilOperation stencil_depth_fail_op = MTL::StencilOperationKeep) {
+  MTL::DepthStencilDescriptor* desc =
+      MTL::DepthStencilDescriptor::alloc()->init();
+  desc->setDepthCompareFunction(depth_compare);
+  desc->setDepthWriteEnabled(depth_write);
+  MTL::StencilDescriptor* stencil = nullptr;
+  if (stencil_write_mask) {
+    stencil = MTL::StencilDescriptor::alloc()->init();
+    stencil->setStencilCompareFunction(MTL::CompareFunctionAlways);
+    stencil->setStencilFailureOperation(MTL::StencilOperationKeep);
+    stencil->setDepthFailureOperation(stencil_depth_fail_op);
+    stencil->setDepthStencilPassOperation(MTL::StencilOperationReplace);
+    stencil->setReadMask(0xFF);
+    stencil->setWriteMask(stencil_write_mask);
+    desc->setFrontFaceStencil(stencil);
+    desc->setBackFaceStencil(stencil);
+  }
+  MTL::DepthStencilState* state = device->newDepthStencilState(desc);
+  if (stencil) {
+    stencil->release();
+  }
+  desc->release();
+  return state;
+}
+
 }  // namespace
 
 MetalTransferEncoder::MetalTransferEncoder(
@@ -169,74 +267,38 @@ bool MetalTransferEncoder::Initialize(MTL::Device* device) {
 }
 
 void MetalTransferEncoder::Shutdown() {
-  for (auto& dump_pipeline_pair : dump_pipelines_) {
-    if (dump_pipeline_pair.second) {
-      dump_pipeline_pair.second->release();
+  auto release_ptr = [](auto*& ptr) {
+    if (ptr) {
+      ptr->release();
+      ptr = nullptr;
     }
-  }
-  dump_pipelines_.clear();
-  for (size_t i = 0; i < xe::countof(host_depth_store_pipelines_); ++i) {
-    if (host_depth_store_pipelines_[i]) {
-      host_depth_store_pipelines_[i]->release();
-      host_depth_store_pipelines_[i] = nullptr;
+  };
+  auto release_map = [](auto& map) {
+    for (auto& entry : map) {
+      if (entry.second) {
+        entry.second->release();
+      }
     }
+    map.clear();
+  };
+  release_map(dump_pipelines_);
+  for (auto& pipeline : host_depth_store_pipelines_) {
+    release_ptr(pipeline);
   }
-  for (auto& it : transfer_pipelines_) {
-    if (it.second) {
-      it.second->release();
-    }
-  }
-  transfer_pipelines_.clear();
-  for (auto& it : transfer_fragment_functions_) {
-    if (it.second) {
-      it.second->release();
-    }
-  }
-  transfer_fragment_functions_.clear();
-  for (auto& it : transfer_clear_pipelines_) {
-    if (it.second) {
-      it.second->release();
-    }
-  }
-  transfer_clear_pipelines_.clear();
-  if (transfer_rect_vertex_function_) {
-    transfer_rect_vertex_function_->release();
-    transfer_rect_vertex_function_ = nullptr;
-  }
-  if (transfer_library_) {
-    transfer_library_->release();
-    transfer_library_ = nullptr;
-  }
-  if (transfer_depth_state_) {
-    transfer_depth_state_->release();
-    transfer_depth_state_ = nullptr;
-  }
-  if (transfer_depth_stencil_output_state_) {
-    transfer_depth_stencil_output_state_->release();
-    transfer_depth_stencil_output_state_ = nullptr;
-  }
-  if (transfer_depth_state_none_) {
-    transfer_depth_state_none_->release();
-    transfer_depth_state_none_ = nullptr;
-  }
-  if (transfer_depth_clear_state_) {
-    transfer_depth_clear_state_->release();
-    transfer_depth_clear_state_ = nullptr;
-  }
-  if (transfer_stencil_clear_state_) {
-    transfer_stencil_clear_state_->release();
-    transfer_stencil_clear_state_ = nullptr;
-  }
+  release_map(transfer_pipelines_);
+  release_map(transfer_fragment_functions_);
+  release_map(transfer_clear_pipelines_);
+  release_ptr(transfer_rect_vertex_function_);
+  release_ptr(transfer_library_);
+  release_ptr(transfer_depth_state_);
+  release_ptr(transfer_depth_stencil_output_state_);
+  release_ptr(transfer_depth_state_none_);
+  release_ptr(transfer_depth_clear_state_);
+  release_ptr(transfer_stencil_clear_state_);
   for (auto& state : transfer_stencil_bit_states_) {
-    if (state) {
-      state->release();
-      state = nullptr;
-    }
+    release_ptr(state);
   }
-  if (transfer_dummy_buffer_) {
-    transfer_dummy_buffer_->release();
-    transfer_dummy_buffer_ = nullptr;
-  }
+  release_ptr(transfer_dummy_buffer_);
   transfer_invocations_.clear();
   native_stencil_output_probed_ = false;
   device_ = nullptr;
@@ -1434,78 +1496,18 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
         resolve_clear_via_load_action = true;
         resolve_clear_stencil = uint32_t(clear_value) & 0xFF;
       } else {
-        TransferClearColorFloatConstants float_constants = {};
-        bool clear_via_drawing = false;
-        switch (dest_key.GetColorFormat()) {
-          case xenos::ColorRenderTargetFormat::k_8_8_8_8: {
-            GetResolveClearColor8888(clear_value, float_constants.color);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA: {
-            GetResolveClearColor8888(clear_value, float_constants.color);
-            if (render_target_cache_.gamma_render_target_as_unorm16_) {
-              for (uint32_t j = 0; j < 3; ++j) {
-                float_constants.color[j] =
-                    xenos::PWLGammaToLinear(float_constants.color[j]);
-              }
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10:
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10: {
-            for (uint32_t j = 0; j < 3; ++j) {
-              float_constants.color[j] =
-                  ((clear_value >> (j * 10)) & 0x3FF) * (1.0f / 0x3FF);
-            }
-            float_constants.color[3] =
-                ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
-          case xenos::ColorRenderTargetFormat::
-              k_2_10_10_10_FLOAT_AS_16_16_16_16: {
-            for (uint32_t j = 0; j < 3; ++j) {
-              float_constants.color[j] =
-                  xenos::Float7e3To32((clear_value >> (j * 10)) & 0x3FF);
-            }
-            float_constants.color[3] =
-                ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_16_16:
-          case xenos::ColorRenderTargetFormat::k_16_16_FLOAT: {
-            for (uint32_t j = 0; j < 2; ++j) {
-              float_constants.color[j] =
-                  float((clear_value >> (j * 16)) & 0xFFFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_16_16_16_16:
-          case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT: {
-            for (uint32_t j = 0; j < 4; ++j) {
-              float_constants.color[j] =
-                  float((clear_value >> (j * 16)) & 0xFFFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_32_FLOAT: {
-            float_constants.color[0] = float(uint32_t(clear_value));
-            if (uint64_t(float_constants.color[0]) != uint32_t(clear_value)) {
-              clear_via_drawing = true;
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_32_32_FLOAT: {
-            float_constants.color[0] = float(uint32_t(clear_value));
-            float_constants.color[1] = float(uint32_t(clear_value >> 32));
-            if (uint64_t(float_constants.color[0]) != uint32_t(clear_value) ||
-                uint64_t(float_constants.color[1]) !=
-                    uint32_t(clear_value >> 32)) {
-              clear_via_drawing = true;
-            }
-          } break;
-        }
-
+        const DecodedResolveClearColor decoded = DecodeResolveClearColor(
+            dest_key.GetColorFormat(), clear_value,
+            render_target_cache_.gamma_render_target_as_unorm16_);
         bool clear_is_uint = false;
         render_target_cache_.GetColorOwnershipTransferPixelFormat(
             dest_key.GetColorFormat(), &clear_is_uint);
-        if (!clear_is_uint && !clear_via_drawing) {
-          resolve_clear_color = MTL::ClearColor(
-              float_constants.color[0], float_constants.color[1],
-              float_constants.color[2], float_constants.color[3]);
+        if (!clear_is_uint && !decoded.requires_draw) {
+          resolve_clear_color =
+              MTL::ClearColor(decoded.float_constants.color[0],
+                              decoded.float_constants.color[1],
+                              decoded.float_constants.color[2],
+                              decoded.float_constants.color[3]);
           resolve_clear_via_load_action = true;
         }
       }
@@ -2297,119 +2299,14 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
           }
         }
       } else {
-        TransferClearColorFloatConstants float_constants = {};
-        TransferClearColorUintConstants uint_constants = {};
-        bool clear_via_drawing = false;
-        switch (dest_key.GetColorFormat()) {
-          case xenos::ColorRenderTargetFormat::k_8_8_8_8: {
-            GetResolveClearColor8888(clear_value, float_constants.color);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA: {
-            GetResolveClearColor8888(clear_value, float_constants.color);
-            if (render_target_cache_.gamma_render_target_as_unorm16_) {
-              for (uint32_t j = 0; j < 3; ++j) {
-                float_constants.color[j] =
-                    xenos::PWLGammaToLinear(float_constants.color[j]);
-              }
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10:
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10: {
-            for (uint32_t j = 0; j < 3; ++j) {
-              float_constants.color[j] =
-                  ((clear_value >> (j * 10)) & 0x3FF) * (1.0f / 0x3FF);
-            }
-            float_constants.color[3] =
-                ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT:
-          case xenos::ColorRenderTargetFormat::
-              k_2_10_10_10_FLOAT_AS_16_16_16_16: {
-            for (uint32_t j = 0; j < 3; ++j) {
-              float_constants.color[j] =
-                  xenos::Float7e3To32((clear_value >> (j * 10)) & 0x3FF);
-            }
-            float_constants.color[3] =
-                ((clear_value >> 30) & 0x3) * (1.0f / 0x3);
-          } break;
-          case xenos::ColorRenderTargetFormat::k_16_16:
-          case xenos::ColorRenderTargetFormat::k_16_16_FLOAT: {
-            for (uint32_t j = 0; j < 2; ++j) {
-              float_constants.color[j] =
-                  float((clear_value >> (j * 16)) & 0xFFFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_16_16_16_16:
-          case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT: {
-            for (uint32_t j = 0; j < 4; ++j) {
-              float_constants.color[j] =
-                  float((clear_value >> (j * 16)) & 0xFFFF);
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_32_FLOAT: {
-            float_constants.color[0] = float(uint32_t(clear_value));
-            if (uint64_t(float_constants.color[0]) != uint32_t(clear_value)) {
-              clear_via_drawing = true;
-            }
-          } break;
-          case xenos::ColorRenderTargetFormat::k_32_32_FLOAT: {
-            float_constants.color[0] = float(uint32_t(clear_value));
-            float_constants.color[1] = float(uint32_t(clear_value >> 32));
-            if (uint64_t(float_constants.color[0]) != uint32_t(clear_value) ||
-                uint64_t(float_constants.color[1]) !=
-                    uint32_t(clear_value >> 32)) {
-              clear_via_drawing = true;
-            }
-          } break;
-        }
-
-        bool clear_is_uint = false;
+        const DecodedResolveClearColor decoded = DecodeResolveClearColor(
+            dest_key.GetColorFormat(), clear_value,
+            render_target_cache_.gamma_render_target_as_unorm16_);
+        bool clear_use_uint = false;
         MTL::PixelFormat clear_format =
             render_target_cache_.GetColorOwnershipTransferPixelFormat(
-                dest_key.GetColorFormat(), &clear_is_uint);
+                dest_key.GetColorFormat(), &clear_use_uint);
         MTL::Texture* clear_texture = dest_metal_rt->transfer_texture();
-        bool clear_use_uint = clear_is_uint;
-
-        if (clear_use_uint) {
-          switch (dest_key.GetColorFormat()) {
-            case xenos::ColorRenderTargetFormat::k_16_16:
-            case xenos::ColorRenderTargetFormat::k_16_16_FLOAT:
-              uint_constants.color[0] = uint32_t(clear_value) & 0xFFFF;
-              uint_constants.color[1] = (uint32_t(clear_value) >> 16) & 0xFFFF;
-              uint_constants.color[2] = 0;
-              uint_constants.color[3] = 0;
-              break;
-            case xenos::ColorRenderTargetFormat::k_16_16_16_16:
-            case xenos::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
-              uint_constants.color[0] = uint32_t(clear_value) & 0xFFFF;
-              uint_constants.color[1] = (uint32_t(clear_value) >> 16) & 0xFFFF;
-              uint_constants.color[2] = (uint32_t(clear_value >> 32)) & 0xFFFF;
-              uint_constants.color[3] =
-                  (uint32_t(clear_value >> 32) >> 16) & 0xFFFF;
-              break;
-            case xenos::ColorRenderTargetFormat::k_32_FLOAT:
-              uint_constants.color[0] = uint32_t(clear_value);
-              uint_constants.color[1] = 0;
-              uint_constants.color[2] = 0;
-              uint_constants.color[3] = 0;
-              break;
-            case xenos::ColorRenderTargetFormat::k_32_32_FLOAT:
-              uint_constants.color[0] = uint32_t(clear_value);
-              uint_constants.color[1] = uint32_t(clear_value >> 32);
-              uint_constants.color[2] = 0;
-              uint_constants.color[3] = 0;
-              break;
-            default:
-              break;
-          }
-        }
-
-        if (clear_via_drawing && clear_use_uint) {
-          uint_constants.color[0] = uint32_t(clear_value);
-          uint_constants.color[1] = uint32_t(clear_value >> 32);
-          uint_constants.color[2] = 0;
-          uint_constants.color[3] = 0;
-        }
 
         if (clear_texture) {
           MTL::RenderPipelineState* clear_pipeline =
@@ -2429,11 +2326,12 @@ bool MetalTransferEncoder::PerformTransfersAndResolveClears(
               clear_encoder->setRenderPipelineState(clear_pipeline);
               clear_encoder->setDepthStencilState(no_depth_state);
               if (clear_use_uint) {
-                clear_encoder->setFragmentBytes(&uint_constants,
-                                                sizeof(uint_constants), 0);
+                clear_encoder->setFragmentBytes(
+                    &decoded.uint_constants, sizeof(decoded.uint_constants), 0);
               } else {
-                clear_encoder->setFragmentBytes(&float_constants,
-                                                sizeof(float_constants), 0);
+                clear_encoder->setFragmentBytes(&decoded.float_constants,
+                                                sizeof(decoded.float_constants),
+                                                0);
               }
               mark_encoder_mutation(
                   MetalRenderTargetCache::
@@ -2691,96 +2589,10 @@ MTL::RenderPipelineState* MetalTransferEncoder::GetOrCreateTransferPipelines(
 }
 
 MTL::Library* MetalTransferEncoder::GetOrCreateTransferLibrary() {
-  if (transfer_library_) {
-    return transfer_library_;
-  }
-  static const char kTransferLibrarySource[] = R"METAL(
-#include <metal_stdlib>
-using namespace metal;
-
-struct VSOut {
-  float4 position [[position]];
-};
-
-struct TransferClearColorFloatConstants {
-  float4 color;
-};
-
-struct TransferClearColorUintConstants {
-  uint4 color;
-};
-
-struct TransferClearDepthConstants {
-  float4 depth;
-};
-
-struct TransferRectInstance {
-  float2 origin;
-  float2 size;
-};
-
-struct TransferVertexConstants {
-  float2 pixel_to_ndc;
-};
-
-// The shared fragment shader derives everything from the fragment coordinate,
-// so this only has to place the rectangle.
-vertex VSOut transfer_rect_vs(uint vid [[vertex_id]], uint iid [[instance_id]],
-                              constant TransferVertexConstants& constants
-                                  [[buffer(0)]],
-                              constant TransferRectInstance* instances
-                                  [[buffer(1)]]) {
-  float2 quad = float2(float(vid & 1), float(vid >> 1));
-  TransferRectInstance inst = instances[iid];
-  float2 pos_pixel = inst.origin + quad * inst.size;
-  VSOut out;
-  out.position = float4(pos_pixel.x * constants.pixel_to_ndc.x - 1.0f,
-                        1.0f - pos_pixel.y * constants.pixel_to_ndc.y, 0.0f,
-                        1.0f);
-  return out;
-}
-
-vertex VSOut transfer_clear_vs(uint vid [[vertex_id]]) {
-  float2 pt = float2((vid << 1) & 2, vid & 2);
-  VSOut out;
-  out.position = float4(pt * 2.0f - 1.0f, 0.0f, 1.0f);
-  return out;
-}
-
-fragment float4 transfer_clear_color_float_ps(
-    VSOut in [[stage_in]],
-    constant TransferClearColorFloatConstants& constants [[buffer(0)]]) {
-  return constants.color;
-}
-
-fragment uint4 transfer_clear_color_uint_ps(
-    VSOut in [[stage_in]],
-    constant TransferClearColorUintConstants& constants [[buffer(0)]]) {
-  return constants.color;
-}
-
-struct TransferDepthOut {
-  float depth [[depth(any)]];
-};
-
-fragment TransferDepthOut transfer_clear_depth_ps(
-    VSOut in [[stage_in]],
-    constant TransferClearDepthConstants& constants [[buffer(0)]]) {
-  TransferDepthOut out;
-  out.depth = constants.depth.x;
-  return out;
-}
-)METAL";
-
-  NS::Error* error = nullptr;
-  auto source_str =
-      NS::String::string(kTransferLibrarySource, NS::UTF8StringEncoding);
-  transfer_library_ = device_->newLibrary(source_str, nullptr, &error);
   if (!transfer_library_) {
-    XELOGE("GetOrCreateTransferLibrary: failed to compile transfer library: {}",
-           error && error->localizedDescription()
-               ? error->localizedDescription()->utf8String()
-               : "unknown error");
+    transfer_library_ = CreateLibraryFromEmbeddedMetallib(
+        device_, metal_transfer_vs_metallib, sizeof(metal_transfer_vs_metallib),
+        "metal_transfer");
   }
   return transfer_library_;
 }
@@ -2920,107 +2732,55 @@ MTL::Buffer* MetalTransferEncoder::GetTransferDummyBuffer() {
 
 MTL::DepthStencilState* MetalTransferEncoder::GetTransferDepthStencilState(
     bool depth_write) {
-  if (transfer_depth_state_) {
-    return transfer_depth_state_;
+  if (!transfer_depth_state_) {
+    transfer_depth_state_ = CreateTransferDepthStencilState(
+        device_,
+        ::cvars::depth_transfer_not_equal_test ? MTL::CompareFunctionNotEqual
+                                               : MTL::CompareFunctionAlways,
+        depth_write, 0);
   }
-  MTL::DepthStencilDescriptor* desc =
-      MTL::DepthStencilDescriptor::alloc()->init();
-  desc->setDepthCompareFunction(::cvars::depth_transfer_not_equal_test
-                                    ? MTL::CompareFunctionNotEqual
-                                    : MTL::CompareFunctionAlways);
-  desc->setDepthWriteEnabled(depth_write);
-  transfer_depth_state_ = device_->newDepthStencilState(desc);
-  desc->release();
   return transfer_depth_state_;
 }
 
 MTL::DepthStencilState*
 MetalTransferEncoder::GetTransferDepthAndStencilOutputState() {
-  if (transfer_depth_stencil_output_state_) {
-    return transfer_depth_stencil_output_state_;
+  if (!transfer_depth_stencil_output_state_) {
+    const bool not_equal_test = ::cvars::depth_transfer_not_equal_test;
+    // Always, not not-equal, so a differing stencil doesn't suppress the depth
+    // write - and with the not-equal depth test, replacing on depth failure so
+    // matching depth still gets its stencil written.
+    transfer_depth_stencil_output_state_ = CreateTransferDepthStencilState(
+        device_,
+        not_equal_test ? MTL::CompareFunctionNotEqual
+                       : MTL::CompareFunctionAlways,
+        true, 0xFF,
+        not_equal_test ? MTL::StencilOperationReplace
+                       : MTL::StencilOperationKeep);
   }
-  bool not_equal_test = ::cvars::depth_transfer_not_equal_test;
-  MTL::DepthStencilDescriptor* desc =
-      MTL::DepthStencilDescriptor::alloc()->init();
-  desc->setDepthCompareFunction(not_equal_test ? MTL::CompareFunctionNotEqual
-                                               : MTL::CompareFunctionAlways);
-  desc->setDepthWriteEnabled(true);
-  MTL::StencilDescriptor* stencil = MTL::StencilDescriptor::alloc()->init();
-  // Always, not not-equal, so a differing stencil doesn't suppress the depth
-  // write - and with the not-equal depth test, replacing on depth failure so
-  // matching depth still gets its stencil written.
-  stencil->setStencilCompareFunction(MTL::CompareFunctionAlways);
-  stencil->setStencilFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthFailureOperation(not_equal_test
-                                        ? MTL::StencilOperationReplace
-                                        : MTL::StencilOperationKeep);
-  stencil->setDepthStencilPassOperation(MTL::StencilOperationReplace);
-  stencil->setReadMask(0xFF);
-  stencil->setWriteMask(0xFF);
-  desc->setFrontFaceStencil(stencil);
-  desc->setBackFaceStencil(stencil);
-  transfer_depth_stencil_output_state_ = device_->newDepthStencilState(desc);
-  stencil->release();
-  desc->release();
   return transfer_depth_stencil_output_state_;
 }
 
 MTL::DepthStencilState* MetalTransferEncoder::GetTransferNoDepthStencilState() {
-  if (transfer_depth_state_none_) {
-    return transfer_depth_state_none_;
+  if (!transfer_depth_state_none_) {
+    transfer_depth_state_none_ = CreateTransferDepthStencilState(
+        device_, MTL::CompareFunctionAlways, false, 0);
   }
-  MTL::DepthStencilDescriptor* desc =
-      MTL::DepthStencilDescriptor::alloc()->init();
-  desc->setDepthCompareFunction(MTL::CompareFunctionAlways);
-  desc->setDepthWriteEnabled(false);
-  transfer_depth_state_none_ = device_->newDepthStencilState(desc);
-  desc->release();
   return transfer_depth_state_none_;
 }
 
 MTL::DepthStencilState* MetalTransferEncoder::GetTransferDepthClearState() {
-  if (transfer_depth_clear_state_) {
-    return transfer_depth_clear_state_;
+  if (!transfer_depth_clear_state_) {
+    transfer_depth_clear_state_ = CreateTransferDepthStencilState(
+        device_, MTL::CompareFunctionAlways, true, 0xFF);
   }
-  MTL::DepthStencilDescriptor* desc =
-      MTL::DepthStencilDescriptor::alloc()->init();
-  desc->setDepthCompareFunction(MTL::CompareFunctionAlways);
-  desc->setDepthWriteEnabled(true);
-  MTL::StencilDescriptor* stencil = MTL::StencilDescriptor::alloc()->init();
-  stencil->setStencilCompareFunction(MTL::CompareFunctionAlways);
-  stencil->setStencilFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthStencilPassOperation(MTL::StencilOperationReplace);
-  stencil->setReadMask(0xFF);
-  stencil->setWriteMask(0xFF);
-  desc->setFrontFaceStencil(stencil);
-  desc->setBackFaceStencil(stencil);
-  transfer_depth_clear_state_ = device_->newDepthStencilState(desc);
-  stencil->release();
-  desc->release();
   return transfer_depth_clear_state_;
 }
 
 MTL::DepthStencilState* MetalTransferEncoder::GetTransferStencilClearState() {
-  if (transfer_stencil_clear_state_) {
-    return transfer_stencil_clear_state_;
+  if (!transfer_stencil_clear_state_) {
+    transfer_stencil_clear_state_ = CreateTransferDepthStencilState(
+        device_, MTL::CompareFunctionAlways, false, 0xFF);
   }
-  MTL::DepthStencilDescriptor* desc =
-      MTL::DepthStencilDescriptor::alloc()->init();
-  desc->setDepthCompareFunction(MTL::CompareFunctionAlways);
-  desc->setDepthWriteEnabled(false);
-  MTL::StencilDescriptor* stencil = MTL::StencilDescriptor::alloc()->init();
-  stencil->setStencilCompareFunction(MTL::CompareFunctionAlways);
-  stencil->setStencilFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthStencilPassOperation(MTL::StencilOperationReplace);
-  stencil->setReadMask(0xFF);
-  stencil->setWriteMask(0xFF);
-  desc->setFrontFaceStencil(stencil);
-  desc->setBackFaceStencil(stencil);
-  transfer_stencil_clear_state_ = device_->newDepthStencilState(desc);
-  stencil->release();
-  desc->release();
   return transfer_stencil_clear_state_;
 }
 
@@ -3028,29 +2788,7 @@ bool MetalTransferEncoder::ProbeNativeStencilOutputSupport() {
   // Metal has no query for fragment stencil output, and it decides which draws
   // a stencil transfer needs, so build a pipeline that uses it up front rather
   // than discovering it half way through a batch.
-  static const char kProbeSource[] = R"METAL(
-#include <metal_stdlib>
-using namespace metal;
-
-vertex float4 xe_stencil_probe_vs() {
-  return float4(0.0f, 0.0f, 0.0f, 1.0f);
-}
-
-struct XeStencilProbeOut {
-  uint stencil [[stencil]];
-};
-
-fragment XeStencilProbeOut xe_stencil_probe_ps() {
-  XeStencilProbeOut out;
-  out.stencil = 0u;
-  return out;
-}
-)METAL";
-
-  NS::Error* error = nullptr;
-  MTL::Library* lib = device_->newLibrary(
-      NS::String::string(kProbeSource, NS::UTF8StringEncoding), nullptr,
-      &error);
+  MTL::Library* lib = GetOrCreateTransferLibrary();
   if (!lib) {
     return false;
   }
@@ -3069,6 +2807,7 @@ fragment XeStencilProbeOut xe_stencil_probe_ps() {
     desc->setDepthAttachmentPixelFormat(depth_format);
     desc->setStencilAttachmentPixelFormat(
         MetalRenderTargetCache::GetStencilAttachmentPixelFormat(depth_format));
+    NS::Error* error = nullptr;
     pipeline = device_->newRenderPipelineState(desc, &error);
     desc->release();
   }
@@ -3078,7 +2817,6 @@ fragment XeStencilProbeOut xe_stencil_probe_ps() {
   if (ps) {
     ps->release();
   }
-  lib->release();
   if (!pipeline) {
     return false;
   }
@@ -3091,26 +2829,10 @@ MTL::DepthStencilState* MetalTransferEncoder::GetTransferStencilBitState(
   if (bit >= 8) {
     return nullptr;
   }
-  if (transfer_stencil_bit_states_[bit]) {
-    return transfer_stencil_bit_states_[bit];
+  if (!transfer_stencil_bit_states_[bit]) {
+    transfer_stencil_bit_states_[bit] = CreateTransferDepthStencilState(
+        device_, MTL::CompareFunctionAlways, false, uint32_t(1) << bit);
   }
-  uint32_t mask = uint32_t(1) << bit;
-  MTL::DepthStencilDescriptor* desc =
-      MTL::DepthStencilDescriptor::alloc()->init();
-  desc->setDepthCompareFunction(MTL::CompareFunctionAlways);
-  desc->setDepthWriteEnabled(false);
-  MTL::StencilDescriptor* stencil = MTL::StencilDescriptor::alloc()->init();
-  stencil->setStencilCompareFunction(MTL::CompareFunctionAlways);
-  stencil->setStencilFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthFailureOperation(MTL::StencilOperationKeep);
-  stencil->setDepthStencilPassOperation(MTL::StencilOperationReplace);
-  stencil->setReadMask(0xFF);
-  stencil->setWriteMask(uint32_t(mask));
-  desc->setFrontFaceStencil(stencil);
-  desc->setBackFaceStencil(stencil);
-  transfer_stencil_bit_states_[bit] = device_->newDepthStencilState(desc);
-  stencil->release();
-  desc->release();
   return transfer_stencil_bit_states_[bit];
 }
 
