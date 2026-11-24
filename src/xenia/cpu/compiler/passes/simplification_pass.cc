@@ -523,6 +523,67 @@ static bool CompareDefsHaveSameOpnds(hir::Value* cmp1, hir::Value* cmp2,
   return true;
 }
 
+// How many instructions read the value, itself or through assigns, up to 2.
+static int CountReaders(const Value* value) {
+  int count = 0;
+  for (const Value::Use* use = value->use_head; use && count < 2;
+       use = use->next) {
+    count += use->instr->GetOpcodeNum() == OPCODE_ASSIGN
+                 ? CountReaders(use->instr->dest)
+                 : 1;
+  }
+  return count;
+}
+
+// (x | did_saturate a) | did_saturate b -> x | did_saturate (a | b), so that a
+// run of saturating instructions, which each OR into vscr_sat, tests its masks
+// for a set lane once.
+bool SimplificationPass::CheckOrDidSaturate(hir::Instr* i,
+                                            hir::HIRBuilder* builder) {
+  const auto did_saturate = [](Value* value) -> Instr* {
+    Instr* def = value->GetDefSkipAssigns();
+    return def && def->GetOpcodeNum() == OPCODE_DID_SATURATE &&
+                   CountReaders(def->dest) == 1
+               ? def
+               : nullptr;
+  };
+  Value* inner = i->src1.value;
+  Instr* outer_saturate = did_saturate(i->src2.value);
+  if (!outer_saturate) {
+    inner = i->src2.value;
+    outer_saturate = did_saturate(i->src1.value);
+  }
+  Instr* inner_or = outer_saturate ? inner->GetDefSkipAssigns() : nullptr;
+  // Read elsewhere too, the first would be tested for anyway
+  if (!inner_or || inner_or->GetOpcodeNum() != OPCODE_OR ||
+      CountReaders(inner_or->dest) != 1) {
+    return false;
+  }
+  Value* other = inner_or->src1.value;
+  Instr* inner_saturate = did_saturate(inner_or->src2.value);
+  if (!inner_saturate) {
+    other = inner_or->src2.value;
+    inner_saturate = did_saturate(inner_or->src1.value);
+  }
+  if (!inner_saturate) {
+    return false;
+  }
+  // Or hands back an operand instead of a new instruction for these
+  if (inner_saturate->src1.value == outer_saturate->src1.value ||
+      inner_saturate->src1.value->IsConstant() ||
+      outer_saturate->src1.value->IsConstant()) {
+    return false;
+  }
+  Value* masks = builder->Or(inner_saturate->src1.value,
+                             outer_saturate->src1.value);
+  masks->def->MoveBefore(i);
+  Value* saturated = builder->DidSaturate(masks);
+  saturated->def->MoveBefore(i);
+  i->set_src1(other);
+  i->set_src2(saturated);
+  return true;
+}
+
 bool SimplificationPass::CheckOr(hir::Instr* i, hir::HIRBuilder* builder) {
   if (CheckOrXorZero(i)) {
     return true;
@@ -536,6 +597,9 @@ bool SimplificationPass::CheckOr(hir::Instr* i, hir::HIRBuilder* builder) {
   }
 
   if (i->dest->type == INT8_TYPE) {
+    if (CheckOrDidSaturate(i, builder)) {
+      return true;
+    }
     Opcode l_op, r_op;
     Value *cmpl, *cmpr;
     if (!CompareDefsHaveSameOpnds(i->src1.value, i->src2.value, &cmpl, &cmpr,

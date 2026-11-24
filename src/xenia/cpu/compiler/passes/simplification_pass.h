@@ -51,6 +51,7 @@ class SimplificationPass : public ConditionalGroupSubpass {
   bool SimplifySHLArith(hir::Instr* i, hir::HIRBuilder* builder);
   // handle either or or xor with 0
   bool CheckOrXorZero(hir::Instr* i);
+  bool CheckOrDidSaturate(hir::Instr* i, hir::HIRBuilder* builder);
   bool CheckOr(hir::Instr* i, hir::HIRBuilder* builder);
   bool CheckXor(hir::Instr* i, hir::HIRBuilder* builder);
   bool CheckAnd(hir::Instr* i, hir::HIRBuilder* builder);

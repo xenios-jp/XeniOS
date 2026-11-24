@@ -31,7 +31,8 @@ Value* CalculateEA_0(PPCHIRBuilder& f, uint32_t ra, uint32_t rb);
 // Sets VSCR[SAT] if any lane of saturated is nonzero. SAT stays set until
 // mtvscr clears it. It's kept in vscr_sat, which mfvscr merges into the low
 // bit of VSCR, so a saturating instruction only ORs one byte. DID_SATURATE is
-// whether any lane is nonzero (a vptest on x64; ARM64 returns 0 for now).
+// whether any lane is nonzero (a vptest on x64, a umaxv on ARM64), and the
+// simplification pass merges those of a block.
 static void SetSatIfAny(PPCHIRBuilder& f, Value* saturated) {
   f.StoreSAT(f.Or(f.LoadSAT(), f.DidSaturate(saturated)));
 }
@@ -43,32 +44,31 @@ static void StoreSatForAddSub(PPCHIRBuilder& f, Value* v, bool subtract,
   Value* wrapped = subtract
                        ? f.VectorSub(f.LoadVR(va), f.LoadVR(vb), part_type)
                        : f.VectorAdd(f.LoadVR(va), f.LoadVR(vb), part_type);
-  SetSatIfAny(f, f.Not(f.VectorCompareEQ(v, wrapped, part_type)));
+  SetSatIfAny(f, f.Xor(v, wrapped));
 }
 
 // VSCR[SAT] after a saturating pack: a lane of either input saturated where it
-// was outside the output's range. part_type is the input lanes' type.
+// was outside the output's range. part_type is the input lanes' type. A signed
+// lane fits the signed output if all its bits from the output's sign bit up
+// agree, so if each agrees with the one below it.
 static void StoreSatForPack(PPCHIRBuilder& f, Value* v, uint32_t va,
                             uint32_t vb, TypeName part_type, bool in_signed,
                             bool out_signed) {
   uint32_t bits = part_type == INT16_TYPE ? 8 : 16;
-  int32_t max = out_signed ? (1 << (bits - 1)) - 1 : (1 << bits) - 1;
-  int32_t min = out_signed ? -(1 << (bits - 1)) : 0;
-  auto splat = [&](int32_t value) {
-    return f.LoadConstantVec128(part_type == INT16_TYPE
-                                    ? vec128s(static_cast<uint16_t>(value))
-                                    : vec128i(static_cast<uint32_t>(value)));
-  };
-  Value* saturated = nullptr;
-  for (uint32_t vr : {va, vb}) {
+  assert_true(in_signed || !out_signed);
+  // Bits above the output's, set in an input that doesn't fit
+  auto above = [&](uint32_t vr) -> Value* {
     Value* input = f.LoadVR(vr);
-    Value* out_of_range =
-        in_signed ? f.Or(f.VectorCompareSGT(input, splat(max), part_type),
-                         f.VectorCompareSGT(splat(min), input, part_type))
-                  : f.VectorCompareUGT(input, splat(max), part_type);
-    saturated = saturated ? f.Or(saturated, out_of_range) : out_of_range;
+    return out_signed ? f.Xor(input, f.VectorAdd(input, input, part_type))
+                      : input;
+  };
+  Value* combined = above(va);
+  if (va != vb) {
+    combined = f.Or(combined, above(vb));
   }
-  SetSatIfAny(f, saturated);
+  Value* max = f.LoadConstantVec128(part_type == INT16_TYPE ? vec128s(0x00FF)
+                                                            : vec128i(0xFFFF));
+  SetSatIfAny(f, f.VectorCompareUGT(combined, max, part_type));
 }
 
 // VSCR[SAT] after vctsxs and vctuxs: an input that truncates outside the
