@@ -520,4 +520,64 @@ TEST_CASE("SINGLE_RANGE_QUIRK_FOLD_ACROSS_BLOCKS", "[instr]") {
     b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
     b.Return();
   }));
+  // A loop's own sign flip keeps it: every value the loop stores is in range
+  // as long as the one it loads is.
+  REQUIRE(SimplifiesAway([](HIRBuilder& b) {
+    StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 1), INT32_TYPE)));
+    auto loop = b.NewLabel();
+    b.MarkLabel(loop);
+    Value* f1 = LoadFPR(b, 1);
+    StoreGPR(b, 3, b.ZeroExtend(b.SingleRangeQuirk(f1, f1, f1), INT64_TYPE));
+    StoreFPR(b, 1, b.Neg(f1));
+    b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+    b.Return();
+  }));
+  // Unless the value comes into the loop unproven,
+  REQUIRE_FALSE(SimplifiesAway([](HIRBuilder& b) {
+    auto loop = b.NewLabel();
+    b.MarkLabel(loop);
+    Value* f1 = LoadFPR(b, 1);
+    StoreGPR(b, 3, b.ZeroExtend(b.SingleRangeQuirk(f1, f1, f1), INT64_TYPE));
+    StoreFPR(b, 1, b.Neg(f1));
+    b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+    b.Return();
+  }));
+  // or is doubled, which leaves the range,
+  REQUIRE_FALSE(SimplifiesAway([](HIRBuilder& b) {
+    StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 1), INT32_TYPE)));
+    auto loop = b.NewLabel();
+    b.MarkLabel(loop);
+    Value* f1 = LoadFPR(b, 1);
+    StoreGPR(b, 3, b.ZeroExtend(b.SingleRangeQuirk(f1, f1, f1), INT64_TYPE));
+    StoreFPR(b, 1, b.Add(f1, f1));
+    b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+    b.Return();
+  }));
+  // or swaps places around the loop with one that comes in unproven: the first
+  // sweeps tag the loads, and the tags have to go again.
+  REQUIRE_FALSE(SimplifiesAway([](HIRBuilder& b) {
+    StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 1), INT32_TYPE)));
+    auto loop = b.NewLabel();
+    b.MarkLabel(loop);
+    Value* f1 = LoadFPR(b, 1);
+    Value* f2 = LoadFPR(b, 2);
+    Value* f3 = LoadFPR(b, 3);
+    StoreGPR(b, 3, b.ZeroExtend(b.SingleRangeQuirk(f1, f1, f1), INT64_TYPE));
+    StoreFPR(b, 1, b.Neg(f2));
+    StoreFPR(b, 2, b.Neg(f3));
+    b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+    b.Return();
+  }));
+  // Nor when the loop's value goes through a call.
+  REQUIRE_FALSE(SimplifiesAway([](HIRBuilder& b) {
+    StoreFPR(b, 1, b.UnpackSingle(b.Truncate(LoadGPR(b, 1), INT32_TYPE)));
+    auto loop = b.NewLabel();
+    b.MarkLabel(loop);
+    Value* f1 = LoadFPR(b, 1);
+    StoreGPR(b, 3, b.ZeroExtend(b.SingleRangeQuirk(f1, f1, f1), INT64_TYPE));
+    StoreFPR(b, 1, b.Neg(f1));
+    b.Call(nullptr);
+    b.BranchTrue(b.Truncate(LoadGPR(b, 2), INT8_TYPE), loop);
+    b.Return();
+  }));
 }

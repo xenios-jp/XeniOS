@@ -15,6 +15,7 @@
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/ppc/ppc_context.h"
 
+#include <unordered_set>
 #include <vector>
 namespace xe {
 namespace cpu {
@@ -39,7 +40,9 @@ static bool IsInSingleRange(const Value* v) {
 // IsInSingleRange stops at a load_context, so carry the proof for the 32
 // FPR context slots across blocks: a forward must-analysis where a slot is
 // clean if every path to it stored a clean value. Loads of clean slots are
-// tagged VALUE_IN_SINGLE_RANGE.
+// tagged VALUE_IN_SINGLE_RANGE, already while the analysis runs, so that a
+// value worked out from a loop's own loads (a sign flipped every time around)
+// keeps the proof too.
 namespace {
 
 constexpr size_t kGuestFPRCount = 32;
@@ -112,13 +115,30 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
     }
   }
 
+  // The FPR loads that no earlier run has proven. A tag on one of these holds
+  // only once the analysis has converged.
+  std::unordered_set<Value*> untagged;
+  for (const Block* b : blocks) {
+    for (const Instr* i = b->instr_head; i; i = i->next) {
+      size_t slot;
+      if (i->GetOpcodeNum() == OPCODE_LOAD_CONTEXT && i->dest &&
+          GuestFPRSlot(static_cast<uint32_t>(i->src1.offset), i->dest->type,
+                       &slot) &&
+          !(i->dest->flags & VALUE_IN_SINGLE_RANGE)) {
+        untagged.insert(i->dest);
+      }
+    }
+  }
+  if (untagged.empty()) {
+    return false;
+  }
+
   constexpr uint32_t kAllClean = ~uint32_t(0);
   // Walks a block from the clean set at its entry, handing the set at each
-  // branch to on_branch. With `tag`, also marks the FPR loads that the set
-  // proves clean.
-  bool tagged = false;
-  const auto transfer = [&tagged](Block* block, uint32_t clean, bool tag,
-                                  auto&& on_branch) {
+  // branch to on_branch and tagging the FPR loads that the set proves clean.
+  bool changed = false;
+  const auto transfer = [&changed, &untagged](Block* block, uint32_t clean,
+                                              auto&& on_branch) {
     for (Instr* i = block->instr_head; i; i = i->next) {
       if (const Label* target = i->BranchLabel()) {
         on_branch(target->block, clean);
@@ -132,11 +152,14 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
       const uint32_t offset = static_cast<uint32_t>(i->src1.offset);
       size_t slot;
       if (op == OPCODE_LOAD_CONTEXT) {
-        if (tag && i->dest && GuestFPRSlot(offset, i->dest->type, &slot) &&
-            (clean & (uint32_t(1) << slot)) &&
-            !(i->dest->flags & VALUE_IN_SINGLE_RANGE)) {
-          i->dest->flags |= VALUE_IN_SINGLE_RANGE;
-          tagged = true;
+        if (i->dest && GuestFPRSlot(offset, i->dest->type, &slot) &&
+            untagged.count(i->dest)) {
+          const uint32_t flags =
+              (clean & (uint32_t(1) << slot))
+                  ? i->dest->flags | VALUE_IN_SINGLE_RANGE
+                  : i->dest->flags & ~uint32_t(VALUE_IN_SINGLE_RANGE);
+          changed |= flags != i->dest->flags;
+          i->dest->flags = flags;
         }
         continue;
       }
@@ -204,10 +227,10 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
 
   // Descend to the greatest fixed point, so a value that stays clean around a
   // loop keeps its proof. The optimistic start is only sound at the fixed
-  // point, so tag nothing if it is not reached.
+  // point, so drop every tag if it is not reached.
   bool converged = false;
   for (size_t sweep = 0; sweep < 64 && !converged; ++sweep) {
-    bool changed = false;
+    changed = false;
     for (Block* block = builder->first_block(); block; block = block->next) {
       size_t e = first_edge[block->ordinal];
       const auto set_edge = [&](const Block*, uint32_t clean) {
@@ -217,19 +240,19 @@ bool SimplificationPass::PropagateGuestFPRSingleRangeProof(
         }
         ++e;
       };
-      const uint32_t exit = transfer(block, entry_of(block), false, set_edge);
+      const uint32_t exit = transfer(block, entry_of(block), set_edge);
       if (falls_through(block)) {
         set_edge(block->next, exit);
       }
     }
     converged = !changed;
   }
-  if (!converged) {
-    return false;
-  }
-
-  for (Block* block = builder->first_block(); block; block = block->next) {
-    transfer(block, entry_of(block), true, [](const Block*, uint32_t) {});
+  bool tagged = false;
+  for (Value* value : untagged) {
+    if (!converged) {
+      value->flags &= ~uint32_t(VALUE_IN_SINGLE_RANGE);
+    }
+    tagged |= (value->flags & VALUE_IN_SINGLE_RANGE) != 0;
   }
   return tagged;
 }
