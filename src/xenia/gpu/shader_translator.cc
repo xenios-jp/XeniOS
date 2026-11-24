@@ -1169,10 +1169,6 @@ struct RoundingSensitiveValues {
       case InstructionStorageTarget::kExportAddress:
       case InstructionStorageTarget::kExportData:
         return components;
-      case InstructionStorageTarget::kPosition:
-        // Z and W are clipped exactly at the near and far planes. Geometry on
-        // a plane must not round past it.
-        return components & 0b1100;
       default:
         return 0;
     }
