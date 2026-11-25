@@ -1114,16 +1114,16 @@ void Shader::GatherAluResultInformation(const InstructionResult& result,
 namespace {
 
 // Temporary register components, 4 bits per register, and the previous scalar
-// result whose values may reach a rounding-sensitive use.
-struct RoundingSensitiveValues {
+// result whose values may reach some kind of use.
+struct ValuesReachingUse {
   uint64_t registers[xenos::kMaxShaderTempRegisters / 16] = {};
   bool previous_scalar = false;
 
-  bool operator==(const RoundingSensitiveValues& other) const {
+  bool operator==(const ValuesReachingUse& other) const {
     return !std::memcmp(registers, other.registers, sizeof(registers)) &&
            previous_scalar == other.previous_scalar;
   }
-  void Merge(const RoundingSensitiveValues& other) {
+  void Merge(const ValuesReachingUse& other) {
     for (size_t i = 0; i < xe::countof(registers); ++i) {
       registers[i] |= other.registers[i];
     }
@@ -1156,22 +1156,15 @@ struct RoundingSensitiveValues {
     }
   }
 
-  // Components of an ALU result that may reach a rounding-sensitive use.
+  // Components of a result that may reach the use through a register.
   uint32_t GetResultComponents(const InstructionResult& result) const {
-    uint32_t components = result.GetUsedResultComponents();
-    switch (result.storage_target) {
-      case InstructionStorageTarget::kRegister:
-        return GetComponents(
-            result.storage_index,
-            result.storage_addressing_mode ==
-                InstructionStorageAddressingMode::kLoopRelative,
-            components);
-      case InstructionStorageTarget::kExportAddress:
-      case InstructionStorageTarget::kExportData:
-        return components;
-      default:
-        return 0;
+    if (result.storage_target != InstructionStorageTarget::kRegister) {
+      return 0;
     }
+    return GetComponents(result.storage_index,
+                         result.storage_addressing_mode ==
+                             InstructionStorageAddressingMode::kLoopRelative,
+                         result.GetUsedResultComponents());
   }
   void RemoveResult(const InstructionResult& result) {
     if (result.storage_target == InstructionStorageTarget::kRegister &&
@@ -1201,7 +1194,40 @@ struct RoundingSensitiveValues {
   }
 };
 
-// Rounding-sensitive values for each value of the predicate.
+struct RoundingSensitiveValues {
+  // Reaching any rounding-sensitive use.
+  ValuesReachingUse sensitive;
+  // Reaching a memory export, or a rounding-sensitive use that the position or
+  // a memory export is calculated from.
+  ValuesReachingUse required;
+  // Reaching the position, also through rounding-sensitive uses.
+  ValuesReachingUse position;
+  // Whether the position or a memory export is calculated from a0 or from a
+  // vfetch_mini reusing the address of the vfetch_full before it.
+  bool address_register_required = false;
+  bool vertex_fetch_address_required = false;
+
+  bool operator==(const RoundingSensitiveValues& other) const {
+    return sensitive == other.sensitive && required == other.required &&
+           position == other.position &&
+           address_register_required == other.address_register_required &&
+           vertex_fetch_address_required == other.vertex_fetch_address_required;
+  }
+  void Merge(const RoundingSensitiveValues& other) {
+    sensitive.Merge(other.sensitive);
+    required.Merge(other.required);
+    position.Merge(other.position);
+    address_register_required |= other.address_register_required;
+    vertex_fetch_address_required |= other.vertex_fetch_address_required;
+  }
+  void RemoveResult(const InstructionResult& result) {
+    sensitive.RemoveResult(result);
+    required.RemoveResult(result);
+    position.RemoveResult(result);
+  }
+};
+
+// Values for each value of the predicate.
 struct PredicatedRoundingSensitiveValues {
   RoundingSensitiveValues by_predicate[2];
 
@@ -1211,14 +1237,21 @@ struct PredicatedRoundingSensitiveValues {
   }
 };
 
+// Uses that the results of an ALU instruction may reach on any path, bit 0 for
+// the vector and bit 1 for the scalar operation.
+struct AluResultUses {
+  uint8_t sensitive = 0;
+  uint8_t required = 0;
+  uint8_t position = 0;
+};
+
 // Goes back over an instruction entered with the specified value of the
-// predicate, from the values that may reach a rounding-sensitive use after it
-// for each value of the predicate, and marks its ALU operations whose results
-// may reach one.
+// predicate, from the values that may reach the uses after it for each value of
+// the predicate, and adds the uses its ALU results may reach.
 void GatherInstructionRoundingSensitivity(
     const uint32_t* op_ptr, bool is_fetch, bool predicate,
     const PredicatedRoundingSensitiveValues& values_after,
-    RoundingSensitiveValues& values, uint8_t& alu_results) {
+    RoundingSensitiveValues& values, AluResultUses& alu_uses) {
   values = values_after.by_predicate[predicate];
   if (is_fetch) {
     auto& op = *reinterpret_cast<const FetchInstruction*>(op_ptr);
@@ -1228,10 +1261,18 @@ void GatherInstructionRoundingSensitivity(
       if (instr.is_predicated && instr.predicate_condition != predicate) {
         return;
       }
+      if (values.required.GetResultComponents(instr.result) ||
+          values.position.GetResultComponents(instr.result)) {
+        values.vertex_fetch_address_required = true;
+      }
       values.RemoveResult(instr.result);
       // vfetch_mini reuses the address calculated by vfetch_full.
       if (!instr.is_mini_fetch) {
-        values.AddOperand(instr.operands[0], 0b0001);
+        values.sensitive.AddOperand(instr.operands[0], 0b0001);
+        if (values.vertex_fetch_address_required) {
+          values.required.AddOperand(instr.operands[0], 0b0001);
+          values.vertex_fetch_address_required = false;
+        }
       }
     } else {
       ParsedTextureFetchInstruction instr;
@@ -1239,7 +1280,16 @@ void GatherInstructionRoundingSensitivity(
       if (instr.is_predicated && instr.predicate_condition != predicate) {
         return;
       }
+      bool position_used =
+          values.position.GetResultComponents(instr.result) != 0;
       values.RemoveResult(instr.result);
+      if (position_used) {
+        for (size_t i = 0; i < instr.operand_count; ++i) {
+          values.position.AddOperand(
+              instr.operands[i],
+              (UINT32_C(1) << instr.operands[i].component_count) - 1);
+        }
+      }
     }
     return;
   }
@@ -1257,63 +1307,132 @@ void GatherInstructionRoundingSensitivity(
     values.Merge(values_after.by_predicate[!predicate]);
   }
 
+  const InstructionResult& vector_result = instr.vector_and_constant_result;
+  const InstructionResult& scalar_result = instr.scalar_result;
+  auto is_export = [](const InstructionResult& result) {
+    return result.storage_target == InstructionStorageTarget::kExportAddress ||
+           result.storage_target == InstructionStorageTarget::kExportData;
+  };
+  uint32_t vector_exported =
+      is_export(vector_result) ? vector_result.GetUsedResultComponents() : 0;
+  bool scalar_exported =
+      is_export(scalar_result) && scalar_result.GetUsedResultComponents() != 0;
+
+  // Result components reaching the uses.
   uint32_t vector_sensitive =
-      values.GetResultComponents(instr.vector_and_constant_result);
+      values.sensitive.GetResultComponents(vector_result) | vector_exported;
+  uint32_t vector_required =
+      values.required.GetResultComponents(vector_result) | vector_exported;
+  uint32_t vector_position =
+      vector_result.storage_target == InstructionStorageTarget::kPosition
+          ? vector_result.GetUsedResultComponents()
+          : values.position.GetResultComponents(vector_result);
+  // Retaining also passes the previous scalar result on.
+  bool scalar_sensitive =
+      values.sensitive.GetResultComponents(scalar_result) != 0 ||
+      values.sensitive.previous_scalar || scalar_exported;
+  bool scalar_required =
+      values.required.GetResultComponents(scalar_result) != 0 ||
+      values.required.previous_scalar || scalar_exported;
+  bool scalar_position =
+      scalar_result.storage_target == InstructionStorageTarget::kPosition
+          ? scalar_result.GetUsedResultComponents() != 0
+          : (values.position.GetResultComponents(scalar_result) != 0 ||
+             values.position.previous_scalar);
+
+  // Whether a0 set by the instruction is used to calculate the position or a
+  // memory export, and whether the a0 from before it is.
+  bool new_address_register_required = false;
+  if (instr.vector_opcode == AluVectorOpcode::kMaxA ||
+      instr.scalar_opcode == AluScalarOpcode::kMaxAs ||
+      instr.scalar_opcode == AluScalarOpcode::kMaxAsf) {
+    new_address_register_required = values.address_register_required;
+    values.address_register_required = false;
+  }
+  auto add_address_register_use = [&values](const InstructionOperand& operand) {
+    if (operand.storage_addressing_mode ==
+        InstructionStorageAddressingMode::kAddressRegisterRelative) {
+      values.address_register_required = true;
+    }
+  };
+
   // Result components whose operands are needed, also for the operation's own
   // rounding-sensitive use of them.
-  uint32_t vector_operands_used_for = vector_sensitive;
-  bool vector_operands_used = vector_sensitive != 0;
+  uint32_t vector_sensitive_operands_used_for = vector_sensitive;
+  bool vector_sensitive_operands_used = vector_sensitive != 0;
+  uint32_t vector_required_operands_used_for = vector_required;
+  bool vector_required_operands_used = vector_required != 0;
   switch (instr.vector_opcode) {
     case AluVectorOpcode::kFrc:
     case AluVectorOpcode::kTrunc:
     case AluVectorOpcode::kFloor:
-      vector_operands_used_for |=
-          instr.vector_and_constant_result.GetUsedResultComponents();
-      vector_operands_used = vector_operands_used_for != 0;
+      vector_sensitive_operands_used_for |=
+          vector_result.GetUsedResultComponents();
+      vector_sensitive_operands_used = vector_sensitive_operands_used_for != 0;
+      vector_required_operands_used_for |= vector_position;
+      vector_required_operands_used = vector_required_operands_used_for != 0;
       break;
     case AluVectorOpcode::kMaxA:
       // a0 is set from W of the first operand.
-      vector_operands_used = true;
+      vector_sensitive_operands_used = true;
+      vector_required_operands_used |= new_address_register_required;
       break;
     default:
       break;
   }
-
-  // Retaining also passes the previous scalar result on.
-  bool scalar_sensitive =
-      values.GetResultComponents(instr.scalar_result) != 0 ||
-      values.previous_scalar;
-  bool scalar_operands_used = scalar_sensitive;
+  bool scalar_sensitive_operands_used = scalar_sensitive;
+  bool scalar_required_operands_used = scalar_required;
   switch (instr.scalar_opcode) {
     case AluScalarOpcode::kMaxAs:
     case AluScalarOpcode::kMaxAsf:
+      scalar_sensitive_operands_used = true;
+      scalar_required_operands_used |= new_address_register_required;
+      break;
     case AluScalarOpcode::kFrcs:
     case AluScalarOpcode::kTruncs:
     case AluScalarOpcode::kFloors:
-      scalar_operands_used = true;
+      scalar_sensitive_operands_used = true;
+      scalar_required_operands_used |= scalar_position;
       break;
     default:
       break;
   }
 
   // Both operations read their operands before either writes its result.
-  values.RemoveResult(instr.vector_and_constant_result);
-  values.RemoveResult(instr.scalar_result);
+  values.RemoveResult(vector_result);
+  values.RemoveResult(scalar_result);
   if (instr.scalar_opcode != AluScalarOpcode::kRetainPrev) {
-    values.previous_scalar = false;
+    values.sensitive.previous_scalar = false;
+    values.required.previous_scalar = false;
+    values.position.previous_scalar = false;
   }
-  if (vector_operands_used) {
+  auto add_vector_operands = [&instr](ValuesReachingUse& use_values,
+                                      uint32_t used_for) {
     for (uint32_t i = 0; i < instr.vector_operand_count; ++i) {
-      values.AddOperand(
-          instr.vector_operands[i],
-          GetAluVectorOpNeededSourceComponents(instr.vector_opcode, i + 1,
-                                               vector_operands_used_for));
+      use_values.AddOperand(instr.vector_operands[i],
+                            GetAluVectorOpNeededSourceComponents(
+                                instr.vector_opcode, i + 1, used_for));
+    }
+  };
+  if (vector_sensitive_operands_used) {
+    add_vector_operands(values.sensitive, vector_sensitive_operands_used_for);
+  }
+  if (vector_required_operands_used) {
+    add_vector_operands(values.required, vector_required_operands_used_for);
+  }
+  if (vector_position) {
+    add_vector_operands(values.position, vector_position);
+  }
+  if (vector_required_operands_used || vector_position) {
+    for (uint32_t i = 0; i < instr.vector_operand_count; ++i) {
+      add_address_register_use(instr.vector_operands[i]);
     }
   }
-  if (scalar_operands_used) {
+  auto add_scalar_operands = [&instr](ValuesReachingUse& use_values) {
     for (uint32_t i = 0; i < instr.scalar_operand_count; ++i) {
       const InstructionOperand& operand = instr.scalar_operands[i];
-      values.AddOperand(operand, (UINT32_C(1) << operand.component_count) - 1);
+      use_values.AddOperand(operand,
+                            (UINT32_C(1) << operand.component_count) - 1);
     }
     switch (instr.scalar_opcode) {
       case AluScalarOpcode::kAddsPrev:
@@ -1321,19 +1440,33 @@ void GatherInstructionRoundingSensitivity(
       case AluScalarOpcode::kMulsPrev2:
       case AluScalarOpcode::kSubsPrev:
       case AluScalarOpcode::kRetainPrev:
-        values.previous_scalar = true;
+        use_values.previous_scalar = true;
         break;
       default:
         break;
     }
+  };
+  if (scalar_sensitive_operands_used) {
+    add_scalar_operands(values.sensitive);
+  }
+  if (scalar_required_operands_used) {
+    add_scalar_operands(values.required);
+  }
+  if (scalar_position) {
+    add_scalar_operands(values.position);
+  }
+  if (scalar_required_operands_used || scalar_position) {
+    for (uint32_t i = 0; i < instr.scalar_operand_count; ++i) {
+      add_address_register_use(instr.scalar_operands[i]);
+    }
   }
 
-  if (vector_sensitive) {
-    alu_results |= 0b01;
-  }
-  if (scalar_sensitive) {
-    alu_results |= 0b10;
-  }
+  alu_uses.sensitive |=
+      (vector_sensitive ? 0b01 : 0) | (scalar_sensitive ? 0b10 : 0);
+  alu_uses.required |=
+      (vector_required ? 0b01 : 0) | (scalar_required ? 0b10 : 0);
+  alu_uses.position |=
+      (vector_position ? 0b01 : 0) | (scalar_position ? 0b10 : 0);
 }
 
 }  // namespace
@@ -1346,11 +1479,11 @@ void Shader::GatherAluRoundingSensitivity() {
   // never read there would be rounded, and the position calculated from it
   // would differ from that of another shader drawing the same geometry with
   // the same math, breaking depth testing between the two passes.
-  // TODO(xenios-jp): a result that really reaches both a rounding-sensitive
-  // use and the position is still rounded in this shader only, with the same
-  // effect between passes. Rounding everything reaching the position fixes
-  // that, but was measurably slower. Calculating the position from unrounded
-  // copies of such results would cost only the instructions shared by both.
+  // For the same reason, only what is on the way to the position decides
+  // whether a result reaching the position is rounded. Other uses in the shader
+  // aren't necessarily there in the other pass. Memory exports are an
+  // exception, their data is rounded even if the position is calculated from it
+  // too.
   uint32_t cf_index_count = cf_pair_index_bound_ * 2;
   std::vector<ParsedExecInstruction> execs(cf_index_count);
   struct Successor {
@@ -1432,7 +1565,7 @@ void Shader::GatherAluRoundingSensitivity() {
     }
   }
 
-  alu_rounding_sensitive_results_.assign(ucode_data_.size() / 3, 0);
+  std::vector<AluResultUses> alu_uses(ucode_data_.size() / 3);
   std::vector<PredicatedRoundingSensitiveValues> values_before(cf_index_count);
   bool values_changed;
   do {
@@ -1451,7 +1584,7 @@ void Shader::GatherAluRoundingSensitivity() {
       PredicatedRoundingSensitiveValues values_if_skipped = values;
       for (uint32_t i = exec.instruction_count; i-- > 0;) {
         uint32_t address = exec.instruction_address + i;
-        if (address >= alu_rounding_sensitive_results_.size()) {
+        if (address >= alu_uses.size()) {
           continue;
         }
         PredicatedRoundingSensitiveValues values_after = values;
@@ -1459,8 +1592,7 @@ void Shader::GatherAluRoundingSensitivity() {
           GatherInstructionRoundingSensitivity(
               ucode_data_.data() + address * 3,
               ((exec.sequence >> (i * 2)) & 0b01) != 0, predicate != 0,
-              values_after, values.by_predicate[predicate],
-              alu_rounding_sensitive_results_[address]);
+              values_after, values.by_predicate[predicate], alu_uses[address]);
         }
       }
       if (exec.type == ParsedExecInstruction::Type::kPredicated) {
@@ -1478,6 +1610,13 @@ void Shader::GatherAluRoundingSensitivity() {
       }
     }
   } while (values_changed);
+
+  alu_rounding_sensitive_results_.resize(alu_uses.size());
+  for (size_t i = 0; i < alu_uses.size(); ++i) {
+    const AluResultUses& uses = alu_uses[i];
+    alu_rounding_sensitive_results_[i] =
+        uses.required | (uses.sensitive & ~uses.position);
+  }
 }
 
 ShaderTranslator::ShaderTranslator() = default;
