@@ -1201,20 +1201,34 @@ struct RoundingSensitiveValues {
   }
 };
 
-// Goes back over an instruction from the values that may reach a
-// rounding-sensitive use after it, and marks its ALU operations whose results
+// Rounding-sensitive values for each value of the predicate.
+struct PredicatedRoundingSensitiveValues {
+  RoundingSensitiveValues by_predicate[2];
+
+  bool operator==(const PredicatedRoundingSensitiveValues& other) const {
+    return by_predicate[0] == other.by_predicate[0] &&
+           by_predicate[1] == other.by_predicate[1];
+  }
+};
+
+// Goes back over an instruction entered with the specified value of the
+// predicate, from the values that may reach a rounding-sensitive use after it
+// for each value of the predicate, and marks its ALU operations whose results
 // may reach one.
-void GatherInstructionRoundingSensitivity(const uint32_t* op_ptr, bool is_fetch,
-                                          RoundingSensitiveValues& values,
-                                          uint8_t& alu_results) {
+void GatherInstructionRoundingSensitivity(
+    const uint32_t* op_ptr, bool is_fetch, bool predicate,
+    const PredicatedRoundingSensitiveValues& values_after,
+    RoundingSensitiveValues& values, uint8_t& alu_results) {
+  values = values_after.by_predicate[predicate];
   if (is_fetch) {
     auto& op = *reinterpret_cast<const FetchInstruction*>(op_ptr);
     if (op.opcode() == FetchOpcode::kVertexFetch) {
       ParsedVertexFetchInstruction instr;
       ParseVertexFetchInstruction(op.vertex_fetch(), op.vertex_fetch(), instr);
-      if (!instr.is_predicated) {
-        values.RemoveResult(instr.result);
+      if (instr.is_predicated && instr.predicate_condition != predicate) {
+        return;
       }
+      values.RemoveResult(instr.result);
       // vfetch_mini reuses the address calculated by vfetch_full.
       if (!instr.is_mini_fetch) {
         values.AddOperand(instr.operands[0], 0b0001);
@@ -1222,9 +1236,10 @@ void GatherInstructionRoundingSensitivity(const uint32_t* op_ptr, bool is_fetch,
     } else {
       ParsedTextureFetchInstruction instr;
       ParseTextureFetchInstruction(op.texture_fetch(), instr);
-      if (!instr.is_predicated) {
-        values.RemoveResult(instr.result);
+      if (instr.is_predicated && instr.predicate_condition != predicate) {
+        return;
       }
+      values.RemoveResult(instr.result);
     }
     return;
   }
@@ -1232,6 +1247,15 @@ void GatherInstructionRoundingSensitivity(const uint32_t* op_ptr, bool is_fetch,
   ParsedAluInstruction instr;
   ParseAluInstruction(*reinterpret_cast<const AluInstruction*>(op_ptr),
                       xenos::ShaderType::kVertex, instr);
+  if (instr.is_predicated && instr.predicate_condition != predicate) {
+    return;
+  }
+  if ((ucode::GetAluVectorOpcodeInfo(instr.vector_opcode).changed_state |
+       ucode::GetAluScalarOpcodeInfo(instr.scalar_opcode).changed_state) &
+      ucode::kAluOpChangedStatePredicate) {
+    // Either value of the predicate may follow.
+    values.Merge(values_after.by_predicate[!predicate]);
+  }
 
   uint32_t vector_sensitive =
       values.GetResultComponents(instr.vector_and_constant_result);
@@ -1273,12 +1297,10 @@ void GatherInstructionRoundingSensitivity(const uint32_t* op_ptr, bool is_fetch,
   }
 
   // Both operations read their operands before either writes its result.
-  if (!instr.is_predicated) {
-    values.RemoveResult(instr.vector_and_constant_result);
-    values.RemoveResult(instr.scalar_result);
-    if (instr.scalar_opcode != AluScalarOpcode::kRetainPrev) {
-      values.previous_scalar = false;
-    }
+  values.RemoveResult(instr.vector_and_constant_result);
+  values.RemoveResult(instr.scalar_result);
+  if (instr.scalar_opcode != AluScalarOpcode::kRetainPrev) {
+    values.previous_scalar = false;
   }
   if (vector_operands_used) {
     for (uint32_t i = 0; i < instr.vector_operand_count; ++i) {
@@ -1318,10 +1340,25 @@ void GatherInstructionRoundingSensitivity(const uint32_t* op_ptr, bool is_fetch,
 
 void Shader::GatherAluRoundingSensitivity() {
   // Backward data flow over the control flow graph, with subroutines returning
-  // to after any call.
+  // to after any call. The values are tracked separately for each value of the
+  // predicate, so a predicated write replaces the value that instructions with
+  // the same predication read after it. Otherwise an earlier result that is
+  // never read there would be rounded, and the position calculated from it
+  // would differ from that of another shader drawing the same geometry with
+  // the same math, breaking depth testing between the two passes.
+  // TODO(xenios-jp): a result that really reaches both a rounding-sensitive
+  // use and the position is still rounded in this shader only, with the same
+  // effect between passes. Rounding everything reaching the position fixes
+  // that, but was measurably slower. Calculating the position from unrounded
+  // copies of such results would cost only the instructions shared by both.
   uint32_t cf_index_count = cf_pair_index_bound_ * 2;
   std::vector<ParsedExecInstruction> execs(cf_index_count);
-  std::vector<std::vector<uint32_t>> successors(cf_index_count);
+  struct Successor {
+    uint32_t cf_index;
+    // Bit 0 if reached with the predicate false, bit 1 if with it true.
+    uint32_t predicates;
+  };
+  std::vector<std::vector<Successor>> successors(cf_index_count);
   std::vector<uint32_t> returns;
   std::vector<uint32_t> return_targets;
   for (uint32_t i = 0; i < cf_pair_index_bound_; ++i) {
@@ -1330,13 +1367,14 @@ void Shader::GatherAluRoundingSensitivity() {
     for (uint32_t j = 0; j < 2; ++j) {
       uint32_t cf_index = i * 2 + j;
       const ControlFlowInstruction& cf = cf_ab[j];
-      std::vector<uint32_t>& cf_successors = successors[cf_index];
-      auto add_successor = [&](uint32_t successor) {
+      std::vector<Successor>& cf_successors = successors[cf_index];
+      auto add_successor = [&](uint32_t successor, uint32_t predicates = 0b11) {
         if (successor < cf_index_count) {
-          cf_successors.push_back(successor);
+          cf_successors.push_back({successor, predicates});
         }
       };
       bool next_is_successor = true;
+      uint32_t next_predicates = 0b11;
       switch (cf.opcode()) {
         case ControlFlowOpcode::kExec:
         case ControlFlowOpcode::kExecEnd:
@@ -1369,6 +1407,12 @@ void Shader::GatherAluRoundingSensitivity() {
           returns.push_back(cf_index);
           break;
         case ControlFlowOpcode::kCondJmp:
+          if (!cf.cond_jmp.is_unconditional() && cf.cond_jmp.is_predicated()) {
+            uint32_t jump_predicates = cf.cond_jmp.condition() ? 0b10 : 0b01;
+            add_successor(cf.cond_jmp.address(), jump_predicates);
+            next_predicates = 0b11 & ~jump_predicates;
+            break;
+          }
           add_successor(cf.cond_jmp.address());
           next_is_successor = !cf.cond_jmp.is_unconditional();
           break;
@@ -1376,42 +1420,57 @@ void Shader::GatherAluRoundingSensitivity() {
           break;
       }
       if (next_is_successor) {
-        add_successor(cf_index + 1);
+        add_successor(cf_index + 1, next_predicates);
       }
     }
   }
   for (uint32_t cf_index : returns) {
     for (uint32_t return_target : return_targets) {
       if (return_target < cf_index_count) {
-        successors[cf_index].push_back(return_target);
+        successors[cf_index].push_back({return_target, 0b11});
       }
     }
   }
 
   alu_rounding_sensitive_results_.assign(ucode_data_.size() / 3, 0);
-  std::vector<RoundingSensitiveValues> values_before(cf_index_count);
+  std::vector<PredicatedRoundingSensitiveValues> values_before(cf_index_count);
   bool values_changed;
   do {
     values_changed = false;
     for (uint32_t cf_index = cf_index_count; cf_index-- > 0;) {
-      RoundingSensitiveValues values;
-      for (uint32_t successor : successors[cf_index]) {
-        values.Merge(values_before[successor]);
+      PredicatedRoundingSensitiveValues values;
+      for (const Successor& successor : successors[cf_index]) {
+        for (uint32_t predicate = 0; predicate < 2; ++predicate) {
+          if (successor.predicates & (1 << predicate)) {
+            values.by_predicate[predicate].Merge(
+                values_before[successor.cf_index].by_predicate[predicate]);
+          }
+        }
       }
       const ParsedExecInstruction& exec = execs[cf_index];
-      RoundingSensitiveValues values_if_skipped = values;
+      PredicatedRoundingSensitiveValues values_if_skipped = values;
       for (uint32_t i = exec.instruction_count; i-- > 0;) {
         uint32_t address = exec.instruction_address + i;
         if (address >= alu_rounding_sensitive_results_.size()) {
           continue;
         }
-        GatherInstructionRoundingSensitivity(
-            ucode_data_.data() + address * 3,
-            ((exec.sequence >> (i * 2)) & 0b01) != 0, values,
-            alu_rounding_sensitive_results_[address]);
+        PredicatedRoundingSensitiveValues values_after = values;
+        for (uint32_t predicate = 0; predicate < 2; ++predicate) {
+          GatherInstructionRoundingSensitivity(
+              ucode_data_.data() + address * 3,
+              ((exec.sequence >> (i * 2)) & 0b01) != 0, predicate != 0,
+              values_after, values.by_predicate[predicate],
+              alu_rounding_sensitive_results_[address]);
+        }
       }
-      if (exec.type != ParsedExecInstruction::Type::kUnconditional) {
-        values.Merge(values_if_skipped);
+      if (exec.type == ParsedExecInstruction::Type::kPredicated) {
+        values.by_predicate[!exec.condition] =
+            values_if_skipped.by_predicate[!exec.condition];
+      } else if (exec.type != ParsedExecInstruction::Type::kUnconditional) {
+        for (uint32_t predicate = 0; predicate < 2; ++predicate) {
+          values.by_predicate[predicate].Merge(
+              values_if_skipped.by_predicate[predicate]);
+        }
       }
       if (!(values == values_before[cf_index])) {
         values_before[cf_index] = values;
