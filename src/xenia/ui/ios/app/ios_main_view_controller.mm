@@ -4362,6 +4362,10 @@ static bool XeJITUsable() {
   if (not_title_update_out) {
     *not_title_update_out = not_title_update;
   }
+  if (success) {
+    // Its description and thumbnail, for Updates & Add-ons.
+    xe_save_title_update_metadata(std::filesystem::path([path UTF8String]));
+  }
   return success;
 }
 
@@ -6139,7 +6143,12 @@ static constexpr NSUInteger kXeniaIOSTouchLayoutURLMaxLength = 2048;
     }
     return NO;
   }
-  return self.appContext->InstallTitleUpdate(path.string(), statusOut, notTitleUpdateOut);
+  if (!self.appContext->InstallTitleUpdate(path.string(), statusOut, notTitleUpdateOut)) {
+    return NO;
+  }
+  // Its description and thumbnail, for Updates & Add-ons.
+  xe_save_title_update_metadata(path);
+  return YES;
 }
 
 - (void)documentImportCoordinatorPresentAlertWithTitle:(NSString*)title message:(NSString*)message {

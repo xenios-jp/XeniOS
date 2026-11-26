@@ -42,6 +42,16 @@ struct IOSInstalledContentEntry {
   bool linked = false;
   std::filesystem::path linked_source_path;
   std::filesystem::path linked_relative_path;
+
+  // From the package header, when it could be read: a DLC's own file, or the
+  // header kept for a title update when it was installed. Empty otherwise.
+  std::string display_name;
+  std::string description;
+  std::string publisher;
+  // Packed XEX version, the form XexVersion::FromValue() takes; 0 if unknown.
+  uint32_t version = 0;
+  // PNG bytes: the package's own thumbnail, else its title's.
+  std::vector<uint8_t> thumbnail_data;
 };
 
 struct IOSSelectedContentPackage {
@@ -62,6 +72,12 @@ std::filesystem::path xe_dlc_content_root(uint32_t title_id);
 
 // User-visible labels.
 NSString* xe_installed_content_kind_label(IOSInstalledContentKind kind);
+// The package's display name, else its file name.
+NSString* xe_installed_content_display_name(const IOSInstalledContentEntry& entry);
+// "Title Update · v1.0.2.0 · Linked": the kind, then what is known of it.
+NSString* xe_installed_content_detail(const IOSInstalledContentEntry& entry);
+// The thumbnail as an image; nil when there is none or it does not decode.
+UIImage* xe_installed_content_thumbnail(const IOSInstalledContentEntry& entry);
 
 // Package metadata + I/O.
 std::string xe_content_package_directory_name(const std::filesystem::path& package_path);
@@ -90,6 +106,11 @@ void xe_exclude_installed_content_from_backup();
 // ({pkg}/{pkg}) up into the DLC folder, where titles find it. Blocking and
 // idempotent; call before titles run.
 void xe_migrate_nested_dlc_packages();
+// A title update is installed extracted, and the emulator keeps only its name
+// and file name, so this keeps a copy of the package header of
+// |package_path| to show its description and thumbnail later. Call after it
+// was installed. Best effort.
+void xe_save_title_update_metadata(const std::filesystem::path& package_path);
 bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        const std::filesystem::path& source_relative_path,

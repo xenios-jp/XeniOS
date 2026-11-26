@@ -21,14 +21,22 @@
 #include <system_error>
 
 #include "xenia/base/logging.h"
+#include "xenia/base/string.h"
 #import "xenia/ui/ios/shared/ios_system_utils.h"
+#import "xenia/ui/ios/shared/ios_view_helpers.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/vfs/stfs_metadata.h"
+#include "xenia/vfs/xex_metadata.h"
 
 namespace {
 
 constexpr const char* kLinkedContentMarkerSuffix = ".xenia-ios-link";
 // Where the DLC layout migration sets a package's old folder while it works.
 constexpr const char* kMigrateAsideSuffix = ".xenios-migrate";
+
+// A title update's package header, kept beside the emulator's own header
+// file for it: {title}/Headers/000B0000/{pkg}.xenios-metadata.
+constexpr const char* kTitleUpdateMetadataSuffix = ".xenios-metadata";
 
 constexpr const char* kLinkedContentMarkerVersion = "version=1";
 constexpr std::string_view kLinkedContentSourcePrefix = "source_path=";
@@ -368,6 +376,69 @@ void ResumeNestedDlcMigration(const std::filesystem::path& root,
   }
 }
 
+// {title}/Headers/000B0000/{pkg}{suffix}, where the emulator keeps the header
+// of an installed title update ({suffix} ".header") and this module its own
+// copy of the package header.
+std::filesystem::path TitleUpdateHeaderPath(const std::filesystem::path& package_path,
+                                            const char* suffix) {
+  const std::filesystem::path type_root = package_path.parent_path();
+  return type_root.parent_path() / "Headers" / type_root.filename() /
+         (package_path.filename().string() + suffix);
+}
+
+bool ApplyStfsMetadata(const std::filesystem::path& path, IOSInstalledContentEntry* entry) {
+  auto metadata = xe::vfs::ExtractStfsMetadata(path);
+  if (!metadata.has_value()) {
+    return false;
+  }
+  entry->display_name = std::move(metadata->display_name);
+  entry->description = std::move(metadata->description);
+  entry->publisher = std::move(metadata->publisher);
+  entry->version = metadata->version;
+  entry->thumbnail_data = !metadata->thumbnail_data.empty() ? std::move(metadata->thumbnail_data)
+                                                            : std::move(metadata->icon_data);
+  return true;
+}
+
+// The display name out of the emulator's own title update header: an
+// XCONTENT_AGGREGATE_DATA, its name 128 big-endian UTF-16 units at offset 8.
+std::string ReadAggregateHeaderDisplayName(const std::filesystem::path& header_path) {
+  std::ifstream file(header_path, std::ios::binary);
+  if (!file) {
+    return {};
+  }
+  uint8_t raw[8 + 256] = {};
+  if (!file.read(reinterpret_cast<char*>(raw), sizeof(raw))) {
+    return {};
+  }
+  std::u16string name;
+  for (size_t i = 0; i < 128; ++i) {
+    const char16_t unit = char16_t((raw[8 + i * 2] << 8) | raw[8 + i * 2 + 1]);
+    if (!unit) {
+      break;
+    }
+    name.push_back(unit);
+  }
+  return name.empty() ? std::string() : xe::to_utf8_lossy(name);
+}
+
+void ReadInstalledContentMetadata(IOSInstalledContentEntry* entry) {
+  if (entry->kind == IOSInstalledContentKind::kDlc) {
+    // A linked package's source may be out of reach; it shows its file name.
+    ApplyStfsMetadata(entry->path, entry);
+    return;
+  }
+  if (ApplyStfsMetadata(TitleUpdateHeaderPath(entry->path, kTitleUpdateMetadataSuffix), entry)) {
+    return;
+  }
+  // Installed before this module kept the package header: the emulator's
+  // header is the whole package header in upstream's layout, else has its name.
+  const std::filesystem::path header_path = TitleUpdateHeaderPath(entry->path, ".header");
+  if (!ApplyStfsMetadata(header_path, entry)) {
+    entry->display_name = ReadAggregateHeaderDisplayName(header_path);
+  }
+}
+
 }  // namespace
 
 bool HasContentSidecarDataDirectory(const std::filesystem::path& path) {
@@ -399,6 +470,38 @@ NSString* xe_installed_content_kind_label(IOSInstalledContentKind kind) {
       return NSLocalizedString(@"DLC", @"content management: user-visible text");
   }
   return NSLocalizedString(@"Content", @"content management: user-visible text");
+}
+
+NSString* xe_installed_content_display_name(const IOSInstalledContentEntry& entry) {
+  return ToNSString(entry.display_name.empty() ? entry.name : entry.display_name);
+}
+
+NSString* xe_installed_content_detail(const IOSInstalledContentEntry& entry) {
+  NSMutableArray<NSString*>* parts =
+      [NSMutableArray arrayWithObject:xe_installed_content_kind_label(entry.kind)];
+  if (entry.kind == IOSInstalledContentKind::kTitleUpdate && entry.version) {
+    [parts addObject:[NSString
+                         stringWithFormat:NSLocalizedString(
+                                              @"v%@", @"content management: a title update's "
+                                                      @"version; %@ is like 1.0.2.0"),
+                                          ToNSString(
+                                              xe::vfs::XexVersion::FromValue(entry.version)
+                                                  .ToString())]];
+  }
+  if (entry.linked) {
+    [parts addObject:NSLocalizedString(@"Linked",
+                                       @"content management: an add-on linked from a folder")];
+  }
+  return [parts componentsJoinedByString:@" · "];
+}
+
+UIImage* xe_installed_content_thumbnail(const IOSInstalledContentEntry& entry) {
+  if (entry.thumbnail_data.empty()) {
+    return nil;
+  }
+  NSData* data = [NSData dataWithBytes:entry.thumbnail_data.data()
+                                length:entry.thumbnail_data.size()];
+  return [UIImage imageWithData:data];
 }
 
 std::string xe_content_package_directory_name(const std::filesystem::path& package_path) {
@@ -589,6 +692,38 @@ void xe_migrate_nested_dlc_packages() {
   }
 }
 
+void xe_save_title_update_metadata(const std::filesystem::path& package_path) {
+  auto header = xe::vfs::XContentContainerDevice::ReadContainerHeader(package_path);
+  if (!header || !header->content_header.is_magic_valid() ||
+      header->content_metadata.content_type != xe::XContentType::kInstaller) {
+    return;
+  }
+  const std::filesystem::path installed_path =
+      xe_title_update_content_root(header->content_metadata.execution_info.title_id) /
+      package_path.filename();
+  const std::filesystem::path metadata_path =
+      TitleUpdateHeaderPath(installed_path, kTitleUpdateMetadataSuffix);
+  std::error_code ec;
+  std::filesystem::create_directories(metadata_path.parent_path(), ec);
+  std::filesystem::path part_path = metadata_path;
+  part_path += ".part";
+  {
+    std::ofstream file(part_path, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(header.get()), sizeof(*header));
+    if (!file.good()) {
+      file.close();
+      std::filesystem::remove(part_path, ec);
+      XELOGW("Could not keep the header of title update {}",
+             xe::strip_pii(package_path.string()));
+      return;
+    }
+  }
+  std::filesystem::rename(part_path, metadata_path, ec);
+  if (ec) {
+    std::filesystem::remove(part_path, ec);
+  }
+}
+
 bool xe_link_content_package_into_root(const IOSSelectedContentPackage& package_info,
                                        const std::filesystem::path& destination_root,
                                        const std::filesystem::path& source_relative_path,
@@ -656,6 +791,11 @@ bool xe_remove_installed_content(const IOSInstalledContentEntry& entry,
       *error_message_out = ec.message();
     }
     return false;
+  }
+  if (entry.kind == IOSInstalledContentKind::kTitleUpdate) {
+    std::error_code metadata_ec;
+    std::filesystem::remove(TitleUpdateHeaderPath(entry.path, kTitleUpdateMetadataSuffix),
+                            metadata_ec);
   }
   xe_remove_linked_content_marker(entry);
   return true;
@@ -756,6 +896,7 @@ void xe_collect_installed_content(const std::filesystem::path& root, IOSInstalle
     entry.path = it->path();
     entry.linked =
         ReadLinkedContentMarker(entry.path, &entry.linked_source_path, &entry.linked_relative_path);
+    ReadInstalledContentMetadata(&entry);
     content_out->push_back(std::move(entry));
   }
 }

@@ -87,6 +87,8 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 @property(nonatomic, assign) XeniaGameRowChildKind kind;
 @property(nonatomic, copy) NSString* title;
 @property(nonatomic, copy) NSString* detail;
+// Leads the row when set, such as an add-on's thumbnail.
+@property(nonatomic, retain) UIImage* image;
 @property(nonatomic, assign) BOOL on;
 @property(nonatomic, assign) BOOL destructive;
 // It opens a page of its own, so it has a chevron.
@@ -102,6 +104,7 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
 - (void)dealloc {
   [_title release];
   [_detail release];
+  [_image release];
   [_handler release];
   [_deleteTitle release];
   [_deleteHandler release];
@@ -978,17 +981,15 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
     } break;
     case XeniaIOSGameActionManageContent: {
       for (const IOSInstalledContentEntry& entry : content_) {
-        NSString* kind = xe_installed_content_kind_label(entry.kind);
-        XeniaGameRowChild* child =
-            [self newChild:XeniaGameRowChildKindInfo
-                     title:ToNSString(entry.name)
-                    detail:entry.linked
-                               ? [NSString stringWithFormat:NSLocalizedString(
-                                                                @"%@ · Linked",
-                                                                @"game page: an add-on linked "
-                                                                @"from a folder; %@ is its kind"),
-                                                            kind]
-                               : kind];
+        XeniaGameRowChild* child = [self newChild:XeniaGameRowChildKindItem
+                                            title:xe_installed_content_display_name(entry)
+                                           detail:xe_installed_content_detail(entry)];
+        child.image = XeniaInstalledContentRowImage(entry, 40.0);
+        child.opensPage = YES;
+        const IOSInstalledContentEntry detail_entry = entry;
+        child.handler = ^(XeniaGameRowChild* __unused tapped, UIView* __unused source) {
+          XeniaPresentInstalledContentDetail(unsafe_self, detail_entry);
+        };
         child.deleteTitle =
             entry.linked ? NSLocalizedString(@"Unlink", @"game page: swipe action")
                          : NSLocalizedString(@"Delete", @"game page: swipe action");
@@ -1163,6 +1164,10 @@ typedef NS_ENUM(NSInteger, XeniaGameRowChildKind) {
                                      : [XeniaTheme textPrimary];
   content.textProperties.font =
       xe_scaled_system_font(UIFontTextStyleBody, 17.0, UIFontWeightRegular);
+  if (child.image) {
+    content.image = child.image;
+    content.imageProperties.maximumSize = CGSizeMake(40.0, 40.0);
+  }
   if (child.detail.length) {
     content.secondaryText = child.detail;
     content.secondaryTextProperties.color = [XeniaTheme textSecondary];

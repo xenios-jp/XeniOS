@@ -125,6 +125,16 @@ std::optional<StfsMetadata> ExtractStfsMetadata(
                               content_meta.title_thumbnail + thumb_size);
   }
 
+  // Version 2 metadata keeps three more languages where the thumbnails end.
+  const uint32_t max_package_thumb_size =
+      content_meta.metadata_version >= 2 ? XContentMetadata::kThumbLengthV2
+                                         : XContentMetadata::kThumbLengthV1;
+  const uint32_t package_thumb_size = content_meta.thumbnail_size;
+  if (package_thumb_size > 0 && package_thumb_size <= max_package_thumb_size) {
+    metadata.thumbnail_data.assign(
+        content_meta.thumbnail, content_meta.thumbnail + package_thumb_size);
+  }
+
   return metadata;
 }
 
