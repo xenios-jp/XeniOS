@@ -16,8 +16,10 @@
 #include <vector>
 
 #include "xenia/base/logging.h"
+#include "xenia/vfs/xex_metadata.h"
 #include "xenia/xbox.h"
 
+#import "xenia/ui/ios/app/ios_landscape_navigation_controller.h"
 #import "xenia/ui/ios/launcher/ios_content_management.h"
 #import "xenia/ui/ios/launcher/ios_file_transfer.h"
 #import "xenia/ui/ios/launcher/ios_game_library_store.h"
@@ -99,6 +101,179 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
                             }]];
   [presenter presentViewController:confirm animated:YES completion:nil];
 }
+UIImage* XeniaInstalledContentRowImage(const IOSInstalledContentEntry& entry, CGFloat side) {
+  UIImage* thumbnail = xe_installed_content_thumbnail(entry);
+  if (!thumbnail) {
+    return XERowSymbolImage(entry.kind == IOSInstalledContentKind::kTitleUpdate
+                                ? @"arrow.down.circle"
+                                : @"puzzlepiece.extension",
+                            nil);
+  }
+  const CGRect bounds = CGRectMake(0.0, 0.0, side, side);
+  UIGraphicsImageRenderer* renderer =
+      [[[UIGraphicsImageRenderer alloc] initWithSize:bounds.size] autorelease];
+  return [renderer imageWithActions:^(__unused UIGraphicsImageRendererContext* context) {
+    [[UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:side * 0.18] addClip];
+    [thumbnail drawInRect:bounds];
+  }];
+}
+
+void XeniaPresentInstalledContentDetail(UIViewController* presenter,
+                                        const IOSInstalledContentEntry& entry) {
+  if (!presenter) {
+    return;
+  }
+  XeniaInstalledContentDetailViewController* detail =
+      [[[XeniaInstalledContentDetailViewController alloc] initWithEntry:entry] autorelease];
+  XeniaLandscapeNavigationController* sheet =
+      [[[XeniaLandscapeNavigationController alloc] initWithRootViewController:detail]
+          autorelease];
+  XEConfigureTaskSheet(sheet, presenter.view, CGSizeMake(540.0, 620.0), NO);
+  [presenter presentViewController:sheet animated:YES completion:nil];
+}
+
+namespace {
+
+// The rows of the detail page's second section: a label and its value.
+struct XeniaContentDetailRow {
+  NSString* label;
+  NSString* value;
+};
+
+}  // namespace
+
+@implementation XeniaInstalledContentDetailViewController {
+  IOSInstalledContentEntry entry_;
+  NSString* description_;
+  std::vector<XeniaContentDetailRow> rows_;
+}
+
+- (instancetype)initWithEntry:(const IOSInstalledContentEntry&)entry {
+  self = [super initWithStyle:UITableViewStyleInsetGrouped];
+  if (self) {
+    entry_ = entry;
+    self.title = xe_installed_content_kind_label(entry.kind);
+    description_ = entry.description.empty() ? nil : [ToNSString(entry.description) retain];
+    auto add_row = [self](NSString* label, NSString* value) {
+      if (value.length) {
+        rows_.push_back({[label retain], [value retain]});
+      }
+    };
+    if (!entry.publisher.empty()) {
+      add_row(NSLocalizedString(@"Publisher", @"content details: row label"),
+              ToNSString(entry.publisher));
+    }
+    if (entry.kind == IOSInstalledContentKind::kTitleUpdate && entry.version) {
+      add_row(NSLocalizedString(@"Version", @"content details: row label"),
+              ToNSString(xe::vfs::XexVersion::FromValue(entry.version).ToString()));
+    }
+    add_row(NSLocalizedString(@"File", @"content details: row label"), ToNSString(entry.name));
+    if (entry.linked) {
+      add_row(NSLocalizedString(@"Linked From", @"content details: row label"),
+              ToNSString(entry.linked_relative_path.empty()
+                             ? entry.linked_source_path.filename().string()
+                             : entry.linked_relative_path.string()));
+    }
+  }
+  return self;
+}
+
+- (void)dealloc {
+  for (XeniaContentDetailRow& row : rows_) {
+    [row.label release];
+    [row.value release];
+  }
+  [description_ release];
+  [super dealloc];
+}
+
+- (void)viewDidLoad {
+  [super viewDidLoad];
+  self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+  self.tableView.allowsSelection = NO;
+  // Pushed in Updates & Add-ons it has the sheet's ✕ already; presented, it gets its own.
+  if (self.navigationController.viewControllers.firstObject == self) {
+    XESetSheetClose(self, self, @selector(closeTapped:));
+  }
+}
+
+- (void)closeTapped:(id)__unused sender {
+  [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+// The header, then the description when there is one, then the details.
+- (NSInteger)numberOfSectionsInTableView:(UITableView* __unused)tableView {
+  return 3;
+}
+
+- (NSInteger)tableView:(UITableView* __unused)tableView numberOfRowsInSection:(NSInteger)section {
+  switch (section) {
+    case 0:
+      return 1;
+    case 1:
+      return description_ ? 1 : 0;
+    default:
+      return static_cast<NSInteger>(rows_.size());
+  }
+}
+
+- (NSString*)tableView:(UITableView* __unused)tableView titleForHeaderInSection:(NSInteger)section {
+  if (section == 1 && description_) {
+    return NSLocalizedString(@"Description", @"content details: section header");
+  }
+  if (section == 2 && !rows_.empty()) {
+    return NSLocalizedString(@"Details", @"content details: section header");
+  }
+  return nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView
+        cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+  static NSString* const kDetailCellIdentifier = @"XeniaContentDetailCell";
+  UITableViewCell* cell = [tableView dequeueReusableCellWithIdentifier:kDetailCellIdentifier];
+  if (!cell) {
+    cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                   reuseIdentifier:kDetailCellIdentifier] autorelease];
+  }
+  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  UIListContentConfiguration* content = nil;
+  switch (indexPath.section) {
+    case 0: {
+      content = [UIListContentConfiguration subtitleCellConfiguration];
+      content.image = XeniaInstalledContentRowImage(entry_, 86.0);
+      content.imageProperties.maximumSize = CGSizeMake(86.0, 86.0);
+      content.imageToTextPadding = 16.0;
+      content.text = xe_installed_content_display_name(entry_);
+      content.textProperties.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+      content.textProperties.color = [XeniaTheme textPrimary];
+      content.secondaryText = xe_installed_content_detail(entry_);
+      content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+      content.textToSecondaryTextVerticalPadding = 4.0;
+      content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(12.0, 0.0, 12.0, 0.0);
+    } break;
+    case 1:
+      content = [UIListContentConfiguration cellConfiguration];
+      content.text = description_;
+      content.textProperties.color = [XeniaTheme textPrimary];
+      content.textProperties.numberOfLines = 0;
+      break;
+    default: {
+      const XeniaContentDetailRow& row = rows_[static_cast<size_t>(indexPath.row)];
+      content = [UIListContentConfiguration valueCellConfiguration];
+      content.text = row.label;
+      content.textProperties.color = [XeniaTheme textPrimary];
+      content.secondaryText = row.value;
+      content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+      content.secondaryTextProperties.numberOfLines = 0;
+      content.prefersSideBySideTextAndSecondaryText = YES;
+    } break;
+  }
+  cell.contentConfiguration = content;
+  return cell;
+}
+
+@end
+
 @implementation XeniaGameContentImporter {
   uint32_t title_id_;
   id<XeniaGameContentHost> host_;    // not retained
@@ -469,17 +644,16 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
   }
 
   const IOSInstalledContentEntry& entry = installed_content_[static_cast<size_t>(indexPath.row)];
-  cell.textLabel.text = ToNSString(entry.name);
-  cell.textLabel.textColor = [XeniaTheme textPrimary];
-  cell.detailTextLabel.text =
-      entry.linked ? [NSString stringWithFormat:NSLocalizedString(
-                                                    @"%@ · Linked",
-                                                    @"game content view controller: detail text"),
-                                                xe_installed_content_kind_label(entry.kind)]
-                   : xe_installed_content_kind_label(entry.kind);
-  cell.detailTextLabel.textColor = [XeniaTheme textSecondary];
-  cell.accessoryType = UITableViewCellAccessoryNone;
-  cell.selectionStyle = UITableViewCellSelectionStyleNone;
+  UIListContentConfiguration* content = [UIListContentConfiguration subtitleCellConfiguration];
+  content.image = XeniaInstalledContentRowImage(entry, 44.0);
+  content.imageProperties.maximumSize = CGSizeMake(44.0, 44.0);
+  content.text = xe_installed_content_display_name(entry);
+  content.textProperties.color = [XeniaTheme textPrimary];
+  content.secondaryText = xe_installed_content_detail(entry);
+  content.secondaryTextProperties.color = [XeniaTheme textSecondary];
+  cell.contentConfiguration = content;
+  cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+  cell.selectionStyle = UITableViewCellSelectionStyleDefault;
   return cell;
 }
 
@@ -508,6 +682,14 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
 
 - (void)tableView:(UITableView*)tableView didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
   [tableView deselectRowAtIndexPath:indexPath animated:YES];
+  if (indexPath.section != 0 ||
+      static_cast<size_t>(indexPath.row) >= installed_content_.size()) {
+    return;
+  }
+  XeniaInstalledContentDetailViewController* detail =
+      [[[XeniaInstalledContentDetailViewController alloc]
+          initWithEntry:installed_content_[static_cast<size_t>(indexPath.row)]] autorelease];
+  [self.navigationController pushViewController:detail animated:YES];
 }
 
 @end

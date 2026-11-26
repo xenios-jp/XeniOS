@@ -41,6 +41,9 @@ struct StfsMetadata {
 
   // Raw bytes of the embedded title_thumbnail (PNG). Empty if absent.
   std::vector<uint8_t> icon_data;
+  // Raw bytes of the package's own thumbnail (PNG), such as a DLC's artwork.
+  // Empty if absent.
+  std::vector<uint8_t> thumbnail_data;
 
   toml::table ToToml() const;
 };

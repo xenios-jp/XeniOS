@@ -49,6 +49,21 @@ void XeniaConfirmRemoveInstalledContent(UIViewController* presenter,
 - (void)present;
 @end
 
+// One installed title update or DLC: its thumbnail, name, description and what else its
+// package header says. Push it inside a sheet, or present it in one of its own with
+// XeniaPresentInstalledContentDetail.
+@interface XeniaInstalledContentDetailViewController : XESheetTableViewController
+- (instancetype)initWithEntry:(const IOSInstalledContentEntry&)entry;
+@end
+
+// Presents the details of |entry| as a sheet over |presenter|.
+void XeniaPresentInstalledContentDetail(UIViewController* presenter,
+                                        const IOSInstalledContentEntry& entry);
+
+// The row image for |entry|: its thumbnail with rounded corners at |side| points, else the
+// kind's symbol. Autoreleased.
+UIImage* XeniaInstalledContentRowImage(const IOSInstalledContentEntry& entry, CGFloat side);
+
 @interface XeniaGameContentViewController : XESheetTableViewController
 - (instancetype)initWithTitleID:(uint32_t)title_id
                           title:(NSString*)title
